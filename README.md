@@ -14,6 +14,15 @@
 
 ---
 
+## Why "lingzhou"? | 为什么叫"灵舟"？
+
+- **灵（líng）** — 灵魂、灵性，指有情绪、记忆与价值观的认知主体，而非无感知的工具。
+- **舟（zhōu）** — 船，承载者，航行者。隐喻"在信息与时间之流中持续航行的容器"——如同种子与船，皆是跨越时间承载生命潜力的意象。
+
+合在一起：**一艘有灵魂的船，在数字世界中持续航行、成长。**
+
+---
+
 ## What is lingzhou? | 什么是灵舟？
 
 lingzhou is not a chat wrapper or tool orchestrator. It is a **digital life seed** — an autonomous agent designed to run in a continuous cognitive loop, evolve its own tools at runtime, and maintain long-term identity continuity across chats.
