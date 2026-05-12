@@ -65,28 +65,38 @@ class OpenAICompatProvider:
         """获取或刷新 GitHub Copilot 短期 token（TTL ~30 分钟，提前 5 分钟刷新）。
 
         流程：GitHub PAT → api.github.com/copilot_internal/v2/token → 短期 token
+        若 token exchange 端点返回 4xx（账号未启用内部端点），直接使用原始 PAT。
         """
         if self._copilot_token and time.time() < self._copilot_token_expires - 300:
             return self._copilot_token
 
-        async with httpx.AsyncClient(timeout=15.0) as tmp:
-            resp = await tmp.get(
-                "https://api.github.com/copilot_internal/v2/token",
-                headers={
-                    "Authorization": f"token {self._copilot_gh_pat}",
-                    "Accept": "application/json",
-                    "User-Agent": "lingzhou/1.0",
-                },
-            )
-        resp.raise_for_status()
-        data = resp.json()
-        self._copilot_token = data["token"]
-        expires_str: str = data.get("expires_at", "")
-        if expires_str:
-            dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-            self._copilot_token_expires = dt.timestamp()
-        else:
-            self._copilot_token_expires = time.time() + 1800  # 默认 30 分钟
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as tmp:
+                resp = await tmp.get(
+                    "https://api.github.com/copilot_internal/v2/token",
+                    headers={
+                        "Authorization": f"token {self._copilot_gh_pat}",
+                        "Accept": "application/json",
+                        "User-Agent": "lingzhou/1.0",
+                    },
+                )
+            if resp.status_code >= 400:
+                # 账号不支持内部 token exchange（如普通 Copilot 订阅）→ 直接使用 PAT
+                self._copilot_token = self._copilot_gh_pat
+                self._copilot_token_expires = time.time() + 3600
+                return self._copilot_token
+            data = resp.json()
+            self._copilot_token = data["token"]
+            expires_str: str = data.get("expires_at", "")
+            if expires_str:
+                dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+                self._copilot_token_expires = dt.timestamp()
+            else:
+                self._copilot_token_expires = time.time() + 1800  # 默认 30 分钟
+        except Exception:
+            # 网络错误等异常 → 回退使用原始 PAT
+            self._copilot_token = self._copilot_gh_pat
+            self._copilot_token_expires = time.time() + 3600
         return self._copilot_token  # type: ignore[return-value]
 
     # ── thinking 注入 ──────────────────────────────────────────────────────
@@ -146,6 +156,9 @@ class OpenAICompatProvider:
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature if temperature is not None else self._temperature,
         }
+        # gpt-5.x / o-series 不支持 max_tokens，须用 max_completion_tokens
+        if self._provider_mode == "copilot":
+            payload["max_completion_tokens"] = 16384
         # 1. 按 mode 注入 thinking 参数
         self._inject_thinking(payload)
         # 2. extra_body 最后合并（escape hatch，可覆盖上面任意字段）
