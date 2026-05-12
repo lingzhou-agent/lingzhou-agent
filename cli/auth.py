@@ -25,6 +25,10 @@ from auth_store import (
 
 auth_app = typer.Typer(name="auth", help="凭证授权管理", context_settings={"help_option_names": ["-h", "--help"]})
 
+# GitHub Copilot VS Code 插件的 OAuth App client_id（公开）
+# 用该 client_id 做 device flow 得到的 token 才能访问 copilot_internal API
+COPILOT_VSCODE_CLIENT_ID = "Iv1.b507a08c87ecfe98"
+
 
 def _load_copilot_client_id(config: Path) -> str:
     client_id = load_github_device_client_id()
@@ -71,9 +75,9 @@ def _login_copilot_impl(
 
     token: str = ""
 
-    # ── 路径 1：gh CLI ──────────────────────────────────────────────────
-    if method in ("auto", "gh"):
-        console.print("\n[bold]尝试路径 1/2：gh CLI[/bold]")
+    # ── 路径 1：gh CLI（仅 --method gh 显式指定时使用） ───────────────────────
+    if not token and method == "gh":
+        console.print("\n[bold]gh CLI[/bold]")
         try:
             result = subprocess.run(
                 ["gh", "auth", "token"],
@@ -83,95 +87,83 @@ def _login_copilot_impl(
                 token = result.stdout.strip()
                 if token:
                     console.print("[green]✓ 通过 gh CLI 获取 GitHub token[/green]")
-            elif method == "gh":
+            else:
                 console.print(f"[red]gh CLI 返回非 0：{result.returncode}[/red]")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            console.print("  gh CLI 未找到，跳过")
+            console.print("  gh CLI 未找到")
 
-    # ── 可选路径：GitHub OAuth Device Flow（仅显式指定时使用） ───────────
-    if not token and method == "device":
-        console.print("\n[bold]可选路径：GitHub OAuth Device Flow[/bold]")
-        client_id = oauth_client_id.strip() or _load_copilot_client_id(config)
-        if not client_id:
-            console.print(
-                "  [yellow]当前构建还没有内置 Lingzhou 自己的 GitHub OAuth App client_id，"
-                "因此 Device Flow 的交互链已就位，但还差 app registration 这一步。[/yellow]\n"
-                f"  [dim]临时覆盖方式：\n"
-                f"  1. --oauth-client-id Iv1.xxxx\n"
-                f"  2. export LINGZHOU_GITHUB_CLIENT_ID=Iv1.xxxx\n"
-                f"  3. 写入 {GITHUB_DEVICE_AUTH_PATH}：{{\"client_id\": \"Iv1.xxxx\"}}\n"
-                f"  4. 兼容旧配置：providers.copilot.oauth_client_id[/dim]"
+    if not token and method in ("auto", "device"):
+        client_id = oauth_client_id.strip() or _load_copilot_client_id(config) or COPILOT_VSCODE_CLIENT_ID
+        console.print(f"\n[bold]路径 1/2：GitHub Device Flow[/bold]  [dim]client_id={client_id}[/dim]")
+        try:
+            resp = httpx.post(
+                "https://github.com/login/device/code",
+                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+                content=f"client_id={client_id}&scope=read%3Auser",
+                timeout=15.0,
             )
-        else:
+            resp.raise_for_status()
+            dc = resp.json()
+            if "error" in dc:
+                raise RuntimeError(dc.get("error_description", dc["error"]))
+
+            user_code = dc["user_code"]
+            device_code = dc["device_code"]
+            verification_uri = dc["verification_uri"]
+            expires_in = int(dc["expires_in"])
+            interval_s = max(5, int(dc.get("interval", 5)))
+
+            console.print(Panel(
+                f"[bold]访问以下网址并输入验证码：[/bold]\n\n"
+                f"  网址: [link]{verification_uri}[/link]\n"
+                f"  验证码: [bold yellow]{user_code}[/bold yellow]\n\n"
+                f"  [dim]（{expires_in}s 内有效）[/dim]",
+                border_style="cyan",
+                title="GitHub Copilot 授权",
+            ))
+
             try:
-                resp = httpx.post(
-                    "https://github.com/login/device/code",
+                import webbrowser
+                webbrowser.open(verification_uri)
+            except Exception:
+                pass
+
+            expires_at = time.time() + expires_in
+            console.print("[dim]等待 GitHub 授权...[/dim]")
+            while time.time() < expires_at:
+                time.sleep(interval_s)
+                poll = httpx.post(
+                    "https://github.com/login/oauth/access_token",
                     headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
-                    content=f"client_id={client_id}&scope=read%3Auser",
+                    content=(
+                        f"client_id={client_id}"
+                        f"&device_code={device_code}"
+                        f"&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"
+                    ),
                     timeout=15.0,
                 )
-                resp.raise_for_status()
-                dc = resp.json()
-                if "error" in dc:
-                    raise RuntimeError(dc.get("error_description", dc["error"]))
-
-                user_code = dc["user_code"]
-                device_code = dc["device_code"]
-                verification_uri = dc["verification_uri"]
-                expires_in = int(dc["expires_in"])
-                interval_s = max(5, int(dc.get("interval", 5)))
-
-                console.print(Panel(
-                    f"[bold]访问以下网址并输入验证码：[/bold]\n\n"
-                    f"  网址: [link]{verification_uri}[/link]\n"
-                    f"  验证码: [bold yellow]{user_code}[/bold yellow]\n\n"
-                    f"  [dim]（{expires_in}s 内有效）[/dim]",
-                    border_style="cyan",
-                    title="GitHub Copilot 授权",
-                ))
-
-                try:
-                    import webbrowser
-                    webbrowser.open(verification_uri)
-                except Exception:
-                    pass
-
-                expires_at = time.time() + expires_in
-                console.print("[dim]等待 GitHub 授权...[/dim]")
-                while time.time() < expires_at:
-                    time.sleep(interval_s)
-                    poll = httpx.post(
-                        "https://github.com/login/oauth/access_token",
-                        headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
-                        content=(
-                            f"client_id={client_id}"
-                            f"&device_code={device_code}"
-                            f"&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"
-                        ),
-                        timeout=15.0,
-                    )
-                    poll.raise_for_status()
-                    pdata = poll.json()
-                    if "access_token" in pdata:
-                        token = pdata["access_token"]
-                        console.print("[green]✓ GitHub Device Flow 授权成功[/green]")
-                        break
-                    err = pdata.get("error", "")
-                    if err == "authorization_pending":
-                        console.print("  [dim]等待确认...[/dim]", end="\r")
-                        continue
-                    if err == "slow_down":
-                        interval_s += 5
-                        continue
-                    if err in ("access_denied", "expired_token"):
-                        console.print(f"[red]授权失败: {err}[/red]")
-                        break
-                    console.print(f"[red]未知错误: {pdata}[/red]")
+                poll.raise_for_status()
+                pdata = poll.json()
+                if "access_token" in pdata:
+                    token = pdata["access_token"]
+                    console.print("[green]✓ GitHub Device Flow 授权成功[/green]")
                     break
-                else:
-                    console.print("[yellow]授权超时，请重试[/yellow]")
-            except Exception as exc:
-                console.print(f"  Device Flow 失败: {exc}")
+                err = pdata.get("error", "")
+                if err == "authorization_pending":
+                    console.print("  [dim]等待确认...[/dim]", end="\r")
+                    continue
+                if err == "slow_down":
+                    interval_s += 5
+                    continue
+                if err in ("access_denied", "expired_token"):
+                    console.print(f"[red]授权失败: {err}[/red]")
+                    break
+                console.print(f"[red]未知错误: {pdata}[/red]")
+                break
+            else:
+                console.print("[yellow]授权超时，请重试[/yellow]")
+        except Exception as exc:
+            console.print(f"  Device Flow 失败: {exc}")
 
     # ── 路径 2：手动粘贴 GitHub token ─────────────────────────────────
     if not token and method in ("auto", "token"):
@@ -186,6 +178,69 @@ def _login_copilot_impl(
     if not token:
         console.print("[red]未获取到 token，授权失败[/red]")
         raise typer.Exit(1)
+
+    # ── 立即验证：做一次 Copilot token exchange，确保 GitHub token 可用 ──
+    console.print("\n[dim]正在验证 token（Copilot token exchange）…[/dim]")
+    try:
+        from provider.openai_compat import COPILOT_TOKEN_URL, _build_copilot_ide_headers
+
+        # 先检查 token 有效性和 scope
+        diag = httpx.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"token {token}", "Accept": "application/json"},
+            timeout=10.0,
+        )
+        if diag.status_code != 200:
+            console.print(f"[red]✗ GitHub token 无效（/user 返回 {diag.status_code}）[/red]")
+            raise typer.Exit(1)
+        scopes = diag.headers.get("X-OAuth-Scopes", "")
+        login = diag.json().get("login", "?")
+        console.print(f"  GitHub 用户: [bold]{login}[/bold]  scopes: [dim]{scopes or '(none)'}[/dim]")
+
+        resp = httpx.get(
+            COPILOT_TOKEN_URL,
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/json",
+                **_build_copilot_ide_headers(include_api_version=False),
+            },
+            timeout=15.0,
+        )
+        if resp.status_code == 200:
+            copilot_token = resp.json().get("token", "")
+            if copilot_token:
+                # 缓存 Copilot token（避免 provider 首次启动再 exchange 一次）
+                from auth_store import save_copilot_token_cache
+                expires_str = str(resp.json().get("expires_at", "")).strip()
+                if expires_str and expires_str.isdigit():
+                    exp_ms = int(expires_str) * 1000
+                else:
+                    import time as _time
+                    exp_ms = int((_time.time() + 1800) * 1000)
+                save_copilot_token_cache(copilot_token, expires_at_ms=exp_ms)
+                console.print("[green]✓ Copilot token exchange 成功[/green]")
+            else:
+                console.print("[yellow]exchange 返回空 token，可能稍后重试[/yellow]")
+        elif resp.status_code in (401, 403):
+            console.print(
+                f"[red]✗ token 验证失败（{resp.status_code}）：GitHub token 权限不足。[/red]\n"
+                "  请确认此 GitHub 账户已订阅 GitHub Copilot（Individual / Business）。\n"
+                "  也可以尝试：[bold]gh auth refresh --scopes copilot[/bold]"
+            )
+            raise typer.Exit(1)
+        elif resp.status_code == 404:
+            console.print(
+                f"[red]✗ token 验证失败（404）[/red]  body: [dim]{resp.text[:200]}[/dim]\n"
+                "  GitHub 账户可能未开通 Copilot 订阅，或 token 缺少权限。\n"
+                "  请登录 https://github.com/settings/copilot 确认订阅状态。"
+            )
+            raise typer.Exit(1)
+        else:
+            console.print(f"[yellow]exchange 返回异常状态 {resp.status_code}，请确认 Copilot 订阅状态[/yellow]")
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        console.print(f"[yellow]验证请求失败（{exc}），仍将保存 token，运行时可能报错[/yellow]")
 
     _store_copilot_token(token)
     console.print(

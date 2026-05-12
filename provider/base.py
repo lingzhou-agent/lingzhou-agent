@@ -22,6 +22,7 @@ class Provider(Protocol):
         messages: list[Message],
         *,
         temperature: float | None = None,
+        thinking_override: str | None = None,
     ) -> str:
         """发送对话消息，返回 assistant 回复文本。"""
         ...

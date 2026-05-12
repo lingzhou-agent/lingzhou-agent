@@ -186,9 +186,9 @@ class OpenAICompatProvider:
                 resp = await tmp.get(
                     COPILOT_TOKEN_URL,
                     headers={
-                        "Authorization": f"Bearer {self._copilot_gh_token}",
+                        "Authorization": f"token {self._copilot_gh_token}",
                         "Accept": "application/json",
-                        **_build_copilot_ide_headers(include_api_version=True),
+                        **_build_copilot_ide_headers(include_api_version=False),
                     },
                 )
             resp.raise_for_status()
@@ -227,9 +227,9 @@ class OpenAICompatProvider:
 
     # ── thinking 注入 ──────────────────────────────────────────────────────
 
-    def _inject_thinking(self, payload: dict[str, Any]) -> None:
+    def _inject_thinking(self, payload: dict[str, Any], level_override: str | None = None) -> None:
         """按 provider.mode 和 cfg.thinking 向 payload 注入对应的 thinking 参数。"""
-        level = self._thinking_level
+        level = level_override if level_override is not None else self._thinking_level
         spec = lookup_model(self._model)  # 可能为 None（目录未收录）
 
         if self._provider_mode == "openai":
@@ -265,7 +265,10 @@ class OpenAICompatProvider:
         if "max_completion_tokens" in payload or "max_tokens" in payload:
             return
         if self._model.startswith(_MAX_COMPLETION_TOKENS_MODELS):
-            payload["max_completion_tokens"] = _MAX_COMPLETION_TOKENS_DEFAULT
+            # 优先使用 models.json 中模型的 max_tokens；回退到硬编码默认值
+            spec = lookup_model(self._model)
+            limit = int(spec["max_tokens"]) if spec and spec.get("max_tokens") else _MAX_COMPLETION_TOKENS_DEFAULT
+            payload["max_completion_tokens"] = limit
 
     # ── chat ───────────────────────────────────────────────────────────────
 
@@ -274,13 +277,14 @@ class OpenAICompatProvider:
         messages: list[Message],
         *,
         temperature: float | None = None,
+        thinking_override: str | None = None,
     ) -> str:
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature if temperature is not None else self._temperature,
         }
-        self._inject_thinking(payload)
+        self._inject_thinking(payload, level_override=thinking_override)
         self._inject_completion_limits(payload)
         if self._extra_body:
             payload.update(self._extra_body)

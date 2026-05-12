@@ -78,7 +78,37 @@ class LoopConfig(BaseModel):
     wake_poll_interval: float = Field(default=1.0, gt=0, description="睡眠期间的状态检查粒度（秒）")
     active_sleep_multiplier: float = Field(default=1.0, gt=0, description="激活态下的睡眠倍率")
     idle_sleep_multiplier: float = Field(default=2.0, gt=0, description="空闲态下的睡眠倍率")
+    wait_sleep_override: float = Field(
+        default=5.0, gt=0,
+        description=(
+            "wait 决策后（空闲、无任务）的快速检查间隔（秒）；覆盖 interval×multiplier。"
+            "让 loop 在等待期间以较低频率自检，减少资源浪费，同时保持对 chat/task 事件的响应性。"
+        ),
+    )
+    act_sleep_override: float = Field(
+        default=2.0, gt=0,
+        description=(
+            "act 决策 + 有活跃任务时的连续推进间隔（秒）；默认 2s，让工具副作用短暂落地后立即进入下一认知轮。"
+            "避免任务执行期间被 30s 间隔人为切断，让灵舟能连续思考和行动。"
+        ),
+    )
     wake_on_task_change: bool = Field(default=True, description="任务状态变化时是否提前唤醒")
+    chat_reply_timeout: int = Field(
+        default=300, ge=30,
+        description=(
+            "chat 交互模式下等待 loop 回复的最长秒数（默认 300s = 5分钟）。"
+            "LLM thinking=high + 多轮工具调用单次 tick 可能需要 60-120s，"
+            "建议设为预期最长 tick 时长的 2-3 倍。"
+        ),
+    )
+    chat_thinking: str = Field(
+        default="low",
+        description=(
+            "chat/interact 模式（有用户消息）时的 thinking 等级覆盖。"
+            "可选: off | minimal | low | medium | high（与顶层 thinking 字段同义）。"
+            "独立配置使 chat 模式在保留基本推理的同时大幅降低首次 decide() 耗时（40-60s → 3-10s）。"
+        ),
+    )
     db_path: str = "~/.lingzhou/state/runtime.db"
     memory_dir: str = "~/.lingzhou/memory"
     state_dir: str = "~/.lingzhou/state"
@@ -94,6 +124,14 @@ class LoopConfig(BaseModel):
         description=(
             "按请求计费优化：空闲（无活跃任务、无用户消息）时每 N 轮才真正调用 LLM 判断。"
             "有任务或用户消息时忽略此设置，始终调用。默认 1 = 每轮都调（无聚合）。"
+        ),
+    )
+    max_tool_rounds: int = Field(
+        default=8, ge=1,
+        description=(
+            "chat/interact 模式（有用户消息）时，单次 tick 内允许的最大工具调用轮次。"
+            "首轮走完整 perception，后续轮追加工具历史直接续判，不重跑感知链路。"
+            "达到上限后自动注入兜底回复，保证 chat 客户端不超时。"
         ),
     )
 
@@ -259,6 +297,15 @@ class Config(BaseModel):
             "按 token 计费优化：强制限制每次 LLM 调用的输入 token 上限。"
             "低于模型上下文窗口自动推断值时生效，超过则忽略（不会扩大预算）。"
             "建议范围：4000–16000。默认 None = 由模型窗口自动推断。"
+        ),
+    )
+    routing: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "分层路由模型映射（按计费优化）。key 为复杂度层级：'simple'（空闲/后台 tick）"
+            "或 'complex'（有用户消息 / 高优先任务），value 为 'provider/model-id' 格式。\n"
+            "示例: {\"simple\": \"bailian/qwen3.6-plus\", \"complex\": \"copilot/gpt-5.4\"}\n"
+            "未配置时所有 tick 均使用顶层 model 字段。"
         ),
     )
 

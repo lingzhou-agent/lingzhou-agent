@@ -1,4 +1,4 @@
-"""cli/dev.py — evolve / tools / model / update 命令（开发者工具）。"""
+"""cli/dev.py — dev 子命令组：evolve / tools / model / update / version / doctor。"""
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +13,14 @@ import typer
 from cli._common import console, load_cfg, PROJECT_ROOT
 from core.version import __version__, __codename__
 
+dev_app = typer.Typer(
+    name="dev",
+    help="开发者工具：evolve / tools / model / update / version / doctor",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
+
+@dev_app.command("evolve")
 def evolve(
     description: Annotated[str, typer.Argument(help="新工具的自然语言描述")],
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
@@ -39,6 +46,7 @@ def evolve(
     asyncio.run(_run())
 
 
+@dev_app.command("tools")
 def tools(
     search: Annotated[Optional[str], typer.Argument(help="关键词过滤")] = None,
 ) -> None:
@@ -66,6 +74,7 @@ def tools(
         console.print(f"  [cyan]{m.name:<26}[/cyan] {m.description or ''}")
 
 
+@dev_app.command("model")
 def model(
     set_model: Annotated[Optional[str], typer.Argument(help="要切换的模型 ID，如 bailian/qwen-plus")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
@@ -244,6 +253,7 @@ def model(
     console.print("[dim]lingzhou 运行中时将在下一轮自动生效（配置热重载）[/dim]")
 
 
+@dev_app.command("update")
 def update() -> None:
     """更新 lingzhou 到最新版本（git pull + 重新安装依赖）。"""
     console.print(f"当前版本: [bold]v{__version__}[/bold]  代号: {__codename__}")
@@ -272,3 +282,10 @@ def update() -> None:
     else:
         console.print(f"[red]依赖安装失败:[/red]\n{result.stderr.strip()}")
         raise typer.Exit(1)
+
+
+# 注册诊断命令
+from cli.diag import version, doctor  # noqa: E402
+
+dev_app.command("version")(version)
+dev_app.command("doctor")(doctor)

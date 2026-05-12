@@ -1,4 +1,4 @@
-"""cli/task.py — task-add / task-list 命令。"""
+"""cli/task.py — task 子命令组：add / list。"""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +9,14 @@ import typer
 
 from cli._common import console, load_cfg
 
+task_app = typer.Typer(
+    name="task",
+    help="任务管理",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 
+
+@task_app.command("add")
 def task_add(
     title: Annotated[str, typer.Argument(help="任务标题")],
     goal: Annotated[str, typer.Option("--goal", "-g", help="任务目标")] = "",
@@ -32,6 +39,7 @@ def task_add(
     asyncio.run(_run())
 
 
+@task_app.command("list")
 def task_list(
     status: Annotated[Optional[str], typer.Option("--status", "-s", help="状态过滤（pending / running / done / failed）")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),

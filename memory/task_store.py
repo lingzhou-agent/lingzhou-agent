@@ -64,6 +64,19 @@ CREATE INDEX IF NOT EXISTS idx_signals_pending
     ON signals(run_at) WHERE status='pending';
 """
 
+_CREATE_CHAT = """
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    role       TEXT    NOT NULL,            -- 'user' | 'assistant'
+    content    TEXT    NOT NULL,
+    session_id TEXT    NOT NULL DEFAULT '',
+    status     TEXT    NOT NULL DEFAULT 'pending',  -- pending | processed
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_pending
+    ON chat_messages(status, id) WHERE role='user';
+"""
+
 # ── 性能索引（幂等，IF NOT EXISTS，对存量 DB 同样有效）────────────────────────
 # 分析依据：
 #   tasks.get_active()   → 每 tick 执行一次 WHERE status IN (...) ORDER BY priority → 无索引=全表扫
@@ -184,7 +197,7 @@ class TaskStore:
         await self._migrate()
         # 建表（幂等）+ 补充性能索引（IF NOT EXISTS，对存量 DB 同样生效）
         await self._db.executescript(
-            _CREATE_TASKS + _CREATE_FAILURES + _CREATE_FACTS + _CREATE_SIGNALS + _CREATE_INDEXES
+            _CREATE_TASKS + _CREATE_FAILURES + _CREATE_FACTS + _CREATE_SIGNALS + _CREATE_CHAT + _CREATE_INDEXES
         )
         await self._db.commit()
 
@@ -556,3 +569,56 @@ class TaskStore:
             "UPDATE signals SET status='cancelled' WHERE id=?", (signal_id,)
         )
         await self._db.commit()
+
+    # ── 对话消息（chat IPC）────────────────────────────────────────────────
+
+    async def add_chat_message(self, role: str, content: str, session_id: str = "") -> int:
+        """写入一条对话消息（role='user'|'assistant'）。"""
+        async with self._db.execute(
+            "INSERT INTO chat_messages(role, content, session_id) VALUES (?,?,?)",
+            (role, content, session_id),
+        ) as cur:
+            row_id: int = cur.lastrowid or 0
+        await self._db.commit()
+        return row_id
+
+    async def has_pending_chat_message(self) -> bool:
+        """非破坏性检查：是否有待处理的 user 消息（仅用于早唤醒轮询，不消费）。"""
+        async with self._db.execute(
+            "SELECT 1 FROM chat_messages WHERE role='user' AND status='pending' LIMIT 1"
+        ) as cur:
+            return await cur.fetchone() is not None
+
+    async def pop_pending_chat_message(self) -> Optional[dict[str, Any]]:
+        """原子获取并标记最早一条待处理 user 消息（无则返回 None）。"""
+        async with self._db.execute(
+            "SELECT id, content, session_id FROM chat_messages "
+            "WHERE role='user' AND status='pending' ORDER BY id LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        mid, content, session_id = row
+        await self._db.execute(
+            "UPDATE chat_messages SET status='processed' WHERE id=?", (mid,)
+        )
+        await self._db.commit()
+        return {"id": mid, "content": content, "session_id": session_id}
+
+    async def get_chat_messages_since(self, since_id: int = 0, session_id: str = "") -> list[dict[str, Any]]:
+        """返回 id > since_id 的所有消息（可选按 session_id 过滤）。"""
+        if session_id:
+            sql = (
+                "SELECT id, role, content, created_at FROM chat_messages "
+                "WHERE id > ? AND session_id = ? ORDER BY id"
+            )
+            params: tuple[Any, ...] = (since_id, session_id)
+        else:
+            sql = (
+                "SELECT id, role, content, created_at FROM chat_messages "
+                "WHERE id > ? ORDER BY id"
+            )
+            params = (since_id,)
+        async with self._db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [{"id": r[0], "role": r[1], "content": r[2], "created_at": r[3]} for r in rows]

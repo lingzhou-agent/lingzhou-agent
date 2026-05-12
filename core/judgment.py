@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -99,6 +100,11 @@ class JudgmentLayer:
         self._judgment_template = cfg.load_prompt("judgment")
         self._skills = SkillRegistry()
         self._ref_resolver = ReferenceResolver(provider=provider)
+        # 分层路由 providers：{"simple": <provider>, "complex": <provider>}
+        # 由 loop.open() 在 bootstrap 后注入，未配置时为空字典
+        self._routing_providers: dict[str, "Provider"] = {}
+        # 内层工具循环用：缓存上一次 decide() 组装的完整上下文，由 decide_continue() 复用
+        self._last_context_text: str = ""
 
     def set_identity_prefix(self, prefix: str) -> None:
         """由 SoulManager.bootstrap() 调用，将 BOOTSTRAP.md/IDENTITY.md 永久注入 system prompt。"""
@@ -111,7 +117,24 @@ class JudgmentLayer:
             self._judgment_template = self._cfg.load_prompt("judgment")
         elif key == "system":
             self._system_prompt = self._cfg.load_prompt("system")
+    def set_routing_providers(self, providers: dict[str, "Provider"]) -> None:
+        """注入分层路由 providers（由 CognitionLoop.open() 调用）。
+        key: 'simple'（空闲/后台 tick）或 'complex'（有用户消息 / 高优先任务）
+        """
+        self._routing_providers = providers
+        if providers:
+            tiers = list(providers.keys())
+            _log.info("[judgment] 路由 providers 已设置: %s", tiers)
 
+    def _select_provider(self, user_message: str) -> "Provider":
+        """根据是否有用户消息选择 provider。
+        有 user_message → 'complex'（高能力模型，需要精确回复）
+        无 user_message → 'simple'（轻量模型，节约资源）
+        """
+        if not self._routing_providers:
+            return self._provider
+        tier = "complex" if user_message else "simple"
+        return self._routing_providers.get(tier, self._provider)
     async def decide(
         self,
         percept: "Percept",
@@ -126,8 +149,12 @@ class JudgmentLayer:
         hard_boundaries: "list[str] | None" = None,
         perception_replay: "PerceptionReplaySummary | None" = None,
         cognitive_signals: "CognitiveSignals | None" = None,
+        thinking_override: "str | None" = None,
     ) -> JudgmentOutput:
-        """组装上下文，调用 LLM，返回决策。"""
+        """组装上下文，调用 LLM，返回决策。
+        
+        thinking_override: 覆盖 cfg.thinking（如 chat 模式用 "low" 加速首轮判断）。
+        """
         from provider.base import Message
 
         context_text = await self._assemble_context(
@@ -139,6 +166,8 @@ class JudgmentLayer:
             perception_replay=perception_replay,
             cognitive_signals=cognitive_signals,
         )
+        # 缓存给内层工具循环的续判请求用
+        self._last_context_text = context_text
 
         _sys = (
             self._identity_prefix + "\n\n" + self._system_prompt
@@ -150,18 +179,27 @@ class JudgmentLayer:
             Message(role="user", content=context_text),
         ]
 
-        try:
-            raw = await self._provider.chat(messages)
-        except Exception as exc:
-            # LLM 不可用时使用确定性回退；用 repr 保证空 str() 的异常也可见
-            _err = str(exc) or repr(exc)
-            _log.warning("[judgment] LLM 调用失败: %s", _err)
-            return self._simulate_safe_output(
-                failure_count=0,
-                signals=judgment_signals,
-                hard_boundaries=hard_boundaries or [],
-                reason=_err,
-            )
+        selected_provider = self._select_provider(user_message)
+        raw: str | None = None
+        for _attempt in range(2):
+            try:
+                raw = await selected_provider.chat(messages, thinking_override=thinking_override)
+                break
+            except Exception as exc:
+                if _attempt == 0:
+                    _warn = str(exc) or repr(exc)
+                    _log.warning("[judgment] LLM 调用失败，1s 后重试: %s", _warn)
+                    await asyncio.sleep(1.0)
+                else:
+                    _err = str(exc) or repr(exc)
+                    _log.warning("[judgment] LLM 调用失败: %s", _err)
+                    return self._simulate_safe_output(
+                        failure_count=0,
+                        signals=judgment_signals,
+                        hard_boundaries=hard_boundaries or [],
+                        reason=_err,
+                    )
+        assert raw is not None  # 两次都失败时上面已 return
 
         output = JudgmentOutput.from_llm(raw)
 
@@ -183,6 +221,88 @@ class JudgmentLayer:
             output.decision, output.chosen_action_id, (output.rationale or "")[:120],
         )
 
+        return output
+
+    async def decide_continue(
+        self,
+        tool_history: list[dict],
+        user_message: str = "",
+    ) -> JudgmentOutput:
+        """内层工具循环的续判请求。
+
+        不重践 perception 链路，直接在上次 decide() 缓存的全量上下文后面追加工具历史续判。
+        每次 HTTP 请求与普通请求相同，但输入 token 显著减少（不重发全量感知层）。
+
+        Args:
+            tool_history: [{"tool": str, "params": dict, "result": str}, ...]
+            user_message:  原始用户消息（不再次向 LLM 重复，仅用于选择 provider tier）
+        """
+        from provider.base import Message
+
+        if not self._last_context_text:
+            return JudgmentOutput.wait(reason="[inner-loop] no cached context for continuation")
+
+        # 构建工具历史摘要（限制单条 result 长度，防止如果工具返回大文件内容执行 token 爆炸）
+        history_parts: list[str] = []
+        for i, h in enumerate(tool_history):
+            params_str = json.dumps(h.get("params", {}), ensure_ascii=False)[:300]
+            result_str = str(h.get("result", ""))[:1000]
+            history_parts.append(
+                f"[{i + 1}] {h.get('tool', '')}({params_str})\n返回: {result_str}"
+            )
+
+        history_block = "\n\n".join(history_parts)
+        hint = (
+            "用户正在等待回复，尽快在本轮设置 reply_to_user 字段。"
+            if user_message else ""
+        )
+
+        continuation_context = (
+            f"{self._last_context_text}\n\n"
+            "---\n"
+            "## 本轮已执行工具历史\n"
+            f"{history_block}\n\n"
+            f"请根据以上结果继续执行下一个必要工具，或生成最终回复（reply_to_user 非空）。{hint}"
+        )
+
+        _sys = (
+            self._identity_prefix + "\n\n" + self._system_prompt
+            if self._identity_prefix
+            else self._system_prompt
+        )
+        messages = [
+            Message(role="system", content=_sys),
+            Message(role="user", content=continuation_context),
+        ]
+
+        selected_provider = self._select_provider(user_message)
+        raw: str | None = None
+        for _attempt in range(2):
+            try:
+                # 内层续判：关闭 thinking，避免每轮额外 40-60s 推理耗时
+                raw = await selected_provider.chat(messages, thinking_override="off")
+                break
+            except Exception as exc:
+                if _attempt == 0:
+                    _log.warning("[judgment.continue] LLM 调用失败，1s 后重试: %s", str(exc) or repr(exc))
+                    await asyncio.sleep(1.0)
+                else:
+                    _log.warning("[judgment.continue] LLM 调用失败: %s", str(exc) or repr(exc))
+                    return JudgmentOutput.wait(reason=f"[inner-loop] LLM 不可用: {exc!r}")
+
+        if raw is None:
+            return JudgmentOutput.wait(reason="[inner-loop] LLM returned None")
+
+        output = JudgmentOutput.from_llm(raw)
+        if output.decision not in ("act", "pause", "wait"):
+            output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
+        if output.decision == "act" and not output.chosen_action_id:
+            output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+
+        _log.info(
+            "[judgment.continue] round=%d decision=%s action=%s",
+            len(tool_history), output.decision, output.chosen_action_id,
+        )
         return output
 
     async def _repair_output(self, context_text: str, raw: str) -> "JudgmentOutput | None":

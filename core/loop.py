@@ -37,7 +37,7 @@ from memory.working import WorkingMemory, WMItem
 from memory.episodic import EpisodicMemory
 from memory.semantic import SemanticMemory, MemoryNode
 from memory.task_store import TaskStore, Task
-from provider import create_provider
+from provider import create_provider, create_provider_with_model
 from provider.models_gen import ensure_models_json
 from tools.registry import ToolRegistry, ToolContext
 from core.behavior_tracker import BehaviorTracker
@@ -106,7 +106,8 @@ class CognitionLoop:
         self._judgment = JudgmentLayer(self._provider, self._registry, cfg)
         self._execution = ExecutionLayer(self._registry, cfg)
         self._evolution = EvolutionEngine(cfg, self._provider, self._registry)
-
+        # 分层路由 providers（{"simple": p1, "complex": p2}，由 open() 注入 JudgmentLayer）
+        self._routing_providers: dict[str, Any] = {}
         # Hermes/OpenClaw 借鉴：embedding 混合检索（embed_fn=None 则纯关键词模式）
         _embed_fn = getattr(self._provider, "embed", None) if cfg.memory.embedding_model else None
         self._semantic = SemanticMemory(
@@ -131,10 +132,16 @@ class CognitionLoop:
         self._last_heartbeat_at: float = 0.0
         # 按请求计费聚合：追踪距上次真正调用 LLM 已经过了几轮
         self._ticks_since_judge: int = 0
+        # 上一轮 tick 的决策类型（act/wait/fallback），用于动态 sleep 计算
+        self._last_decision: str = "wait"
         # 配置文件热重载：记录初始 mtime，每轮 sleep 后检查
         _cfg_file = cfg._base_dir / "lingzhou.json"
         self._cfg_file: Path = _cfg_file
         self._cfg_mtime: float = _cfg_file.stat().st_mtime if _cfg_file.exists() else 0.0
+        # 同时监听 auth-profiles.json（token 更新时重建 provider）
+        from auth_store import AUTH_PROFILES_PATH as _AUTH_PROFILES_PATH
+        self._auth_profiles_path: Path = _AUTH_PROFILES_PATH
+        self._auth_profiles_mtime: float = _AUTH_PROFILES_PATH.stat().st_mtime if _AUTH_PROFILES_PATH.exists() else 0.0
 
     @property
     def semantic(self) -> SemanticMemory:
@@ -145,13 +152,17 @@ class CognitionLoop:
         return self._episodic
 
     async def _maybe_hot_reload_provider(self) -> None:
-        """检测 lingzhou.json mtime；若已改变则热换 provider 和相关组件。"""
+        """检测 lingzhou.json 和 auth-profiles.json mtime；若已改变则热换 provider 和相关组件。"""
         if not self._cfg_file.exists():
             return
         mtime = self._cfg_file.stat().st_mtime
-        if mtime <= self._cfg_mtime:
+        auth_mtime = self._auth_profiles_path.stat().st_mtime if self._auth_profiles_path.exists() else 0.0
+        cfg_changed = mtime > self._cfg_mtime
+        auth_changed = auth_mtime > self._auth_profiles_mtime
+        if not cfg_changed and not auth_changed:
             return
         self._cfg_mtime = mtime
+        self._auth_profiles_mtime = auth_mtime
         try:
             new_cfg = Config.load(self._cfg_file)
         except Exception as e:
@@ -159,6 +170,24 @@ class CognitionLoop:
             return
         old_model = self._cfg.model
         new_model = new_cfg.model
+        if not cfg_changed and auth_changed:
+            # 仅 token 变更，重建 provider（保持模型不变）
+            _log.info("[hot-reload] 检测到 auth-profiles.json 变更，重建 provider")
+            try:
+                await self._provider.close()
+            except Exception:
+                pass
+            for _rp in self._routing_providers.values():
+                try: await _rp.close()
+                except Exception: pass
+            self._cfg = new_cfg
+            self._provider = create_provider(new_cfg)
+            self._judgment = JudgmentLayer(self._provider, self._registry, new_cfg)
+            self._evolution = EvolutionEngine(new_cfg, self._provider, self._registry)
+            self._routing_providers = _build_routing_providers(new_cfg)
+            self._judgment.set_routing_providers(self._routing_providers)
+            console.print("[green]✓ 检测到 token 更新，provider 已重建[/green]")
+            return
         if old_model == new_model:
             # 其他配置变更；静默更新 cfg 引用
             self._cfg = new_cfg
@@ -168,10 +197,15 @@ class CognitionLoop:
             await self._provider.close()
         except Exception:
             pass
+        for _rp in self._routing_providers.values():
+            try: await _rp.close()
+            except Exception: pass
         self._cfg = new_cfg
         self._provider = create_provider(new_cfg)
         self._judgment = JudgmentLayer(self._provider, self._registry, new_cfg)
         self._evolution = EvolutionEngine(new_cfg, self._provider, self._registry)
+        self._routing_providers = _build_routing_providers(new_cfg)
+        self._judgment.set_routing_providers(self._routing_providers)
         console.print(f"[green]✓ 模型热换完成:[/green] {old_model} → [bold cyan]{new_model}[/bold cyan]")
 
     def _make_ctx(self) -> ToolContext:
@@ -188,6 +222,8 @@ class CognitionLoop:
         """打开数据库连接、执行启动引导和状态恢复。interact 模式下替代 run() 前两步。"""
         await self._task_store.open()
         await ensure_models_json(self._cfg)
+        self._routing_providers = _build_routing_providers(self._cfg)
+        self._judgment.set_routing_providers(self._routing_providers)
         await self._soul.bootstrap(self._judgment)
         await self._restore_state_from_db()
 
@@ -196,6 +232,8 @@ class CognitionLoop:
         cfg = self._cfg
 
         await ensure_models_json(cfg)
+        self._routing_providers = _build_routing_providers(cfg)
+        self._judgment.set_routing_providers(self._routing_providers)
         await self._soul.bootstrap(self._judgment)
         await self._restore_state_from_db()
 
@@ -214,7 +252,18 @@ class CognitionLoop:
                 cycle += 1
 
                 try:
-                    await self._tick(cycle)
+                    # 检查是否有待处理的 chat 消息（CLI chat 命令注入）
+                    chat_msg = await self._task_store.pop_pending_chat_message()
+                    if chat_msg:
+                        reply = await self._tick(cycle, user_message=chat_msg["content"])
+                        # 内层循环已兜底兜底 reply；若 tick 意外返回空串，也写一条 ACK 防超时
+                        await self._task_store.add_chat_message(
+                            "assistant",
+                            reply or "（请求已处理，任务正在后台继续）",
+                            chat_msg["session_id"],
+                        )
+                    else:
+                        await self._tick(cycle)
                     consecutive_errors = 0
                 except Exception:
                     consecutive_errors += 1
@@ -225,9 +274,19 @@ class CognitionLoop:
                         )
                         break
 
-                # 自适应 sleep：以情绪唤醒度决定间隔，并按配置控制检查粒度
+                # 自适应 sleep：按决策结果 + 情绪 + 任务状态动态调整
+                # act + 活跃任务 → act_sleep_override（默认 2s）立即续跑，避免任务被 30s 切断
+                # wait + 无任务   → wait_sleep_override（默认 5s）轻量自检
+                # 其他空闲       → interval × multiplier（30-60s）
+                # self._last_decision 由 _tick() 在返回前写入，跨方法边界传递决策结果
                 before = await self._task_store.get_active()
-                if self._emotion.arousal > 0.6 or before is not None:
+                if self._last_decision == "act" and before is not None:
+                    # 有任务、刚执行了动作：短暂等待工具副作用落地后立即进入下一轮
+                    sleep_dur = cfg.loop.act_sleep_override
+                elif self._last_decision == "wait" and before is None and not chat_msg:
+                    # 空闲等待：短间隔快速自检，主要依靠 chat/task 早唤醒机制
+                    sleep_dur = cfg.loop.wait_sleep_override
+                elif self._emotion.arousal > 0.6 or before is not None:
                     sleep_dur = cfg.loop.interval * cfg.loop.active_sleep_multiplier
                 else:
                     sleep_dur = cfg.loop.interval * cfg.loop.idle_sleep_multiplier
@@ -243,6 +302,10 @@ class CognitionLoop:
                     step = min(cfg.loop.wake_poll_interval, sleep_dur - elapsed)
                     await asyncio.sleep(step)
                     elapsed += step
+                    # chat 消息早唤醒：用户发消息时立即结束 sleep 进入下一 tick
+                    if await self._task_store.has_pending_chat_message():
+                        _log.debug("[wake] 检测到 chat 消息，提前唤醒")
+                        break
                     if cfg.loop.wake_on_task_change:
                         now = await self._task_store.get_active()
                         now_sig = (
@@ -259,6 +322,11 @@ class CognitionLoop:
         finally:
             await self._task_store.close()
             await self._provider.close()
+            for _rp in self._routing_providers.values():
+                try:
+                    await _rp.close()
+                except Exception:
+                    pass
 
     async def _tick(self, cycle: int, user_message: str = "") -> str:
         """执行一轮完整认知 tick，返回 reply_to_user（interact 模式时非空）。"""
@@ -427,6 +495,10 @@ class CognitionLoop:
                 cycle, self._ticks_since_judge, cfg.loop.judge_every,
             )
         else:
+            # chat 模式（有用户消息）时用 chat_thinking 覆盖，加速首次 decide()
+            _thinking_override: str | None = None
+            if user_message and cfg.loop.chat_thinking != cfg.thinking:
+                _thinking_override = cfg.loop.chat_thinking
             action = await self._judgment.decide(
                 percept, self._wm, self._task_store, self._episodic, self._semantic, self._emotion,
                 user_message=user_message,
@@ -435,6 +507,7 @@ class CognitionLoop:
                 hard_boundaries=hard_boundaries,
                 perception_replay=perception_replay,
                 cognitive_signals=cognitive_signals,
+                thinking_override=_thinking_override,
             )
             self._ticks_since_judge = 0
 
@@ -446,8 +519,8 @@ class CognitionLoop:
             f"[dim]{_model_tag}[/dim]"
         )
         _log.info(
-            "[loop] tick=%d decision=%s tool=%s rationale=%s",
-            cycle, action.decision, action.chosen_action_id,
+            "[loop] tick=%d decision=%s tool=%s model=%s thinking=%s rationale=%s",
+            cycle, action.decision, action.chosen_action_id, cfg.model, cfg.thinking,
             (action.rationale or "")[:120],
         )
 
@@ -475,6 +548,60 @@ class CognitionLoop:
             _max_chars = int((action.params or {}).get("max_chars") or 4000)
             for _item in self._behavior.on_read(_path, _max_chars, result.summary):
                 self._wm.add(_item)
+
+        # 5b. 内层工具循环（仅 chat/interact 模式：有 user_message 且首轮决策是 act）
+        # 目标：让 LLM 在单次 tick 内连续调用工具直到生成回复，节省 perception 重装 token。
+        # 注意：不判断 reply_to_user——首轮 act 可能包含中间 ACK（如"正在扫描..."），
+        # 内层循环应继续执行工具调用，最终生成的 reply 会覆盖中间 ACK。
+        if user_message and action.decision == "act":
+            _tool_history: list[dict] = [{
+                "tool":   action.chosen_action_id or "",
+                "params": action.params or {},
+                "result": result.summary,
+            }]
+            _affect = {"valence": self._emotion.valence, "arousal": self._emotion.arousal}
+            for _inner in range(cfg.loop.max_tool_rounds - 1):
+                _cont = await self._judgment.decide_continue(_tool_history, user_message=user_message)
+
+                # 内层行为追踪
+                if _cont.decision == "act":
+                    _t = _cont.chosen_action_id or ""
+                    _kp = (_cont.params or {}).get("path") or (_cont.params or {}).get("name") or ""
+                    for _bi in self._behavior.on_act(_t, _kp, str(active_task.id) if active_task else None):
+                        self._wm.add(_bi)
+                _cont = self._behavior.apply_execution_gate(_cont, cognitive_signals)
+                _cont_result = await self._execution.dispatch(_cont, ctx)
+
+                # 内层 WM 写入
+                if _cont_result.summary and not _cont_result.skipped:
+                    _t = _cont.chosen_action_id or ""
+                    _kp2 = (_cont.params or {}).get("path") or (_cont.params or {}).get("name") or (_cont.params or {}).get("title") or ""
+                    _pfx = f"[{_t}{'  ' + _kp2[:40] if _kp2 else ''}] "
+                    self._wm.add(WMItem(kind=_t or _cont_result.kind, content=_pfx + _cont_result.summary, priority=_cont_result.priority))
+                # 内层 rationale → 情节记忆
+                if _cont.rationale:
+                    self._episodic.record(role="assistant", content=f"[inner-{_inner + 1}] {_cont.rationale}",
+                                         task_id=str(active_task.id) if active_task else None, affect=_affect)
+
+                if _cont.decision == "act":
+                    # 无论成功还是报错都追加历史，避免 LLM 重复调同一个失败工具
+                    _result_text = (
+                        f"ERROR: {_cont_result.summary}" if _cont_result.error else _cont_result.summary
+                    )
+                    _tool_history.append({
+                        "tool":   _cont.chosen_action_id or "",
+                        "params": _cont.params or {},
+                        "result": _result_text,
+                    })
+
+                action = _cont
+                result = _cont_result
+                if action.reply_to_user or action.decision != "act":
+                    break
+
+            # 内层循环结束仍无回复时给用户兜底 ACK
+            if not action.reply_to_user:
+                action.reply_to_user = "（已执行完工具链，任务正在后台继续处理）"
 
         # 执行后记忆整合（结晶、WM 注入、情节记录、语义结晶、情绪反写）
         await self._post_tick_memory(action, result, active_task, cycle, user_message)
@@ -760,3 +887,25 @@ class CognitionLoop:
         # 同步感知基准，避免下一轮因 WM 大小骤降产生假预测误差
         self._perception.reset_wm_baseline(len(self._wm))
         _log.info("[consolidate] WM→episodic %d items, WM cleared (bootstrap preserved)", len(items))
+
+
+# ── 模块级辅助函数 ────────────────────────────────────────────────────────────
+
+def _build_routing_providers(cfg: "Config") -> dict:
+    """根据 cfg.routing 构建分层路由 providers 字典。
+
+    routing = {"simple": "bailian/qwen3.6-plus", "complex": "copilot/gpt-5.4"}
+    如果某个 tier 的 model_ref 与主模型相同或未配置，则跳过（避免重复创建连接）。
+    """
+    if not cfg.routing:
+        return {}
+    providers: dict = {}
+    for tier, model_ref in cfg.routing.items():
+        if not model_ref or model_ref == cfg.model:
+            continue
+        try:
+            providers[tier] = create_provider_with_model(cfg, model_ref)
+            _log.info("[routing] tier=%s model=%s", tier, model_ref)
+        except Exception as e:
+            _log.warning("[routing] tier=%s model=%s 创建失败，跳过: %s", tier, model_ref, e)
+    return providers

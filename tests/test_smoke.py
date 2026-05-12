@@ -460,7 +460,7 @@ def test_copilot_gpt5_uses_max_completion_tokens():
     payload = {}
     provider._inject_completion_limits(payload)
 
-    assert payload["max_completion_tokens"] == 16384
+    assert payload["max_completion_tokens"] == 65536  # gpt-5.4 在 models.json 中的 max_tokens
 
 
 def test_copilot_base_url_derives_from_proxy_ep():

@@ -33,7 +33,7 @@ Issues      = "https://github.com/your-org/lingzhou/issues"
 Changelog   = "https://github.com/your-org/lingzhou/blob/main/CHANGELOG.md"
 
 [project.scripts]
-lingzhou = "lingzhou:app"
+lingzhou = "lingzhou:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cli", "core", "memory", "provider", "tools"]

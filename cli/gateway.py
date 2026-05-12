@@ -57,6 +57,46 @@ _GATEWAY_READY = {"local", "webhook"}
 gateway_app = typer.Typer(name="gateway", help="消息网关（Telegram、Webhook 等）", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 
 
+def _kill_existing_loop(quiet: bool = False) -> None:
+    """杀掉 PID 文件中记录的旧进程，等待它真正退出（最长 8s）。"""
+    import time as _t
+    if not _PID_FILE.exists():
+        return
+    pid_str = _PID_FILE.read_text(encoding="utf-8").strip()
+    _PID_FILE.unlink(missing_ok=True)
+    try:
+        old_pid = int(pid_str)
+        os.kill(old_pid, 0)  # 先检查进程是否存在
+    except (ProcessLookupError, ValueError, PermissionError):
+        return  # 进程已不存在，跳过
+
+    if not quiet:
+        console.print(f"[yellow]正在关闭旧进程[/yellow]  PID={old_pid} …")
+    try:
+        os.kill(old_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    # 等待进程退出（最长 8s），避免新进程与旧进程 overlap
+    deadline = _t.monotonic() + 8.0
+    while _t.monotonic() < deadline:
+        _t.sleep(0.3)
+        try:
+            os.kill(old_pid, 0)
+        except ProcessLookupError:
+            if not quiet:
+                console.print(f"[green]旧进程已退出[/green]  PID={old_pid}")
+            return
+
+    # 超时：强制 SIGKILL
+    try:
+        os.kill(old_pid, signal.SIGKILL)
+        if not quiet:
+            console.print(f"[yellow]旧进程未响应 SIGTERM，已发送 SIGKILL[/yellow]  PID={old_pid}")
+    except ProcessLookupError:
+        pass
+
+
 @gateway_app.command("channels")
 def gateway_channels() -> None:
     """列出支持的消息渠道。"""
@@ -148,8 +188,16 @@ def gateway_start(
         raise typer.Exit(1)
 
     if daemon and hasattr(os, "fork"):
+        # 启动前先杀掉旧进程，避免两个 loop 同时运行
+        _kill_existing_loop(quiet=False)
         _daemonize(sys.argv)
         # 子进程从这里继续执行（父进程已退出）
+    else:
+        # 前台模式：检测是否有旧进程，有则拒绝启动
+        _kill_existing_loop(quiet=True)
+        # 前台模式也写 PID，防止并发启动
+        _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
     # 非 local 渠道需要提前 setup
     gw_conf: dict[str, Any] = {}
@@ -193,6 +241,14 @@ def gateway_start(
         asyncio.run(loop_instance.run())
     except KeyboardInterrupt:
         console.print("\n[dim]认知循环已停止。[/dim]")
+    finally:
+        # 前台模式：退出时清理 PID 文件
+        if _PID_FILE.exists():
+            try:
+                if _PID_FILE.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                    _PID_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def run(
