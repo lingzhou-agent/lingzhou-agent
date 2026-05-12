@@ -82,7 +82,7 @@
   },
 
   "copilot": {
-    "base_url": "https://api.githubcopilot.com",
+    "base_url": "https://api.individual.githubcopilot.com",
     "_doc": [
       "copilot 模型的 thinking 通过 reasoning_effort 字符串控制（low/medium/high），",
       "不使用 Qwen 的 enable_thinking/budget_tokens 体系。",

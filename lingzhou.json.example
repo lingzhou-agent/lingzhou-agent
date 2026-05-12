@@ -21,11 +21,14 @@
       "mode": "copilot",
       "_doc": [
         "GitHub Copilot 模型 API（OpenAI 兼容接口）。",
-        "api_key 使用 GitHub PAT 或 Copilot 邑验 token（GITHUB_TOKEN 环境变量）。",
-        "mode=copilot: thinking 由顶层 thinking 字段周期尾 reasoning_effort 字符串自动注入。"
+        "推荐先执行：lingzhou auth login-copilot。",
+        "主链路：GitHub token → Copilot token exchange → Copilot API。",
+        "oauth_client_id 仅作显式 --method device 时的兼容回退。",
+        "mode=copilot: thinking 由顶层 thinking 字段自动注入 reasoning_effort。"
       ],
-      "base_url": "https://api.githubcopilot.com",
-      "api_key_env": "GITHUB_TOKEN"
+      "base_url": "https://api.individual.githubcopilot.com",
+      "api_key_env": "GITHUB_TOKEN",
+      "oauth_client_id": ""
     }
   },
 

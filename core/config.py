@@ -34,7 +34,7 @@ class ProviderDefinition(BaseModel):
     )
     oauth_client_id: str = Field(
         default="",
-        description="GitHub OAuth App Client ID（mode=copilot 时用于 Device Flow 授权）",
+        description="GitHub OAuth App Client ID（仅显式使用 --method device 时作为兼容回退）",
     )
 
     @property
@@ -43,7 +43,7 @@ class ProviderDefinition(BaseModel):
         key = os.environ.get(self.api_key_env, "").strip()
         if key:
             return key
-        # 2. 回退：~/.lingzhou/credentials.json（auth copilot 命令写入）
+        # 2. 回退：~/.lingzhou/credentials.json
         cred_file = Path("~/.lingzhou/credentials.json").expanduser()
         if cred_file.exists():
             try:
@@ -53,11 +53,19 @@ class ProviderDefinition(BaseModel):
                     return stored
             except Exception:
                 pass
+
+        if self.mode == "copilot":
+            raise EnvironmentError(
+                f"未找到 {self.api_key_env!r} 的 GitHub token。\n"
+                "请执行以下任一操作：\n"
+                "  lingzhou auth login-copilot\n"
+                f"  export {self.api_key_env}=your_token"
+            )
+
         raise EnvironmentError(
             f"未找到 {self.api_key_env!r} 的凭证。\n"
             f"请执行以下任一操作：\n"
-            f"  export {self.api_key_env}=your_token\n"
-            f"  python lingzhou.py auth copilot  （交互式授权）"
+            f"  export {self.api_key_env}=your_token"
         )
 
 

@@ -2,7 +2,7 @@
 
 所有命令实现位于 cli/ 子包，按领域分模块：
   cli/task.py     — task-add / task-list
-  cli/soul.py     — setup / init
+  cli/bootstrap.py — setup / init
   cli/interact.py — interact
   cli/dev.py      — evolve / tools / model / update
   cli/diag.py     — version / doctor
@@ -21,7 +21,7 @@ from cli._common import console
 
 # ── 命令实现导入 ──────────────────────────────────────────────────────────────
 from cli.task import task_add, task_list
-from cli.soul import setup, init
+from cli.bootstrap import setup, init
 from cli.interact import interact
 from cli.dev import evolve, tools, model, update
 from cli.diag import version, doctor

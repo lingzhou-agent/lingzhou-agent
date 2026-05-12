@@ -8,7 +8,8 @@ from typing import Annotated
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg, PROJECT_ROOT
+from cli._common import console, load_cfg, PROJECT_ROOT, resolve_config_path
+from auth_store import resolve_copilot_token, AUTH_PROFILES_PATH
 
 
 def version() -> None:
@@ -58,21 +59,23 @@ def doctor(
             console.print(f"  {fail_mark} {dep}  [dim]未安装[/dim]")
             issues.append(f"缺少依赖: {dep}")
 
+    resolved_config = resolve_config_path(config)
+
     # ── 3. 配置文件 ────────────────────────────────────────────────────
-    if config.exists():
+    if resolved_config.exists():
         try:
-            _json.loads(config.read_text(encoding="utf-8"))
-            console.print(f"  {ok_mark} 配置文件: {config}")
+            _json.loads(resolved_config.read_text(encoding="utf-8"))
+            console.print(f"  {ok_mark} 配置文件: {resolved_config}")
         except Exception as e:
             console.print(f"  {fail_mark} 配置文件解析失败: {e}")
             issues.append(f"配置文件无效: {e}")
     else:
-        console.print(f"  {warn_mark} 配置文件不存在: {config}  [dim]运行 lingzhou setup 生成[/dim]")
-        issues.append(f"配置文件缺失: {config}")
+        console.print(f"  {warn_mark} 配置文件不存在: {resolved_config}  [dim]运行 lingzhou setup 生成[/dim]")
+        issues.append(f"配置文件缺失: {resolved_config}")
 
     # ── 4. API Key ──────────────────────────────────────────────────────
     try:
-        cfg = load_cfg(config) if config.exists() else None
+        cfg = load_cfg(config) if resolved_config.exists() else None
     except Exception:
         cfg = None
 
@@ -86,7 +89,21 @@ def doctor(
             pass
 
         if _api_key_env:
-            if os.environ.get(_api_key_env):
+            if getattr(cfg.active_provider, 'mode', '') == 'copilot':
+                resolved = resolve_copilot_token(_api_key_env)
+                if resolved:
+                    if resolved.source.startswith('env:'):
+                        env_name = resolved.source.split(':', 1)[1]
+                        masked = (resolved.token[:6] + '...' + resolved.token[-3:])
+                        console.print(f"  {ok_mark} Copilot token ({env_name}): {masked}")
+                    elif resolved.source == 'auth-profile':
+                        console.print(f"  {ok_mark} Copilot token: 来自 auth profile store  [dim]{AUTH_PROFILES_PATH}[/dim]")
+                    else:
+                        console.print(f"  {ok_mark} Copilot token: 来自 legacy credentials 文件")
+                else:
+                    console.print(f"  {fail_mark} Copilot token: 未设置")
+                    issues.append("Copilot token 未配置: lingzhou auth login-copilot")
+            elif os.environ.get(_api_key_env):
                 masked = (os.environ[_api_key_env][:6] + "..." + os.environ[_api_key_env][-3:])
                 console.print(f"  {ok_mark} API key ({_api_key_env}): {masked}")
             else:

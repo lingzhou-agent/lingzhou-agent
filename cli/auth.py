@@ -1,96 +1,109 @@
-"""cli/auth.py — auth 命令组（GitHub Copilot 凭证授权）。"""
+"""cli/auth.py — auth 命令组（参考 OpenClaw 的 auth profile store）。"""
 from __future__ import annotations
 
-import os
 import subprocess
 import time
-import json as _json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 from rich.panel import Panel
 
 from cli._common import console, load_cfg
+from auth_store import (
+    AUTH_PROFILES_PATH,
+    COPILOT_PROFILE_ID,
+    GITHUB_DEVICE_AUTH_PATH,
+    LEGACY_CREDENTIALS_PATH,
+    get_auth_profile,
+    load_github_device_client_id,
+    load_legacy_credentials,
+    mask_secret,
+    save_legacy_credentials,
+    set_token_profile,
+)
 
 auth_app = typer.Typer(name="auth", help="凭证授权管理")
 
 
-@auth_app.command("copilot")
-def auth_copilot(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
-    force: Annotated[bool, typer.Option("--force/--no-force", help="已有 token 时强制重新授权")] = False,
+def _load_copilot_client_id(config: Path) -> str:
+    client_id = load_github_device_client_id()
+    if client_id:
+        return client_id
+
+    try:
+        cfg = load_cfg(config)
+        pdef = cfg.providers.get("copilot")
+        if pdef:
+            return getattr(pdef, "oauth_client_id", "") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def _store_copilot_token(token: str) -> None:
+    # Canonical store: OpenClaw 风格 auth profile store
+    set_token_profile(profile_id=COPILOT_PROFILE_ID, provider="copilot", token=token)
+
+    # Legacy compatibility: 保留 credentials.json 回退读取能力
+    legacy = load_legacy_credentials()
+    legacy["GITHUB_TOKEN"] = token
+    save_legacy_credentials(legacy)
+
+
+def _login_copilot_impl(
+    config: Path,
+    force: bool,
+    method: Literal["auto", "gh", "device", "token"] = "auto",
+    oauth_client_id: str = "",
 ) -> None:
-    """交互式授权 GitHub Copilot（Device Flow / gh CLI / 手动 PAT）。
-
-    获取的 token 持久化到 ~/.lingzhou/credentials.json，
-    下次启动时 provider 自动读取，无需手动 export GITHUB_TOKEN。
-
-    认证顺序：
-    1. gh CLI（已安装时最简单）
-    2. GitHub OAuth Device Flow（需在 lingzhou.json 配置 oauth_client_id）
-    3. 手动粘贴 Personal Access Token（PAT）
-    """
+    """交互式授权 GitHub Copilot（优先 GitHub token → Copilot token exchange）。"""
     import httpx
 
-    cred_file = Path("~/.lingzhou/credentials.json").expanduser()
-    cred_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # 读取已有凭证
-    existing: dict = {}
-    if cred_file.exists():
-        try:
-            existing = _json.loads(cred_file.read_text(encoding="utf-8"))
-        except Exception:
-            existing = {}
-
-    if existing.get("GITHUB_TOKEN") and not force:
-        console.print("[yellow]已存在 GitHub token（使用 --force 重新授权）[/yellow]")
-        masked = existing["GITHUB_TOKEN"][:8] + "..." + existing["GITHUB_TOKEN"][-4:]
-        console.print(f"  当前 token: [dim]{masked}[/dim]")
-        raise typer.Exit(0)
+    existing = get_auth_profile(COPILOT_PROFILE_ID)
+    if existing and not force:
+        token = str(existing.get("token", "")).strip()
+        if token:
+            console.print("[yellow]已存在 Copilot 登录（使用 --force 重新授权）[/yellow]")
+            console.print(f"  profile: [dim]{COPILOT_PROFILE_ID}[/dim]")
+            console.print(f"  token:   [dim]{mask_secret(token)}[/dim]")
+            raise typer.Exit(0)
 
     token: str = ""
 
     # ── 路径 1：gh CLI ──────────────────────────────────────────────────
-    console.print("\n[bold]尝试路径 1/3：gh CLI[/bold]")
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "token"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if result.returncode == 0:
-            token = result.stdout.strip()
-            if token:
-                console.print(f"[green]✓ 通过 gh CLI 获取 token[/green]")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        console.print("  gh CLI 未找到，跳过")
-
-    # ── 路径 2：GitHub OAuth Device Flow ───────────────────────────────
-    if not token:
-        console.print("\n[bold]尝试路径 2/3：GitHub OAuth Device Flow[/bold]")
-
-        # 读取 client_id：lingzhou.json → 环境变量
-        client_id = ""
+    if method in ("auto", "gh"):
+        console.print("\n[bold]尝试路径 1/2：gh CLI[/bold]")
         try:
-            cfg = load_cfg(config)
-            pdef = cfg.active_provider
-            client_id = getattr(pdef, "oauth_client_id", "") or ""
-        except Exception:
-            pass
-        if not client_id:
-            client_id = os.environ.get("LINGZHOU_GITHUB_CLIENT_ID", "").strip()
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                token = result.stdout.strip()
+                if token:
+                    console.print("[green]✓ 通过 gh CLI 获取 GitHub token[/green]")
+            elif method == "gh":
+                console.print(f"[red]gh CLI 返回非 0：{result.returncode}[/red]")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            console.print("  gh CLI 未找到，跳过")
 
+    # ── 可选路径：GitHub OAuth Device Flow（仅显式指定时使用） ───────────
+    if not token and method == "device":
+        console.print("\n[bold]可选路径：GitHub OAuth Device Flow[/bold]")
+        client_id = oauth_client_id.strip() or _load_copilot_client_id(config)
         if not client_id:
             console.print(
-                "  [dim]未配置 oauth_client_id，跳过 Device Flow。\n"
-                "  如需使用 Device Flow，请在 lingzhou.json 的 providers.copilot 节\n"
-                "  添加: \"oauth_client_id\": \"<your_github_oauth_app_client_id>\"\n"
-                "  或设置环境变量: export LINGZHOU_GITHUB_CLIENT_ID=Iv1.xxxx[/dim]"
+                "  [yellow]当前构建还没有内置 Lingzhou 自己的 GitHub OAuth App client_id，"
+                "因此 Device Flow 的交互链已就位，但还差 app registration 这一步。[/yellow]\n"
+                f"  [dim]临时覆盖方式：\n"
+                f"  1. --oauth-client-id Iv1.xxxx\n"
+                f"  2. export LINGZHOU_GITHUB_CLIENT_ID=Iv1.xxxx\n"
+                f"  3. 写入 {GITHUB_DEVICE_AUTH_PATH}：{{\"client_id\": \"Iv1.xxxx\"}}\n"
+                f"  4. 兼容旧配置：providers.copilot.oauth_client_id[/dim]"
             )
         else:
             try:
-                # 1. 请求 device code
                 resp = httpx.post(
                     "https://github.com/login/device/code",
                     headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
@@ -102,30 +115,27 @@ def auth_copilot(
                 if "error" in dc:
                     raise RuntimeError(dc.get("error_description", dc["error"]))
 
-                user_code: str = dc["user_code"]
-                device_code: str = dc["device_code"]
-                verification_uri: str = dc["verification_uri"]
-                expires_in: int = int(dc["expires_in"])
-                interval_s: int = max(5, int(dc.get("interval", 5)))
+                user_code = dc["user_code"]
+                device_code = dc["device_code"]
+                verification_uri = dc["verification_uri"]
+                expires_in = int(dc["expires_in"])
+                interval_s = max(5, int(dc.get("interval", 5)))
 
-                # 2. 显示验证码
                 console.print(Panel(
                     f"[bold]访问以下网址并输入验证码：[/bold]\n\n"
                     f"  网址: [link]{verification_uri}[/link]\n"
                     f"  验证码: [bold yellow]{user_code}[/bold yellow]\n\n"
                     f"  [dim]（{expires_in}s 内有效）[/dim]",
                     border_style="cyan",
-                    title="GitHub 授权",
+                    title="GitHub Copilot 授权",
                 ))
 
-                # 尝试自动打开浏览器（best-effort）
                 try:
                     import webbrowser
                     webbrowser.open(verification_uri)
                 except Exception:
                     pass
 
-                # 3. 轮询 token
                 expires_at = time.time() + expires_in
                 console.print("[dim]等待 GitHub 授权...[/dim]")
                 while time.time() < expires_at:
@@ -163,25 +173,59 @@ def auth_copilot(
             except Exception as exc:
                 console.print(f"  Device Flow 失败: {exc}")
 
-    # ── 路径 3：手动粘贴 PAT ───────────────────────────────────────────
-    if not token:
-        console.print("\n[bold]路径 3/3：手动输入 Personal Access Token[/bold]")
+    # ── 路径 2：手动粘贴 GitHub token ─────────────────────────────────
+    if not token and method in ("auto", "token"):
+        console.print("\n[bold]路径 2/2：手动输入 GitHub token[/bold]")
         console.print(
-            "  [dim]在 https://github.com/settings/tokens 创建 PAT，\n"
-            "  建议勾选 read:user 权限（Copilot API 最低要求）[/dim]"
+            "  [dim]Lingzhou 的 Copilot 主链路是：GitHub token → Copilot token exchange → Copilot API。\n"
+            "  优先使用 gh auth token、GitHub OAuth token，或其他可成功访问\n"
+            "  https://api.github.com/copilot_internal/v2/token 的 GitHub token。[/dim]"
         )
-        token = typer.prompt("  粘贴 GitHub PAT", hide_input=True).strip()
+        token = typer.prompt("  粘贴 GitHub token", hide_input=True).strip()
 
     if not token:
         console.print("[red]未获取到 token，授权失败[/red]")
         raise typer.Exit(1)
 
-    # ── 持久化 ─────────────────────────────────────────────────────────
-    existing["GITHUB_TOKEN"] = token
-    cred_file.write_text(
-        _json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
+    _store_copilot_token(token)
+    console.print(
+        f"\n[green]✓ Copilot 登录信息已保存[/green]\n"
+        f"  auth profiles: [dim]{AUTH_PROFILES_PATH}[/dim]\n"
+        f"  legacy compat: [dim]{LEGACY_CREDENTIALS_PATH}[/dim]\n"
+        f"  profile:       [dim]{COPILOT_PROFILE_ID}[/dim]\n"
+        f"  token:         [dim]{mask_secret(token)}[/dim]"
     )
-    cred_file.chmod(0o600)  # 仅 owner 可读
-    masked = token[:8] + "..." + token[-4:]
-    console.print(f"\n[green]✓ token 已保存: {cred_file}[/green]  [dim]{masked}[/dim]")
-    console.print("  下次运行 lingzhou 时自动使用，无需 export GITHUB_TOKEN")
+
+
+@auth_app.command("login-copilot")
+def auth_login_copilot(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    force: Annotated[bool, typer.Option("--force/--no-force", help="已有 token 时强制重新授权")] = False,
+    method: Annotated[
+        Literal["auto", "gh", "device", "token"],
+        typer.Option("--method", help="授权方式：auto | gh | device | token"),
+    ] = "auto",
+    oauth_client_id: Annotated[
+        str,
+        typer.Option("--oauth-client-id", help="GitHub OAuth App Client ID（仅 --method device 时使用）"),
+    ] = "",
+) -> None:
+    """专用 Copilot 登录命令（默认走 GitHub token → Copilot token exchange）。"""
+    _login_copilot_impl(config, force, method=method, oauth_client_id=oauth_client_id)
+
+
+@auth_app.command("copilot")
+def auth_copilot(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    force: Annotated[bool, typer.Option("--force/--no-force", help="已有 token 时强制重新授权")] = False,
+    method: Annotated[
+        Literal["auto", "gh", "device", "token"],
+        typer.Option("--method", help="授权方式：auto | gh | device | token"),
+    ] = "auto",
+    oauth_client_id: Annotated[
+        str,
+        typer.Option("--oauth-client-id", help="GitHub OAuth App Client ID（仅 --method device 时使用）"),
+    ] = "",
+) -> None:
+    """Copilot 登录的兼容别名。"""
+    _login_copilot_impl(config, force, method=method, oauth_client_id=oauth_client_id)

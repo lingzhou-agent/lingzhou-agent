@@ -404,3 +404,86 @@ def test_cognition_loop_init():
         loop = CognitionLoop(cfg)
         assert loop.semantic.decay_lambda == cfg.memory.semantic_decay_lambda
         assert loop.episodic.max_events == cfg.memory.max_events
+
+
+def test_auth_store_profile_roundtrip(tmp_path):
+    from auth_store import load_auth_profiles, set_token_profile
+
+    path = tmp_path / "auth-profiles.json"
+    set_token_profile(profile_id="copilot:default", provider="copilot", token="tok-123456", path=path)
+    data = load_auth_profiles(path)
+    assert data["version"] == 1
+    assert data["profiles"]["copilot:default"]["provider"] == "copilot"
+    assert data["profiles"]["copilot:default"]["token"] == "tok-123456"
+
+
+def test_copilot_token_resolution_prefers_auth_profile(monkeypatch, tmp_path):
+    from auth_store import resolve_copilot_token, set_token_profile, save_legacy_credentials
+
+    monkeypatch.setenv("GH_TOKEN", "env-gh-token")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    set_token_profile(profile_id="copilot:default", provider="copilot", token="profile-token", path=tmp_path / "auth-profiles.json")
+    save_legacy_credentials({"GITHUB_TOKEN": "legacy-token"}, path=tmp_path / "credentials.json")
+
+    import auth_store as auth_mod
+    monkeypatch.setattr(auth_mod, "AUTH_PROFILES_PATH", tmp_path / "auth-profiles.json")
+    monkeypatch.setattr(auth_mod, "LEGACY_CREDENTIALS_PATH", tmp_path / "credentials.json")
+
+    resolved = resolve_copilot_token()
+    assert resolved is not None
+    assert resolved.token == "profile-token"
+    assert resolved.source == "auth-profile"
+
+
+def test_github_device_client_id_prefers_env(monkeypatch, tmp_path):
+    import json
+    import auth_store as auth_mod
+
+    state_file = tmp_path / "github-device.json"
+    state_file.write_text(json.dumps({"client_id": "Iv1.file-client"}), encoding="utf-8")
+
+    monkeypatch.setattr(auth_mod, "GITHUB_DEVICE_AUTH_PATH", state_file)
+    monkeypatch.setenv("LINGZHOU_GITHUB_CLIENT_ID", "Iv1.env-client")
+
+    assert auth_mod.load_github_device_client_id() == "Iv1.env-client"
+
+
+def test_copilot_gpt5_uses_max_completion_tokens():
+    from provider.openai_compat import OpenAICompatProvider
+
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider._provider_mode = "copilot"
+    provider._model = "gpt-5.4"
+
+    payload = {}
+    provider._inject_completion_limits(payload)
+
+    assert payload["max_completion_tokens"] == 16384
+
+
+def test_copilot_base_url_derives_from_proxy_ep():
+    from provider.openai_compat import _derive_copilot_api_base_url_from_token
+
+    token = "ghu_xxx; proxy-ep=proxy.business.githubcopilot.com; tid=abc"
+    assert _derive_copilot_api_base_url_from_token(token) == "https://api.business.githubcopilot.com"
+
+
+def test_copilot_normalize_base_url_uses_openclaw_default():
+    from provider.openai_compat import _normalize_copilot_api_base_url, DEFAULT_COPILOT_API_BASE_URL
+
+    assert _normalize_copilot_api_base_url("") == DEFAULT_COPILOT_API_BASE_URL
+    assert _normalize_copilot_api_base_url("https://api.githubcopilot.com") == DEFAULT_COPILOT_API_BASE_URL
+
+
+def test_login_copilot_help_is_registered():
+    from typer.testing import CliRunner
+    from lingzhou import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["auth", "login-copilot", "--help"])
+    assert result.exit_code == 0
+    assert "专用 Copilot 登录命令" in result.stdout
+    assert "--method" in result.stdout
+    assert "--oauth-client-id" in result.stdout

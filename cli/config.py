@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 import typer
 
-from cli._common import console
+from cli._common import console, resolve_config_path
 
 config_app = typer.Typer(name="config", help="配置文件管理", no_args_is_help=True)
 
@@ -18,6 +18,7 @@ def config_get(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
 ) -> None:
     """读取配置文件中某个键的值。"""
+    config = resolve_config_path(config)
     if not config.exists():
         console.print(f"[red]配置文件不存在: {config}[/red]")
         raise typer.Exit(1)
@@ -41,6 +42,7 @@ def config_set(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
 ) -> None:
     """修改配置文件中某个键的值（支持点号嵌套路径）。"""
+    config = resolve_config_path(config)
     if not config.exists():
         console.print(f"[red]配置文件不存在: {config}[/red]")
         raise typer.Exit(1)

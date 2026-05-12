@@ -48,7 +48,7 @@ console = Console()
 # WM 优先级具名常量（集中定义，避免散落魔数）
 _WM_PRI_SIGNAL   = 0.90   # 调度信号、执行成功结果
 _WM_PRI_HISTORY  = 0.88   # 近期对话历史
-_WM_PRI_IDENTITY = 0.85   # 身份/Soul 文件（soul.py 同步使用）
+_WM_PRI_IDENTITY = 0.85   # 身份/Soul 文件（bootstrap/init 与 core.soul 同步使用）
 _WM_PRI_ERROR    = 0.30   # 工具失败结果
 
 # P1-B: reflection → 情绪效价的关键词启发式推断（模块级，无 LLM 依赖）

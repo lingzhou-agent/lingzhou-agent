@@ -1,4 +1,4 @@
-"""cli/soul.py — setup / init 命令（灵魂播种与配置向导）。"""
+"""cli/bootstrap.py — setup / init 命令（冷启动引导与播种）。"""
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +40,7 @@ def setup(
         },
         "copilot": {
             "mode": "copilot",
-            "base_url": "https://api.githubcopilot.com",
+            "base_url": "https://api.individual.githubcopilot.com",
             "api_key_env": "GITHUB_TOKEN",
         },
     }
@@ -189,7 +189,7 @@ def init(
     """初始化 lingzhou 运行环境（创建 DB、播种 soul、写 workspace 镜像文件）。
 
     soul 名称和所有默认值均来自 lingzhou.json 的 soul 配置节。
-    如果尚未创建 lingzhou.json，请先运行: python lingzhou.py setup
+    如果尚未创建 lingzhou.json，请先运行: lingzhou setup
     """
     cfg = load_cfg(config)
 

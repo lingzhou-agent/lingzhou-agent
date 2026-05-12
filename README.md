@@ -138,6 +138,21 @@ DASHSCOPE_API_KEY=sk-xxx lingzhou run
 DASHSCOPE_API_KEY=sk-xxx lingzhou interact
 ```
 
+**Copilot GitHub token login | Copilot GitHub token 登录**
+
+```bash
+# 1) 默认主链：GitHub token → Copilot token exchange → Copilot API
+lingzhou auth login-copilot
+
+# 2) 也可以先准备环境变量，再直接运行
+#    export GH_TOKEN=***
+#    export GITHUB_TOKEN=***
+
+# 3) 切到 Copilot GPT-5.4 + high reasoning
+#    model:    copilot/gpt-5.4
+#    thinking: high
+```
+
 **Configuration | 配置**
 
 Copy `lingzhou.json.example` to `lingzhou.json` and edit:
