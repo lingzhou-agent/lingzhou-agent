@@ -74,24 +74,29 @@ class ProviderDefinition(BaseModel):
 
 
 class LoopConfig(BaseModel):
-    interval: int = Field(default=30, ge=1, description="轮询间隔（秒）")
-    wake_poll_interval: float = Field(default=1.0, gt=0, description="睡眠期间的状态检查粒度（秒）")
-    active_sleep_multiplier: float = Field(default=1.0, gt=0, description="激活态下的睡眠倍率")
-    idle_sleep_multiplier: float = Field(default=2.0, gt=0, description="空闲态下的睡眠倍率")
-    wait_sleep_override: float = Field(
-        default=5.0, gt=0,
-        description=(
-            "wait 决策后（空闲、无任务）的快速检查间隔（秒）；覆盖 interval×multiplier。"
-            "让 loop 在等待期间以较低频率自检，减少资源浪费，同时保持对 chat/task 事件的响应性。"
-        ),
-    )
-    act_sleep_override: float = Field(
+    # ── 事件驱动时序（替代固定 interval 概念）───────────────────────────────
+    # 设计依据：
+    #   Friston Active Inference (2010/2017)：认知循环由自由能（预测误差）阈值驱动，
+    #   而非时钟节拍。Global Workspace Theory (Baars 1988)：注意广播是事件触发，
+    #   非周期轮询。SOAR / ACT-R：产生式持续激活，只在无匹配时挂起。
+    #   → 灵舟应以"事件到达"而非"定时唤醒"作为认知节律的主驱动。
+    min_act_gap: float = Field(
         default=2.0, gt=0,
         description=(
-            "act 决策 + 有活跃任务时的连续推进间隔（秒）；默认 2s，让工具副作用短暂落地后立即进入下一认知轮。"
-            "避免任务执行期间被 30s 间隔人为切断，让灵舟能连续思考和行动。"
+            "act 决策 + 有活跃任务后的最短间隔（秒）。让工具副作用短暂落地再进入下一认知轮，"
+            "避免无限紧循环。不等固定 interval，执行中的任务可连续推进。"
         ),
     )
+    max_idle_gap: int = Field(
+        default=60, ge=5,
+        description=(
+            "空闲（无任务、无 chat、无外部事件）时的最长等待上限（秒），默认 60s。"
+            "此值不是固定节拍，而是事件驱动等待的超时兜底：chat 消息、task 状态变化、"
+            "heartbeat 任一事件发生即立即唤醒，不等满此值。"
+            "原 interval×multiplier 体系已废弃，用此字段替代。"
+        ),
+    )
+    wake_poll_interval: float = Field(default=0.5, gt=0, description="事件轮询粒度（秒），越小响应越快但 CPU 开销越高")
     wake_on_task_change: bool = Field(default=True, description="任务状态变化时是否提前唤醒")
     chat_reply_timeout: int = Field(
         default=300, ge=30,
@@ -105,8 +110,18 @@ class LoopConfig(BaseModel):
         default="low",
         description=(
             "chat/interact 模式（有用户消息）时的 thinking 等级覆盖。"
-            "可选: off | minimal | low | medium | high（与顶层 thinking 字段同义）。"
+            "可选: off | minimal | low | medium | high。"
             "独立配置使 chat 模式在保留基本推理的同时大幅降低首次 decide() 耗时（40-60s → 3-10s）。"
+        ),
+    )
+    autonomous_thinking: str = Field(
+        default="medium",
+        description=(
+            "自主认知循环（无用户消息）时的 thinking 等级覆盖。"
+            "可选: off | minimal | low | medium | high。"
+            "日志分析显示 thinking=high 导致每 tick 耗时 40-90s，严重阻塞 chat 响应（用户消息"
+            "必须等当前 LLM 调用完成才能被处理）。medium 约 10-20s，在推理质量与响应性间取得平衡。"
+            "复杂推理（evolution、ethos 反思）仍可单独配置为 high。"
         ),
     )
     db_path: str = "~/.lingzhou/state/runtime.db"

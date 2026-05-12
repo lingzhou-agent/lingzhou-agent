@@ -239,7 +239,7 @@ class CognitionLoop:
 
         console.print(Panel(
             f"[bold green]lingzhou[/bold green] 启动\n"
-            f"provider={cfg.model}  interval={cfg.loop.interval}s  "
+            f"provider={cfg.model}  idle_gap={cfg.loop.max_idle_gap}s  "
             f"act={'yes' if cfg.loop.act else 'dry-run'}",
             title="🌱 认知循环"
         ))
@@ -274,49 +274,15 @@ class CognitionLoop:
                         )
                         break
 
-                # 自适应 sleep：按决策结果 + 情绪 + 任务状态动态调整
-                # act + 活跃任务 → act_sleep_override（默认 2s）立即续跑，避免任务被 30s 切断
-                # wait + 无任务   → wait_sleep_override（默认 5s）轻量自检
-                # 其他空闲       → interval × multiplier（30-60s）
-                # self._last_decision 由 _tick() 在返回前写入，跨方法边界传递决策结果
-                before = await self._task_store.get_active()
-                if self._last_decision == "act" and before is not None:
-                    # 有任务、刚执行了动作：短暂等待工具副作用落地后立即进入下一轮
-                    sleep_dur = cfg.loop.act_sleep_override
-                elif self._last_decision == "wait" and before is None and not chat_msg:
-                    # 空闲等待：短间隔快速自检，主要依靠 chat/task 早唤醒机制
-                    sleep_dur = cfg.loop.wait_sleep_override
-                elif self._emotion.arousal > 0.6 or before is not None:
-                    sleep_dur = cfg.loop.interval * cfg.loop.active_sleep_multiplier
+                # 事件驱动时序（Active Inference 理念：由事件/预测误差驱动，而非时钟节拍）
+                # act + 有任务 → min_act_gap（2s）让工具副作用落地，立即续跑
+                # 其他         → _wait_for_event()，chat/task/heartbeat 任一事件即唤醒
+                after_task = await self._task_store.get_active()
+                if self._last_decision == "act" and after_task is not None:
+                    await asyncio.sleep(cfg.loop.min_act_gap)
                 else:
-                    sleep_dur = cfg.loop.interval * cfg.loop.idle_sleep_multiplier
-
-                # 事件驱动早唤醒：保留心跳节奏，但任务状态变化时不等满周期
-                before_sig = (
-                    before.id if before else None,
-                    before.status if before else None,
-                    before.priority if before else None,
-                )
-                elapsed = 0.0
-                while elapsed < sleep_dur:
-                    step = min(cfg.loop.wake_poll_interval, sleep_dur - elapsed)
-                    await asyncio.sleep(step)
-                    elapsed += step
-                    # chat 消息早唤醒：用户发消息时立即结束 sleep 进入下一 tick
-                    if await self._task_store.has_pending_chat_message():
-                        _log.debug("[wake] 检测到 chat 消息，提前唤醒")
-                        break
-                    if cfg.loop.wake_on_task_change:
-                        now = await self._task_store.get_active()
-                        now_sig = (
-                            now.id if now else None,
-                            now.status if now else None,
-                            now.priority if now else None,
-                        )
-                        if now_sig != before_sig:
-                            _log.info("[wake] task state changed: %s -> %s", before_sig, now_sig)
-                            break
-                # sleep 结束后检测配置变更（模型热换）
+                    await self._wait_for_event(cfg.loop.max_idle_gap, after_task)
+                # 事件驱动等待结束后检测配置变更（模型热换）
                 await self._maybe_hot_reload_provider()
                 cfg = self._cfg  # 可能已更新
         finally:
@@ -327,6 +293,38 @@ class CognitionLoop:
                     await _rp.close()
                 except Exception:
                     pass
+
+    async def _wait_for_event(self, max_wait: float, before_task) -> None:
+        """事件驱动等待：chat 消息、task 状态变化、超时三类事件任一发生即唤醒。
+
+        设计依据（Active Inference / Global Workspace Theory）：
+        认知唤醒由外部事件或内部预测误差阈值驱动，而非固定时钟节拍。
+        max_wait 是兜底超时（防止永久沉睡），不是轮询周期。
+        """
+        cfg = self._cfg
+        poll = cfg.loop.wake_poll_interval
+        before_sig = (
+            before_task.id if before_task else None,
+            before_task.status if before_task else None,
+        )
+        deadline = asyncio.get_event_loop().time() + max_wait
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(poll, remaining))
+            # 事件1：chat 消息到达 → 立即唤醒处理用户输入
+            if await self._task_store.has_pending_chat_message():
+                _log.debug("[wake] chat 消息到达，提前唤醒")
+                break
+            # 事件2：task 状态变化 → 立即响应任务推进
+            if cfg.loop.wake_on_task_change:
+                now = await self._task_store.get_active()
+                now_sig = (now.id if now else None, now.status if now else None)
+                if now_sig != before_sig:
+                    _log.info("[wake] task 状态变化 %s → %s", before_sig, now_sig)
+                    break
+            # 事件3：max_wait 超时 → 自主思考节律兜底（60s 默认，非固定 30s）
 
     async def _tick(self, cycle: int, user_message: str = "") -> str:
         """执行一轮完整认知 tick，返回 reply_to_user（interact 模式时非空）。"""
@@ -495,10 +493,17 @@ class CognitionLoop:
                 cycle, self._ticks_since_judge, cfg.loop.judge_every,
             )
         else:
-            # chat 模式（有用户消息）时用 chat_thinking 覆盖，加速首次 decide()
+            # thinking 覆盖：
+            #   有用户消息 → chat_thinking（默认 low，~3-10s，保证响应性）
+            #   自主循环   → autonomous_thinking（默认 medium，~10-20s，平衡质量与速度）
+            #   两者均与顶层 thinking 相同时不传 override（保持原有行为）
             _thinking_override: str | None = None
-            if user_message and cfg.loop.chat_thinking != cfg.thinking:
-                _thinking_override = cfg.loop.chat_thinking
+            if user_message:
+                if cfg.loop.chat_thinking != cfg.thinking:
+                    _thinking_override = cfg.loop.chat_thinking
+            else:
+                if cfg.loop.autonomous_thinking != cfg.thinking:
+                    _thinking_override = cfg.loop.autonomous_thinking
             action = await self._judgment.decide(
                 percept, self._wm, self._task_store, self._episodic, self._semantic, self._emotion,
                 user_message=user_message,
