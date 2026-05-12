@@ -1,4 +1,4 @@
-# lingzhou-py 文档索引
+# lingzhou 文档索引
 
 lingzhou 是一个**数字生命种子**，不是普通聊天 wrapper 或工具编排器。
 

@@ -243,4 +243,4 @@ decay_factor = meta.get('decay_factor', 1.0)
 对于**已知类型**的新列（如 `task.context`），在 `_migrate()` 中自动检测并 ADD COLUMN，  
 只需在 schema 字符串里声明，不需要写单独迁移脚本。
 
-lingzhou-py 当前 `_migrate()` 已实现此模式。详见 `schema-evolution.md`。
+`_migrate()` 已实现此模式。详见 `schema-evolution.md`。

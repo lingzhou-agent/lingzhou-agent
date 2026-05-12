@@ -30,8 +30,6 @@ lingzhou 在判断前先查询技能注册表，将匹配到的技能注入为 `
 
 ## 3. 5 个内置技能
 
-参考 lingzhou-go 的 `skill/registry.go`，Python 实现保留同等语义：
-
 ### 3.1 `runtime.bootstrap`
 - **激活条件**：冷启动（无活跃任务，无历史失败记录）
 - **指导内容**：读取 BOOTSTRAP.md → 识别 workspace 状态 → 提出第一个任务目标
