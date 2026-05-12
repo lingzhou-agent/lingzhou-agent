@@ -85,6 +85,13 @@ class LoopConfig(BaseModel):
     evolve_every: int = Field(default=30, ge=1, description="每 N 轮自进化检查")
     max_consecutive_errors: int = Field(default=5, ge=1, description="连续错误上限后暂停")
     heartbeat_interval: int = Field(default=1800, ge=60, description="心跳自检信号触发间隔（秒，默认 30 分钟）")
+    judge_every: int = Field(
+        default=1, ge=1,
+        description=(
+            "按请求计费优化：空闲（无活跃任务、无用户消息）时每 N 轮才真正调用 LLM 判断。"
+            "有任务或用户消息时忽略此设置，始终调用。默认 1 = 每轮都调（无聚合）。"
+        ),
+    )
 
 
 class PromptsConfig(BaseModel):
@@ -242,6 +249,14 @@ class Config(BaseModel):
             "已收录模型（如 qwen3.6-plus）省略此项，系统从内置目录自动推断。"
         ),
     )
+    max_judgment_input_tokens: int | None = Field(
+        default=None, ge=256,
+        description=(
+            "按 token 计费优化：强制限制每次 LLM 调用的输入 token 上限。"
+            "低于模型上下文窗口自动推断值时生效，超过则忽略（不会扩大预算）。"
+            "建议范围：4000–16000。默认 None = 由模型窗口自动推断。"
+        ),
+    )
 
     # ── 其他配置节 ────────────────────────────────────────────────────────
     loop: LoopConfig = Field(default_factory=LoopConfig)
@@ -339,7 +354,11 @@ class Config(BaseModel):
 
         # 不把输出预留暴露成配置项：不同模型窗口差异大，输入预算用固定比例更稳定。
         output_reserve = max(1024, context_window // 4)
-        return context_window - output_reserve
+        budget = context_window - output_reserve
+        # 按 token 计费优化：若显式设置了上限，取两者较小值（不允许超出模型窗口）
+        if self.max_judgment_input_tokens is not None:
+            budget = min(budget, self.max_judgment_input_tokens)
+        return budget
 
     def load_prompt(self, key: str) -> str:
         """按 key（对应 PromptsConfig 字段名）加载提示词文件内容。"""

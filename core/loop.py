@@ -129,6 +129,8 @@ class CognitionLoop:
         self._conv_history: deque[tuple[str, str]] = deque(maxlen=6)
         # 心跳计时（monotonic，独立于用户 cron，不存 DB）
         self._last_heartbeat_at: float = 0.0
+        # 按请求计费聚合：追踪距上次真正调用 LLM 已经过了几轮
+        self._ticks_since_judge: int = 0
 
     @property
     def semantic(self) -> SemanticMemory:
@@ -364,15 +366,40 @@ class CognitionLoop:
         # 好奇心驱动的确定性任务生成（空闲 + 高好奇心 → 自动探索任务）
         if active_task is None:
             await self._maybe_curiosity_task(ethos_state)
-        action = await self._judgment.decide(
-            percept, self._wm, self._task_store, self._episodic, self._semantic, self._emotion,
-            user_message=user_message,
-            ethos_state=ethos_state,
-            judgment_signals=signals,
-            hard_boundaries=hard_boundaries,
-            perception_replay=perception_replay,
-            cognitive_signals=cognitive_signals,
+
+        # 按请求计费聚合门控：
+        # 仅在空闲（无活跃任务、无用户消息、WM 中无高优先级外部信号）且 judge_every > 1 时生效。
+        # 有任务或有用户消息时始终调用 LLM，不受此限制。
+        _has_external_signal = any(
+            item.get("kind") in ("heartbeat", "scheduler") for item in self._wm.get_top(20)
         )
+        _skip_llm = (
+            cfg.loop.judge_every > 1
+            and not user_message
+            and active_task is None
+            and not _has_external_signal
+            and self._ticks_since_judge < cfg.loop.judge_every - 1
+        )
+        if _skip_llm:
+            self._ticks_since_judge += 1
+            action = JudgmentOutput.wait(
+                reason=f"[按请求聚合] 空闲跳过 LLM（{self._ticks_since_judge}/{cfg.loop.judge_every}）"
+            )
+            _log.debug(
+                "[loop] tick=%d 跳过 LLM 判断（聚合 %d/%d）",
+                cycle, self._ticks_since_judge, cfg.loop.judge_every,
+            )
+        else:
+            action = await self._judgment.decide(
+                percept, self._wm, self._task_store, self._episodic, self._semantic, self._emotion,
+                user_message=user_message,
+                ethos_state=ethos_state,
+                judgment_signals=signals,
+                hard_boundaries=hard_boundaries,
+                perception_replay=perception_replay,
+                cognitive_signals=cognitive_signals,
+            )
+            self._ticks_since_judge = 0
 
         # 决策结果输出到 stdout
         console.print(
