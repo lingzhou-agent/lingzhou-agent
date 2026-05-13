@@ -176,38 +176,9 @@ class BehaviorTracker:
         action: "JudgmentOutput",
         cognitive_signals: Any | None,
     ) -> "JudgmentOutput":
-        """执行前的确定性尺底门控：重复循环时强制 wait，减少对 prompt 遵守的单点依赖。
+        """执行前门控（当前无硬拦截）。
 
-        repeat_action_count 语义：从 1 开始计（第 1 次出现）。
-          count=3 = 上一轮 tick 已连续 3 次该工具，WMItem 已注入预警。
-          此处 >= 3 意味 LLM 看到预警后仍重复（第 4 次及以后），强制 wait 兼底。
+        所有重复行为预警均通过 WMItem 注入工作记忆，由 LLM 根据执行结果自主判断是否改变策略。
+        保留此方法作为未来扩展点（如需针对特定系统级死锁场景补充兜底）。
         """
-        from core.judgment import JudgmentOutput
-
-        if not cognitive_signals:
-            return action
-
-        tool_id = action.chosen_action_id or ""
-        repeat_action_count = int(getattr(cognitive_signals, "repeat_action_count", 0) or 0)
-        repeat_action_tool = str(getattr(cognitive_signals, "repeat_action_tool", "") or "")
-        repeat_read_count = int(getattr(cognitive_signals, "repeat_read_count", 0) or 0)
-        repeat_read_path = str(getattr(cognitive_signals, "repeat_read_path", "") or "")
-
-        # 只对真正会造成死锁的工具做硬门控（task.advance/update 幂等失败会无限重试）
-        # 其余工具（shell.run / file.read / file.list 等）的重复预警由 WMItem 注入，
-        # 交由 LLM 根据执行结果自主判断，不在代码层强制拦截。
-        if (
-            repeat_action_count >= 3
-            and repeat_action_tool in {"task.advance", "task.update"}
-            and tool_id in {"task.advance", "task.update"}
-        ):
-            return JudgmentOutput.wait(
-                reason=(
-                    f"[反循环门控] 已连续 {repeat_action_count} 次调用 {repeat_action_tool}，"
-                    "本轮强制进入 wait 状态。\n"
-                    "必须改变策略：先通过 task.list 确认任务当前真实状态，"
-                    "再决定下一步行动；不要直接再次调用 task.advance/update。"
-                )
-            )
-
         return action
