@@ -41,11 +41,12 @@ def test_emotion_state_ema():
 
 def test_judgment_output_parse():
     from core.judgment import JudgmentOutput
-    raw = '```json\n{"decision":"act","chosen_action_id":"shell.run","params":{"command":"echo hi"},"rationale":"test","reflection":"洞察","next_step":"done"}\n```'
+    raw = '```json\n{"decision":"act","chosen_action_id":"shell.run","params":{"command":"echo hi"},"rationale":"test","reflection":"洞察","next_step":"done","model_strategy":{"next_phase_tier":"reader","reason":"先低成本扩图"}}\n```'
     out = JudgmentOutput.from_llm(raw)
     assert out.decision == "act"
     assert out.chosen_action_id == "shell.run"
     assert out.reflection == "洞察"
+    assert out.model_strategy["next_phase_tier"] == "reader"
 
 
 def test_judgment_context_budget_trims_low_priority_sections():
@@ -81,6 +82,41 @@ def test_judgment_context_budget_trims_low_priority_sections():
     assert len(budgeted["memories_section"]) <= len(ctx["memories_section"])
     assert len(budgeted["episodic_section"]) <= len(ctx["episodic_section"])
     assert len(budgeted["wm_section"]) <= len(ctx["wm_section"])
+
+
+def test_judgment_error_classification_and_cooldown():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    assert layer._classify_error_code("Client error '429 Too Many Requests'") == "429"
+    assert layer._classify_error_code("Client error '400 Bad Request'") == "400"
+    assert layer._classify_error_code("ReadTimeout('')") == "timeout"
+
+    assert layer._cooldown_seconds("429", 1) >= 30
+    assert layer._cooldown_seconds("429", 3) > layer._cooldown_seconds("429", 1)
+    assert layer._cooldown_seconds("400", 2) >= 90
 
 
 def test_catalog_resolve_context_window():
@@ -162,6 +198,7 @@ def test_tool_registry():
     reg.discover(_proj_root() / "tools")
     names = [m.name for m in reg.list_manifests()]
     assert "shell.run" in names
+    assert "shell.capabilities" in names
     assert "task.complete" in names
     assert "memory.add_wm" in names
 
@@ -487,3 +524,193 @@ def test_login_copilot_help_is_registered():
     assert "专用 Copilot 登录命令" in result.stdout
     assert "--method" in result.stdout
     assert "--oauth-client-id" in result.stdout
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SemanticMemory — 多锚点情境召回（ACT-R 收敛激活）
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_semantic_multi_anchor_convergence_bonus():
+    """多锚点命中同一节点时 convergence_bonus 使其排名高于单锚点命中节点。
+
+    设计原理：两节点在主锚点 "importlib" 上得分相近，但 node_ab 的 body
+    同时命中第二锚点 "热加载 reload"，因此多锚点命中使其 final_score 更高。
+    """
+    from memory.semantic import SemanticMemory, MemoryNode
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.0)
+
+        # node_ab: title 含主锚点 "importlib"，body 含第二锚点 "热加载 reload"
+        node_ab = MemoryNode(id="ab", kind="fact",
+                             title="importlib",
+                             body="热加载 reload 模块替换",
+                             activation=0.0)
+        # node_a: 同样含主锚点 "importlib"，body 不含第二锚点
+        node_a = MemoryNode(id="a", kind="fact",
+                            title="importlib",
+                            body="模块导入",
+                            activation=0.0)
+        sm.upsert(node_ab)
+        sm.upsert(node_a)
+
+        results = sm.retrieve_multi_anchor(
+            ["importlib", "热加载 reload"],
+            top_k=2,
+            convergence_bonus=0.3,
+        )
+        ids = [r["id"] for r in results]
+        # node_ab 被两个锚点命中（convergence_bonus 加分），应排在第一位
+        assert ids[0] == "ab", f"期望 ab 排第一，实际顺序: {ids}"
+
+
+def test_semantic_multi_anchor_empty_anchors():
+    """空锚点列表应返回空结果，不崩溃。"""
+    from memory.semantic import SemanticMemory, MemoryNode
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.0)
+        sm.upsert(MemoryNode(id="x", kind="fact", title="test", body="body", activation=0.5))
+
+        assert sm.retrieve_multi_anchor([]) == []
+        assert sm.retrieve_multi_anchor(["", "  "]) == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 今日新增功能验证
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_model_health_circuit_breaker_blocks_and_clears():
+    """ModelHealth 断路器：标记冷却后 _is_model_available 返回 False，
+    recover 后返回 True；fallback tier 在主 tier 冷却时被选中。"""
+    import time
+    from core.config import Config
+    from core.judgment import JudgmentLayer, ModelHealth
+    from tools.registry import ToolRegistry
+
+    class _Dummy:
+        async def chat(self, messages, **kw):
+            return '{"decision":"wait"}'
+        async def close(self):
+            pass
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+    layer = JudgmentLayer(_Dummy(), ToolRegistry(), cfg)
+
+    # 初始状态：模型可用
+    assert layer._is_model_available("bailian/qwen3.6-plus") is True
+
+    # 标记 429 错误 → 进入冷却
+    layer._mark_model_failure("bailian/qwen3.6-plus", "Client error '429 Too Many Requests'")
+    assert layer._is_model_available("bailian/qwen3.6-plus") is False
+
+    # recover → 可用
+    health = layer._get_health("bailian/qwen3.6-plus")
+    health.cooldown_until = time.time() - 1  # 手动过期
+    assert layer._is_model_available("bailian/qwen3.6-plus") is True
+
+
+def test_select_tier_logic():
+    """_select_tier 按 phase 和 prefer_tier 正确返回 tier。"""
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _Dummy:
+        async def chat(self, messages, **kw):
+            return '{"decision":"wait"}'
+        async def close(self):
+            pass
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+    layer = JudgmentLayer(_Dummy(), ToolRegistry(), cfg)
+
+    # initial phase → reasoner
+    assert layer._select_tier(phase="initial", user_message="hello") == "reasoner"
+
+    # repair phase → repair
+    assert layer._select_tier(phase="repair", user_message="") == "repair"
+
+    # prefer_tier 优先
+    assert layer._select_tier(phase="initial", user_message="", prefer_tier="reader") == "reader"
+
+    # continue + reader tool + no error → reader
+    tier = layer._select_tier(
+        phase="continue", user_message="",
+        current_action="file.read", tool_history=[],
+    )
+    assert tier == "reader"
+
+    # continue + reasoner tool → reasoner
+    tier2 = layer._select_tier(
+        phase="continue", user_message="",
+        current_action="shell.run", tool_history=[],
+    )
+    assert tier2 == "reasoner"
+
+
+def test_behavior_gate_blocks_shell_run_loop():
+    """apply_execution_gate 在 shell.run/file.list 连续重复 ≥ 3 时强制 wait。"""
+    from core.behavior_tracker import BehaviorTracker
+    from core.judgment import JudgmentOutput
+
+    tracker = BehaviorTracker()
+
+    class _Signals:
+        repeat_action_count = 3
+        repeat_action_tool = "shell.run"
+        repeat_action_key = "ls"
+        repeat_read_count = 0
+        repeat_read_path = ""
+        loop_probe_version = 5
+
+    action = JudgmentOutput(
+        decision="act",
+        chosen_action_id="shell.run",
+        params={"command": "ls"},
+        rationale="再跑一次",
+    )
+    gated = tracker.apply_execution_gate(action, _Signals())
+    assert gated.decision == "wait", "shell.run 连续 3 次应被门控为 wait"
+
+    # file.list 同理
+    action2 = JudgmentOutput(
+        decision="act",
+        chosen_action_id="file.list",
+        params={"path": "."},
+        rationale="再列一次",
+    )
+
+    class _Signals2:
+        repeat_action_count = 3
+        repeat_action_tool = "file.list"
+        repeat_action_key = "."
+        repeat_read_count = 0
+        repeat_read_path = ""
+        loop_probe_version = 6
+
+    gated2 = tracker.apply_execution_gate(action2, _Signals2())
+    assert gated2.decision == "wait", "file.list 连续 3 次应被门控为 wait"
+

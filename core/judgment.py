@@ -13,12 +13,52 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from provider.catalog import lookup_model
+
 _log = logging.getLogger("lingzhou.judgment")
+
+# 低成本读取/枚举类工具 → reader tier
+_READER_TOOLS = frozenset({
+    "file.list", "file.read",
+    "memory.get_fact", "memory.snapshot",
+    "schedule.list", "schedule.ack", "schedule.cancel",
+    "shell.capabilities",
+    "task.list",
+    "failure.dismiss",
+})
+# 写入/推理/高风险工具 → reasoner tier
+_REASONER_TOOLS = frozenset({
+    "shell.run",
+    "file.write",
+    "task.add", "task.update", "task.advance", "task.complete", "task.fail",
+    "memory.add_wm", "memory.add_semantic", "memory.set_fact",
+    "reflect.structural",
+    "schedule.add",
+})
+
+
+@dataclass
+class ModelSelection:
+    phase: str
+    tier: str
+    model_ref: str
+    thinking: str
+
+
+@dataclass
+class ModelHealth:
+    cooldown_until: float = 0.0
+    failure_streak: int = 0
+    last_error: str = ""
+    last_code: str = ""
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -46,6 +86,7 @@ class JudgmentOutput:
     reflection: str = ""                # 对最近经历的后验反思（写入语义记忆）
     reply_to_user: str = ""             # 对人类的外部回复（与 rationale 明确分离）
     next_step: str = ""
+    model_strategy: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def wait(cls, reason: str = "") -> "JudgmentOutput":
@@ -55,6 +96,8 @@ class JudgmentOutput:
     def from_llm(cls, text: str) -> "JudgmentOutput":
         """从 LLM 输出文本解析 JudgmentOutput，容错处理。"""
         text = text.strip()
+        # 防御：剥离 <think>...</think> 块（provider 层已处理，此处兜底）
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
         # 提取 JSON 块（支持 ```json ... ``` 或裸 JSON）
         match = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
         if match:
@@ -78,6 +121,7 @@ class JudgmentOutput:
             reflection=str(data.get("reflection", "")),
             reply_to_user=str(data.get("reply_to_user", "")),
             next_step=str(data.get("next_step", "")),
+            model_strategy=dict(data.get("model_strategy") or {}),
         )
 
 
@@ -105,6 +149,17 @@ class JudgmentLayer:
         self._routing_providers: dict[str, "Provider"] = {}
         # 内层工具循环用：缓存上一次 decide() 组装的完整上下文，由 decide_continue() 复用
         self._last_context_text: str = ""
+        # 最近一次真实 LLM 调用元数据（供 loop 日志输出实际 model/tier/thinking）
+        self._last_call_meta: dict[str, str] = {
+            "phase": "",
+            "tier": "default",
+            "model_ref": cfg.model,
+            "thinking": cfg.thinking,
+        }
+        # 每个模型最近一次调用错误（用于注入 model routing truth）
+        self._provider_errors: dict[str, str] = {}
+        # 每个模型的健康状态（429/400/timeout 触发冷却窗口，避免短时间重复打爆同一 provider）
+        self._model_health: dict[str, ModelHealth] = {}
 
     def set_identity_prefix(self, prefix: str) -> None:
         """由 SoulManager.bootstrap() 调用，将 BOOTSTRAP.md/IDENTITY.md 永久注入 system prompt。"""
@@ -126,15 +181,255 @@ class JudgmentLayer:
             tiers = list(providers.keys())
             _log.info("[judgment] 路由 providers 已设置: %s", tiers)
 
-    def _select_provider(self, user_message: str) -> "Provider":
-        """根据是否有用户消息选择 provider。
-        有 user_message → 'complex'（高能力模型，需要精确回复）
-        无 user_message → 'simple'（轻量模型，节约资源）
-        """
-        if not self._routing_providers:
-            return self._provider
-        tier = "complex" if user_message else "simple"
-        return self._routing_providers.get(tier, self._provider)
+    @property
+    def last_call_meta(self) -> dict[str, str]:
+        return dict(self._last_call_meta)
+
+    def _routing_aliases(self, tier: str) -> tuple[str, ...]:
+        return {
+            "reader": ("reader", "simple"),
+            "reasoner": ("reasoner", "complex"),
+            "repair": ("repair", "reader", "simple"),
+        }.get(tier, (tier,))
+
+    def _resolve_tier_model(self, tier: str) -> tuple[str, str]:
+        for alias in self._routing_aliases(tier):
+            model_ref = self._cfg.routing.get(alias)
+            if model_ref:
+                return alias, model_ref
+        return "default", self._cfg.model
+
+    def _get_health(self, model_ref: str) -> ModelHealth:
+        h = self._model_health.get(model_ref)
+        if h is None:
+            h = ModelHealth()
+            self._model_health[model_ref] = h
+        return h
+
+    def _classify_error_code(self, err_text: str) -> str:
+        text = (err_text or "").lower()
+        if " 429 " in f" {text} " or "too many requests" in text:
+            return "429"
+        if " 401 " in f" {text} " or "unauthorized" in text:
+            return "401"
+        if " 403 " in f" {text} " or "forbidden" in text:
+            return "403"
+        if " 400 " in f" {text} " or "bad request" in text:
+            return "400"
+        if "readtimeout" in text or "timeout" in text:
+            return "timeout"
+        return "other"
+
+    def _cooldown_seconds(self, code: str, failure_streak: int) -> float:
+        streak = max(1, failure_streak)
+        if code == "429":
+            return min(180.0, 30.0 * streak)
+        if code in {"401", "403"}:
+            return min(300.0, 120.0 + 30.0 * (streak - 1))
+        if code == "400":
+            return min(180.0, 45.0 * streak)
+        if code == "timeout":
+            return min(120.0, 20.0 * streak)
+        return min(90.0, 15.0 * streak)
+
+    def _mark_model_failure(self, model_ref: str, err_text: str) -> None:
+        code = self._classify_error_code(err_text)
+        health = self._get_health(model_ref)
+        health.failure_streak += 1
+        health.last_error = err_text[:240]
+        health.last_code = code
+        health.cooldown_until = time.time() + self._cooldown_seconds(code, health.failure_streak)
+        self._provider_errors[model_ref] = health.last_error
+
+    def _mark_model_success(self, model_ref: str) -> None:
+        health = self._get_health(model_ref)
+        health.failure_streak = 0
+        health.last_error = ""
+        health.last_code = ""
+        health.cooldown_until = 0.0
+        self._provider_errors.pop(model_ref, None)
+
+    def _is_model_available(self, model_ref: str) -> bool:
+        return self._get_health(model_ref).cooldown_until <= time.time()
+
+    def _fallback_tiers(self, tier: str) -> tuple[str, ...]:
+        if tier == "reasoner":
+            return ("reader", "repair")
+        if tier == "reader":
+            return ("reasoner", "repair")
+        if tier == "repair":
+            return ("reader", "reasoner")
+        return ("reader", "reasoner", "repair")
+
+    def _tool_history_has_error(self, tool_history: list[dict[str, Any]] | None) -> bool:
+        if not tool_history:
+            return False
+        return any(str(item.get("result", "")).startswith("ERROR:") for item in tool_history)
+
+    def _select_tier(
+        self,
+        *,
+        phase: str,
+        user_message: str,
+        current_action: str = "",
+        tool_history: list[dict[str, Any]] | None = None,
+        prefer_tier: str | None = None,
+    ) -> str:
+        if phase == "repair":
+            return "repair"
+        if prefer_tier in {"reader", "reasoner", "repair"}:
+            return prefer_tier
+        if phase == "continue":
+            if current_action in _REASONER_TOOLS:
+                return "reasoner"
+            if current_action in _READER_TOOLS and not self._tool_history_has_error(tool_history):
+                return "reader"
+            if user_message or self._tool_history_has_error(tool_history):
+                return "reasoner"
+            if tool_history and len(tool_history) >= 4:
+                return "reasoner"
+            return "reader"
+        if phase in {"reply", "final"}:
+            return "reasoner"
+        return "reasoner"
+
+    def _select_provider(
+        self,
+        *,
+        phase: str,
+        user_message: str,
+        current_action: str = "",
+        tool_history: list[dict[str, Any]] | None = None,
+        prefer_tier: str | None = None,
+        thinking_override: str | None = None,
+    ) -> tuple["Provider", ModelSelection]:
+        tier = self._select_tier(
+            phase=phase,
+            user_message=user_message,
+            current_action=current_action,
+            tool_history=tool_history,
+            prefer_tier=prefer_tier,
+        )
+        route_key, model_ref = self._resolve_tier_model(tier)
+        chosen_tier = tier
+        chosen_route_key = route_key
+        chosen_model = model_ref
+
+        if not self._is_model_available(model_ref):
+            for fb in self._fallback_tiers(tier):
+                fb_route, fb_model = self._resolve_tier_model(fb)
+                if self._is_model_available(fb_model):
+                    chosen_tier = fb
+                    chosen_route_key = fb_route
+                    chosen_model = fb_model
+                    break
+
+        provider = (
+            self._provider
+            if chosen_model == self._cfg.model
+            else self._routing_providers.get(chosen_route_key, self._provider)
+        )
+        thinking = thinking_override if thinking_override is not None else self._cfg.thinking
+        return provider, ModelSelection(phase=phase, tier=chosen_tier, model_ref=chosen_model, thinking=thinking)
+
+    def _cost_level_for_model(self, model_ref: str, reasoning: bool) -> str:
+        _name = model_ref.lower()
+        if "gpt-5" in _name or "o3" in _name or "qwen3-max" in _name:
+            return "high"
+        if reasoning or "mini" in _name or "qwen3.5" in _name:
+            return "medium"
+        return "low"
+
+    def _latency_level_for_model(self, model_ref: str, reasoning: bool) -> str:
+        _name = model_ref.lower()
+        if "gpt-5" in _name or "o3" in _name:
+            return "high"
+        if reasoning or "max" in _name:
+            return "medium"
+        return "low"
+
+    def _build_model_routing_section(
+        self,
+        *,
+        phase: str,
+        user_message: str,
+        current_action: str,
+        tool_history: list[dict[str, Any]] | None,
+    ) -> str:
+        route_tiers: list[str] = ["reader", "reasoner", "repair"]
+        available_models: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for tier in route_tiers:
+            _, model_ref = self._resolve_tier_model(tier)
+            key = (tier, model_ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            model_id = model_ref.split("/", 1)[1] if "/" in model_ref else model_ref
+            spec = lookup_model(model_id) or {}
+            reasoning = bool(spec.get("reasoning"))
+            last_error = self._provider_errors.get(model_ref)
+            health = self._get_health(model_ref)
+            available_models.append({
+                "tier": tier,
+                "model": model_ref,
+                "available": self._is_model_available(model_ref),
+                "reasoning": reasoning,
+                "cost_level": self._cost_level_for_model(model_ref, reasoning),
+                "latency_level": self._latency_level_for_model(model_ref, reasoning),
+                "context_window": spec.get("context_window") or self._cfg.context_window_tokens,
+                "last_error": last_error,
+                "last_error_code": health.last_code or None,
+                "cooldown_remaining_sec": max(0, int(health.cooldown_until - time.time())),
+            })
+
+        task_explore_count = 0
+        repeat_action_count = 0
+        repeat_read_count = 0
+        if tool_history:
+            task_explore_count = sum(1 for item in tool_history if item.get("tool") in {"file.list", "file.read", "shell.run"})
+            if len(tool_history) >= 2:
+                _last_tool = str(tool_history[-1].get("tool", ""))
+                repeat_action_count = sum(1 for item in reversed(tool_history) if str(item.get("tool", "")) == _last_tool)
+                if _last_tool == "file.read":
+                    _last_path = json.dumps(tool_history[-1].get("params", {}), ensure_ascii=False)
+                    repeat_read_count = sum(
+                        1 for item in reversed(tool_history)
+                        if str(item.get("tool", "")) == "file.read"
+                        and json.dumps(item.get("params", {}), ensure_ascii=False) == _last_path
+                    )
+
+        posture = "respond" if user_message else ("converge" if task_explore_count >= 4 else "conserve")
+        payload = {
+            "available_models": available_models,
+            "tier_descriptions": {
+                "reader": "轻量感知层：适合常规状态查询、读文件、检查计划、无复杂推理的心跳 tick",
+                "reasoner": "深度推理层：适合用户交互、要求判断、处理复杂状态、制定或调整计划",
+                "repair": "修复层：专用于解析失败、格式错误、小修小补",
+            },
+            "delegation_guide": (
+                "你是当前层的决策者，可以通过 model_strategy 中的以下字段调控下一轮行为：\n"
+                "• next_phase_tier：分配下轮的推理层级。reader=轻量感知，reasoner=深度推理，repair=修复。"
+                "示例：本轮已完成复杂判断并写入任务，下轮只需追踪状态 → next_phase_tier=reader；\n"
+                "• next_idle_gap_secs：下一轮空闲等待时长（秒，整数，范围 5-600）。默认 60。"
+                "示例：已发起 shell 命令，预计 30s 出结果 → next_idle_gap_secs=35；"
+                "无任务等待用户下一步 → next_idle_gap_secs=120；任务进行中需快速追踪 → next_idle_gap_secs=10；\n"
+                "没有明确偏好时用 default，进化机制将决定。"
+            ),
+            "budget_state": {
+                "task_explore_count": task_explore_count,
+                "repeat_action_count": repeat_action_count,
+                "repeat_read_count": repeat_read_count,
+                "global_cost_posture": posture,
+            },
+            "routing_hint": {
+                "phase": phase,
+                "current_action": current_action,
+                "user_message_present": bool(user_message),
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
     async def decide(
         self,
         percept: "Percept",
@@ -150,6 +445,8 @@ class JudgmentLayer:
         perception_replay: "PerceptionReplaySummary | None" = None,
         cognitive_signals: "CognitiveSignals | None" = None,
         thinking_override: "str | None" = None,
+        prefer_tier: "str | None" = None,
+        phase: str = "initial",
     ) -> JudgmentOutput:
         """组装上下文，调用 LLM，返回决策。
         
@@ -165,6 +462,9 @@ class JudgmentLayer:
             hard_boundaries=hard_boundaries,
             perception_replay=perception_replay,
             cognitive_signals=cognitive_signals,
+            phase=phase,
+            current_action="",
+            tool_history=None,
         )
         # 缓存给内层工具循环的续判请求用
         self._last_context_text = context_text
@@ -179,19 +479,51 @@ class JudgmentLayer:
             Message(role="user", content=context_text),
         ]
 
-        selected_provider = self._select_provider(user_message)
+        selected_provider, selection = self._select_provider(
+            phase=phase,
+            user_message=user_message,
+            prefer_tier=prefer_tier,
+            thinking_override=thinking_override,
+        )
         raw: str | None = None
         for _attempt in range(2):
+            self._last_call_meta = {
+                "phase": selection.phase,
+                "tier": selection.tier,
+                "model_ref": selection.model_ref,
+                "thinking": selection.thinking,
+            }
             try:
                 raw = await selected_provider.chat(messages, thinking_override=thinking_override)
+                self._mark_model_success(selection.model_ref)
                 break
             except Exception as exc:
+                _err = str(exc) or repr(exc)
+                self._mark_model_failure(selection.model_ref, _err)
                 if _attempt == 0:
-                    _warn = str(exc) or repr(exc)
-                    _log.warning("[judgment] LLM 调用失败，1s 后重试: %s", _warn)
+                    _fallback_tier = self._fallback_tiers(selection.tier)[0]
+                    fb_provider, fb_selection = self._select_provider(
+                        phase=phase,
+                        user_message=user_message,
+                        current_action="",
+                        tool_history=None,
+                        prefer_tier=_fallback_tier,
+                        thinking_override=thinking_override,
+                    )
+                    if fb_selection.model_ref != selection.model_ref:
+                        _log.warning(
+                            "[judgment] LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) err=%s",
+                            selection.model_ref,
+                            selection.tier,
+                            fb_selection.model_ref,
+                            fb_selection.tier,
+                            _err,
+                        )
+                        selected_provider, selection = fb_provider, fb_selection
+                        continue
+                    _log.warning("[judgment] LLM 调用失败，1s 后重试: %s", _err)
                     await asyncio.sleep(1.0)
                 else:
-                    _err = str(exc) or repr(exc)
                     _log.warning("[judgment] LLM 调用失败: %s", _err)
                     return self._simulate_safe_output(
                         failure_count=0,
@@ -217,7 +549,8 @@ class JudgmentLayer:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
         _log.info(
-            "[judgment] decision=%s action=%s rationale=%s",
+            "[judgment] phase=%s tier=%s model=%s thinking=%s decision=%s action=%s rationale=%s",
+            selection.phase, selection.tier, selection.model_ref, selection.thinking,
             output.decision, output.chosen_action_id, (output.rationale or "")[:120],
         )
 
@@ -227,6 +560,7 @@ class JudgmentLayer:
         self,
         tool_history: list[dict],
         user_message: str = "",
+        prefer_tier: str | None = None,
     ) -> JudgmentOutput:
         """内层工具循环的续判请求。
 
@@ -242,11 +576,11 @@ class JudgmentLayer:
         if not self._last_context_text:
             return JudgmentOutput.wait(reason="[inner-loop] no cached context for continuation")
 
-        # 构建工具历史摘要（限制单条 result 长度，防止如果工具返回大文件内容执行 token 爆炸）
+        # 构建工具历史摘要（完整保留工具返回内容，现代大模型支持 100k+ context）
         history_parts: list[str] = []
         for i, h in enumerate(tool_history):
-            params_str = json.dumps(h.get("params", {}), ensure_ascii=False)[:300]
-            result_str = str(h.get("result", ""))[:1000]
+            params_str = json.dumps(h.get("params", {}), ensure_ascii=False)
+            result_str = str(h.get("result", ""))
             history_parts.append(
                 f"[{i + 1}] {h.get('tool', '')}({params_str})\n返回: {result_str}"
             )
@@ -275,19 +609,56 @@ class JudgmentLayer:
             Message(role="user", content=continuation_context),
         ]
 
-        selected_provider = self._select_provider(user_message)
+        current_action = str(tool_history[-1].get("tool", "")) if tool_history else ""
+        selected_provider, selection = self._select_provider(
+            phase="continue",
+            user_message=user_message,
+            current_action=current_action,
+            tool_history=tool_history,
+            prefer_tier=prefer_tier,
+        )
+        # chat 模式 reasoner 阶段用 "low" 加快内层链推理；其余情况跟随配置
+        thinking_override = "low" if (selection.tier == "reasoner" and user_message) else "off"
+        self._last_call_meta = {
+            "phase": selection.phase,
+            "tier": selection.tier,
+            "model_ref": selection.model_ref,
+            "thinking": thinking_override,
+        }
         raw: str | None = None
         for _attempt in range(2):
             try:
-                # 内层续判：关闭 thinking，避免每轮额外 40-60s 推理耗时
-                raw = await selected_provider.chat(messages, thinking_override="off")
+                raw = await selected_provider.chat(messages, thinking_override=thinking_override)
+                self._mark_model_success(selection.model_ref)
                 break
             except Exception as exc:
+                _err = str(exc) or repr(exc)
+                self._mark_model_failure(selection.model_ref, _err)
                 if _attempt == 0:
-                    _log.warning("[judgment.continue] LLM 调用失败，1s 后重试: %s", str(exc) or repr(exc))
+                    _fallback_tier = self._fallback_tiers(selection.tier)[0]
+                    fb_provider, fb_selection = self._select_provider(
+                        phase="continue",
+                        user_message=user_message,
+                        current_action=current_action,
+                        tool_history=tool_history,
+                        prefer_tier=_fallback_tier,
+                        thinking_override=thinking_override,
+                    )
+                    if fb_selection.model_ref != selection.model_ref:
+                        _log.warning(
+                            "[judgment.continue] LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) err=%s",
+                            selection.model_ref,
+                            selection.tier,
+                            fb_selection.model_ref,
+                            fb_selection.tier,
+                            _err,
+                        )
+                        selected_provider, selection = fb_provider, fb_selection
+                        continue
+                    _log.warning("[judgment.continue] LLM 调用失败，1s 后重试: %s", _err)
                     await asyncio.sleep(1.0)
                 else:
-                    _log.warning("[judgment.continue] LLM 调用失败: %s", str(exc) or repr(exc))
+                    _log.warning("[judgment.continue] LLM 调用失败: %s", _err)
                     return JudgmentOutput.wait(reason=f"[inner-loop] LLM 不可用: {exc!r}")
 
         if raw is None:
@@ -300,8 +671,9 @@ class JudgmentLayer:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
         _log.info(
-            "[judgment.continue] round=%d decision=%s action=%s",
-            len(tool_history), output.decision, output.chosen_action_id,
+            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s decision=%s action=%s",
+            len(tool_history), selection.phase, selection.tier, selection.model_ref,
+            self._last_call_meta["thinking"], output.decision, output.chosen_action_id,
         )
         return output
 
@@ -315,7 +687,7 @@ class JudgmentLayer:
                 content=(
                     "你是一个严格的 JSON 修复器。"
                     "只输出合法 JSON，不要解释，不要使用 markdown。"
-                    "必须遵循这个 schema: {decision, chosen_action_id, params, rationale, reflection, reply_to_user, next_step}."
+                    "必须遵循这个 schema: {decision, chosen_action_id, params, rationale, reflection, reply_to_user, next_step, model_strategy}."
                     "如果原输出被截断，请根据上下文重新生成一个完整、简短的 JSON。"
                 ),
             ),
@@ -377,6 +749,9 @@ class JudgmentLayer:
         hard_boundaries: "list[str] | None" = None,
         perception_replay: "PerceptionReplaySummary | None" = None,
         cognitive_signals: "CognitiveSignals | None" = None,
+        phase: str = "initial",
+        current_action: str = "",
+        tool_history: list[dict[str, Any]] | None = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
         task = await task_store.get_active()
@@ -395,7 +770,7 @@ class JudgmentLayer:
 
         # 情节搜索（跨任务全文检索，补充当前任务叙事之外的相关经历）
         search_query = (task.goal or task.title) if task else user_message
-        episodic_search = episodic.search(search_query, max_chars=800) if search_query else ""
+        episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
         if episodic_search and episodic_search not in episodic_text:
             episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
 
@@ -446,6 +821,7 @@ class JudgmentLayer:
             "memories_section": _fmt_memories(memories),
             "soul_section": soul_section,
             "tools_section": _fmt_tools(self._registry.list_manifests()),
+            "shell_capabilities_section": _fmt_shell_capabilities(),
             "perception_section": _fmt_percept(percept),
             "ethos_section": _fmt_ethos(ethos_state),
             "signals_section": _fmt_judgment_signals(judgment_signals),
@@ -453,6 +829,12 @@ class JudgmentLayer:
             "perception_replay_section": _fmt_perception_replay(perception_replay),
             "skills_section": _fmt_skills(skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
+            "model_routing_section": self._build_model_routing_section(
+                phase=phase,
+                user_message=user_message,
+                current_action=current_action,
+                tool_history=tool_history,
+            ),
             "current_time_section": _fmt_current_time(),
             "user_message": user_message or "",
         }
@@ -510,8 +892,12 @@ def _fmt_current_time() -> str:
 def _fmt_wm(items: list[dict[str, Any]]) -> str:
     if not items:
         return "（工作记忆为空）"
-    # 进入判断上下文的 WM 不做随意截断，避免关键信息丢失导致循环误判
-    lines = [f"- [{i['kind']}] {i['content']}" for i in items]
+    # 反循环感知条目（self_awareness / heartbeat 中的循环警告）强制置顶，
+    # 避免被正常工具结果条目淹没（Hermes 借鉴：高优先级信号不受顺序影响）
+    anti_loop = [i for i in items if i.get("kind") == "self_awareness"]
+    rest = [i for i in items if i.get("kind") != "self_awareness"]
+    ordered = anti_loop + rest
+    lines = [f"- [{i['kind']}] {i['content']}" for i in ordered]
     return "\n".join(lines)
 
 
@@ -539,6 +925,28 @@ def _fmt_tools(manifests: "list[ToolManifest]") -> str:
         )
         lines.append(f"- `{m.name}`: {m.description}  参数: [{params_str}]")
     return "\n".join(lines)
+
+
+def _fmt_shell_capabilities() -> str:
+    """运行时 shell 能力真相：避免 LLM 将“宿主环境限制”误判为“平台沙盒”。"""
+    cmds = (
+        "python3", "python", "bash", "sh", "grep", "find", "ls", "cat",
+        "sqlite3", "git", "sed", "awk", "jq", "rg",
+    )
+    available = [c for c in cmds if shutil.which(c)]
+    payload = {
+        "engine": "asyncio.create_subprocess_shell",
+        "execution_model": "one-shot-non-persistent",
+        "sandbox": False,
+        "network_policy": "inherits-host-environment",
+        "default_timeout_sec": 30,
+        "default_output_preview_chars": 500,
+        "shell": os.environ.get("SHELL") or "/bin/sh",
+        "cwd": os.getcwd(),
+        "available_commands": available,
+        "missing_commands": [c for c in cmds if c not in available],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _fmt_percept(percept: "Percept") -> str:

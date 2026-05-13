@@ -149,5 +149,5 @@ async def task_fail(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     )
     return ToolResult(
         summary=f"任务 [{task.id}] 已标记失败: {reason[:80]}",
-        evidence=f"task_id={task.id}",
+        evidence=f"task_id={task.id} reason={reason[:120]}",
     )

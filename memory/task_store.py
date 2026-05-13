@@ -563,6 +563,28 @@ class TaskStore:
                 })
         return rows
 
+    async def get_signal(self, signal_id: int) -> dict[str, Any] | None:
+        """按 id 查询单条调度信号；不存在或已删除时返回 None。"""
+        async with self._db.execute(
+            "SELECT id, title, run_at, repeat_secs, status, payload FROM signals WHERE id=?",
+            (signal_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[5] or "{}")
+        except Exception:
+            payload = {}
+        return {
+            "id": row[0],
+            "title": row[1],
+            "run_at": row[2],
+            "repeat_secs": row[3],
+            "status": row[4],
+            "payload": payload,
+        }
+
     async def cancel_signal(self, signal_id: int) -> None:
         """取消一条调度信号。"""
         await self._db.execute(

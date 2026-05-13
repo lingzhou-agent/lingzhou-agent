@@ -53,6 +53,12 @@
   ],
   "model": "bailian/qwen3.6-plus",
 
+  "routing": {
+    "reader": "bailian/qwen3.6-plus",
+    "reasoner": "copilot/gpt-5.4",
+    "repair": "bailian/qwen3.6-plus"
+  },
+
   "temperature": 0.7,
   "timeout": 60.0,
 
@@ -87,7 +93,11 @@
     "debug": false,
     "consolidate_every": 10,
     "evolve_every": 30,
-    "max_consecutive_errors": 5
+    "max_consecutive_errors": 5,
+    "heartbeat_interval": 1800,
+    "judge_every": 1,
+    "max_tool_rounds": 8,
+    "wait_llm_skip_max": 3
   },
 
   "prompts": {
@@ -102,7 +112,12 @@
     "semantic_top_k": 5,
     "failure_limit": 10,
     "consolidate_threshold": 0.7,
-    "convergence_bonus": 0.15
+    "convergence_bonus": 0.15,
+    "max_events": 500,
+    "semantic_decay_lambda": 0.1,
+    "embedding_model": null,
+    "embedding_weight": 0.3,
+    "chat_crystallize_every": 20
   },
 
   "emotion": {
@@ -120,7 +135,10 @@
     "enabled": true,
     "sandbox_timeout": 10.0,
     "max_attempts": 3,
-    "backup": true
+    "backup": true,
+    "trigger_min_failures": 3,
+    "trigger_window_minutes": 60.0,
+    "error_streak_evolve": 3
   },
 
   "soul": {
@@ -137,13 +155,28 @@
       "continuity": 0.65,
       "curiosity": 0.60,
       "care": 0.55
-    }
+    },
+    "ethos_ema_alpha": 0.9,
+    "ethos_floor_truth": 0.50,
+    "ethos_floor_caution": 0.45
   },
 
   "thresholds": {
     "_doc": "内部感知驱动任务的触发阈值，全部可调",
     "emotion_activation_task": 0.85,
     "wm_pressure_task": 0.8,
-    "prediction_error_task": 0.7
+    "prediction_error_task": 0.7,
+    "curiosity_idle_task": 0.65,
+    "curiosity_idle_min_cycles": 3,
+    "skill_max_inject": 3,
+    "skill_failure_threshold": 3,
+    "skill_wm_pressure_threshold": 0.4,
+    "skill_min_budget_tokens": 80,
+    "shell_timeout": 30.0,
+    "shell_max_output_chars": 500,
+    "wm_pri_signal": 0.90,
+    "wm_pri_history": 0.88,
+    "wm_pri_identity": 0.85,
+    "wm_pri_error": 0.30
   }
 }

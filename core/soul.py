@@ -146,7 +146,7 @@ class SoulManager:
                     self._wm.add(WMItem(
                         kind="bootstrap_identity",
                         content=f"[{fname}]\n{content}",
-                        priority=0.85,
+                        priority=self._cfg.thresholds.wm_pri_identity,
                     ))
                     injected.append(fname)
                     # 核心身份文件 → system prompt 前缀（永久，不随 WM 驱逐）

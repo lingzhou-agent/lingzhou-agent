@@ -104,23 +104,60 @@ async def schedule_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(ToolManifest(
     name="schedule.list",
-    description="列出待触发的调度信号（默认只列 pending；include_done=true 包含已完成）",
+    description=(
+        "列出调度信号。注意：重复信号由 loop 自动触发并自动 ack，status='pending' 表示'活跃计划'而非'待手动处理'。"
+        "⚡ 表示当前已到期（需处理），⏰ 表示未来触发（无需处理）。"
+        "仅在需要查看计划列表或管理信号时使用，不要用此工具确认信号是否已处理——信号触发时 WM 中已有完整提醒。"
+    ),
     params=[
         ToolParam("include_done", "boolean", "是否包含已完成信号，默认 false", required=False),
         ToolParam("limit", "number", "最多返回条数，默认 20", required=False),
     ],
 ))
 async def schedule_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    from datetime import datetime, timezone
     include_done = bool(params.get("include_done", False))
     limit = int(params.get("limit") or 20)
     sigs = await ctx.task_store.list_signals(limit=limit, include_done=include_done)
     if not sigs:
         return ToolResult(summary="暂无调度信号", evidence="")
+    now_utc = datetime.now(timezone.utc)
     lines = []
     for s in sigs:
         repeat = f" 重复{s['repeat_secs']}s" if s["repeat_secs"] else ""
-        lines.append(f"#{s['id']} [{s['status']}] {s['run_at']}{repeat} — {s['title']}")
-    return ToolResult(summary=f"共 {len(sigs)} 条信号", evidence="\n".join(lines))
+        try:
+            run_at_str = s["run_at"].replace("Z", "+00:00")
+            run_at_dt = datetime.fromisoformat(run_at_str)
+            if run_at_dt.tzinfo is None:
+                run_at_dt = run_at_dt.replace(tzinfo=timezone.utc)
+            due_tag = "⚡到期" if run_at_dt <= now_utc else f"⏰{s['run_at']}"
+        except Exception:
+            due_tag = s["run_at"]
+        _payload = s.get("payload") or {}
+        _note = (_payload.get("note") or "").strip()
+        note_part = f" | 内容：{_note}" if _note else ""
+        lines.append(f"#{s['id']} [{due_tag}]{repeat} — {s['title']}{note_part}")
+    detail = "\n".join(lines)
+    return ToolResult(summary=f"共 {len(sigs)} 条信号:\n{detail}", evidence=detail)
+
+
+@tool(ToolManifest(
+    name="schedule.ack",
+    description=(
+        "确认一条调度信号已处理完毕。"
+        "一次性信号标记为 done；重复信号自动推进到下次触发时间。"
+        "处理完 schedule.list 返回的信号后必须调用此工具，否则信号将持续出现在 pending 列表。"
+    ),
+    params=[
+        ToolParam("id", "number", "信号 id（由 schedule.list 查询）", required=True),
+    ],
+))
+async def schedule_ack(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    sig_id = params.get("id")
+    if sig_id is None:
+        return ToolResult(summary="id 不能为空", skipped=True)
+    await ctx.task_store.ack_signal(int(sig_id))
+    return ToolResult(summary=f"已确认信号 #{sig_id} 处理完毕", evidence=f"id={sig_id} acked")
 
 
 @tool(ToolManifest(
@@ -134,5 +171,11 @@ async def schedule_cancel(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     sig_id = params.get("id")
     if sig_id is None:
         return ToolResult(summary="id 不能为空", skipped=True)
+    sig = await ctx.task_store.get_signal(int(sig_id))
+    if sig is None:
+        return ToolResult(summary=f"信号 #{sig_id} 不存在", skipped=True)
     await ctx.task_store.cancel_signal(int(sig_id))
-    return ToolResult(summary=f"已取消信号 #{sig_id}", evidence="status=cancelled")
+    return ToolResult(
+        summary=f"已取消信号 #{sig_id}: {sig['title']}",
+        evidence=f"id={sig_id} title={sig['title'][:60]} run_at={sig['run_at']} status=cancelled",
+    )

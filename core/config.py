@@ -149,6 +149,14 @@ class LoopConfig(BaseModel):
             "达到上限后自动注入兜底回复，保证 chat 客户端不超时。"
         ),
     )
+    wait_llm_skip_max: int = Field(
+        default=3, ge=1,
+        description=(
+            "连续 wait 决策时，最多跳过 LLM 调用的次数。"
+            "超过此值后强制触发一次真实 LLM 判断，防止因事件驱动等待造成长时间无判断。"
+            "默认 3 = 最多跳过 3 轮再强制判断一次。"
+        ),
+    )
 
 
 class PromptsConfig(BaseModel):
@@ -162,7 +170,7 @@ class PromptsConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     working_capacity: int = Field(default=20, ge=1, description="工作记忆最大条目数")
-    episodic_max_chars: int = Field(default=4000, ge=100, description="注入 context 的情节记忆字符上限")
+    episodic_max_chars: int = Field(default=40000, ge=100, description="注入 context 的情节记忆字符上限")
     semantic_top_k: int = Field(default=5, ge=1, description="语义检索返回条目数")
     failure_limit: int = Field(default=10, ge=1, description="注入 bundle 的失败记录数")
     consolidate_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="WM 压力超过此值触发整合")
@@ -203,6 +211,13 @@ class EvolutionConfig(BaseModel):
     backup: bool = Field(default=True, description="进化前是否备份原始文件")
     trigger_min_failures: int = Field(default=3, ge=1, description="时间窗内触发进化所需最小失败次数")
     trigger_window_minutes: float = Field(default=60.0, gt=0, description="进化触发时间窗口（分钟）；窗口内失败密度决定是否进化")
+    error_streak_evolve: int = Field(
+        default=3, ge=1,
+        description=(
+            "感知错误连击（high_error_streak）达到此值时，跳过 evolve_every 计数立即触发自进化。"
+            "默认 3 = 连续 3 次高预测误差即触发修复。调大可降低进化频率；调小则更激进。"
+        ),
+    )
 
 class SoulConfig(BaseModel):
     """数字生命种子的初始人格。
@@ -275,6 +290,20 @@ class ThresholdsConfig(BaseModel):
         default=80, ge=0,
         description="上下文预算裁剪时 skills_section 保留的最小 token 数；0=可完全裁掉，建议 ≥ 50 保留至少一条护栏"
     )
+    # shell.run 默认参数（可在 lingzhou.json 的 thresholds 节中覆盖）
+    shell_timeout: float = Field(
+        default=30.0, gt=0,
+        description="shell.run 默认超时（秒）；工具调用时可被 params.timeout 覆盖"
+    )
+    shell_max_output_chars: int = Field(
+        default=500, ge=0,
+        description="shell.run 默认输出预览字符数；工具调用时可被 params.max_output_chars 覆盖"
+    )
+    # 工作记忆（WM）优先级基准（微调注入顺序，不影响功能语义）
+    wm_pri_signal: float = Field(default=0.90, ge=0.0, le=1.0, description="调度信号、执行成功结果的 WM 优先级")
+    wm_pri_history: float = Field(default=0.88, ge=0.0, le=1.0, description="近期对话历史的 WM 优先级")
+    wm_pri_identity: float = Field(default=0.85, ge=0.0, le=1.0, description="身份/Soul 文件的 WM 优先级（bootstrap_identity 类型）")
+    wm_pri_error: float = Field(default=0.30, ge=0.0, le=1.0, description="工具失败结果的 WM 优先级")
 
 
 class Config(BaseModel):
@@ -317,10 +346,11 @@ class Config(BaseModel):
     routing: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "分层路由模型映射（按计费优化）。key 为复杂度层级：'simple'（空闲/后台 tick）"
-            "或 'complex'（有用户消息 / 高优先任务），value 为 'provider/model-id' 格式。\n"
-            "示例: {\"simple\": \"bailian/qwen3.6-plus\", \"complex\": \"copilot/gpt-5.4\"}\n"
-            "未配置时所有 tick 均使用顶层 model 字段。"
+            "Judgment 层分阶段路由模型映射。推荐 key：'reader'、'reasoner'、'repair'；"
+            "兼容旧 key：'simple'≈reader、'complex'≈reasoner。"
+            "value 为 'provider/model-id' 格式。\n"
+            "示例: {\"reader\": \"bailian/qwen3.6-plus\", \"reasoner\": \"copilot/gpt-5.4\"}\n"
+            "未配置时所有 phase 均使用顶层 model 字段。"
         ),
     )
 

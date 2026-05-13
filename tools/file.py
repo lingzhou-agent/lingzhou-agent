@@ -1,10 +1,13 @@
 """tools/file.py — 文件读写工具。"""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
+
+_log = logging.getLogger("lingzhou.tools.file")
 
 
 @tool(ToolManifest(
@@ -43,10 +46,11 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
             sliced = text[start:end]
             completed = (start == 0 and end == total)
+            _cont_hint = f"\n⚠️ 未读完，使用 start={end} 续读剩余 {total - end} 字符" if not completed else ""
             return ToolResult(
                 summary=(
-                    f"[已读取 {path}  区间[{start}:{end})/{total}  completed={str(completed).lower()}]\n"
-                    f"{sliced}"
+                    f"[已读取 {path}  区间[{start}:{end})/{total}  completed={str(completed).lower()}]"
+                    f"{_cont_hint}\n{sliced}"
                 ),
                 evidence=(
                     f"path={path} mode=range range={start}:{end} chars={len(sliced)}/{total} "
@@ -63,10 +67,12 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             content = text
             completed = True
             mode_label = "full"
+        _cont_hint = f"\n⚠️ 未读完，使用 start={len(content)} 续读剩余 {total - len(content)} 字符" if not completed else ""
         return ToolResult(
             summary=(
                 f"[已读取 {path}  {total}字符  {mode_label}  "
-                f"range=[0:{len(content)})  completed={str(completed).lower()}]\n{content}"
+                f"range=[0:{len(content)})  completed={str(completed).lower()}]"
+                f"{_cont_hint}\n{content}"
             ),
             evidence=(
                 f"path={path} mode={mode_label} range=0:{len(content)} "
@@ -75,6 +81,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             priority=0.6,   # 文件内容不需长期捤占 WM
         )
     except Exception as exc:
+        _log.error("[file.read] failed on %s: %s", path, exc, exc_info=True)
         return ToolResult(summary=f"读取失败: {exc}", error=str(exc))
 
 

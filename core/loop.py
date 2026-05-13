@@ -45,11 +45,14 @@ from core.soul import SoulManager
 
 console = Console()
 
-# WM 优先级具名常量（集中定义，避免散落魔数）
-_WM_PRI_SIGNAL   = 0.90   # 调度信号、执行成功结果
-_WM_PRI_HISTORY  = 0.88   # 近期对话历史
-_WM_PRI_IDENTITY = 0.85   # 身份/Soul 文件（bootstrap/init 与 core.soul 同步使用）
-_WM_PRI_ERROR    = 0.30   # 工具失败结果
+# 上下文截断具名常量（语义记忆 & 日志截断阈值；调整后重启即生效，不影响已存数据）
+_LOG_RATIONALE_CHARS  = 120   # log 行 rationale 截断
+_SEM_TITLE_CHARS      = 60    # 语义/事件节点 title 截断
+_SEM_TAG_TASK_CHARS   = 20    # 语义节点 task tag 截断
+_EVENT_TITLE_CHARS    = 40    # 事件结晶节点 title（任务名部分）截断
+_EVENT_APPEND_CHARS   = 8000   # 事件结晶 body 追加上限
+_EVENT_BODY_MAX_CHARS = 40000  # 事件结晶 body 滚动上限
+_EVENT_NEW_BODY_CHARS = 16000  # 新事件节点 body 上限
 
 # P1-B: reflection → 情绪效价的关键词启发式推断（模块级，无 LLM 依赖）
 _VALENCE_POS = frozenset(["完成", "成功", "理解", "学到", "进步", "有效", "清晰", "好", "正确", "解决", "突破"])
@@ -124,6 +127,7 @@ class CognitionLoop:
         # tick 间连续性追踪（预测误差 + 认知信号计算用）
         self._last_next_step: str = ""
         self._last_decision: str = "wait"
+        self._last_act_error: bool = False   # P1-1: 上轮 act 是否以工具错误结束
         self._idle_cycles: int = 0
 
         # 多轮对话历史（最多保留 6 轮 user/assistant 对）
@@ -134,7 +138,10 @@ class CognitionLoop:
         self._ticks_since_judge: int = 0
         # 上一轮 tick 的决策类型（act/wait/fallback），用于动态 sleep 计算
         self._last_decision: str = "wait"
-        # 配置文件热重载：记录初始 mtime，每轮 sleep 后检查
+        # 连续 wait 阻塞态节流计数：>0 表示处于“等待外部输入”模式，优先事件唤醒，减少空转判断。
+        self._wait_llm_skip_streak: int = 0        # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
+        self._pending_tier: str | None = None
+        self._pending_idle_gap: float | None = None  # LLM 通过 model_strategy.next_idle_gap_secs 动态调控等待时长
         _cfg_file = cfg._base_dir / "lingzhou.json"
         self._cfg_file: Path = _cfg_file
         self._cfg_mtime: float = _cfg_file.stat().st_mtime if _cfg_file.exists() else 0.0
@@ -249,21 +256,34 @@ class CognitionLoop:
 
         try:
             while True:
-                cycle += 1
-
                 try:
                     # 检查是否有待处理的 chat 消息（CLI chat 命令注入）
                     chat_msg = await self._task_store.pop_pending_chat_message()
                     if chat_msg:
+                        cycle += 1
+                        self._wait_llm_skip_streak = 0
                         reply = await self._tick(cycle, user_message=chat_msg["content"])
-                        # 内层循环已兜底兜底 reply；若 tick 意外返回空串，也写一条 ACK 防超时
+                        if reply:
+                            reply = _strip_memory_context(reply)
+                        # 内层循环已兜底 reply；若 tick 意外返回空串，也写一条 ACK 防超时
                         await self._task_store.add_chat_message(
                             "assistant",
                             reply or "（请求已处理，任务正在后台继续）",
                             chat_msg["session_id"],
                         )
                     else:
+                        # 阻塞态节流：连续 wait 时，优先事件驱动等待，跳过部分无增量 LLM 调用。
+                        # 这样在“等待用户日志/外部输入”阶段不会每轮都重跑高成本判断。
+                        if cycle > 0 and self._last_decision == "wait" and self._wait_llm_skip_streak < cfg.loop.wait_llm_skip_max:
+                            before_task = await self._task_store.get_active()
+                            await self._wait_for_event(cfg.loop.max_idle_gap, before_task)
+                            await self._maybe_hot_reload_provider()
+                            cfg = self._cfg
+                            self._wait_llm_skip_streak += 1
+                            continue
+                        cycle += 1
                         await self._tick(cycle)
+                        self._wait_llm_skip_streak = 0
                     consecutive_errors = 0
                 except Exception:
                     consecutive_errors += 1
@@ -281,7 +301,9 @@ class CognitionLoop:
                 if self._last_decision == "act" and after_task is not None:
                     await asyncio.sleep(cfg.loop.min_act_gap)
                 else:
-                    await self._wait_for_event(cfg.loop.max_idle_gap, after_task)
+                    # LLM 可通过 model_strategy.next_idle_gap_secs 表达等待时长偏好，不设则用配置兜底
+                    _gap = self._pending_idle_gap or cfg.loop.max_idle_gap
+                    await self._wait_for_event(_gap, after_task)
                 # 事件驱动等待结束后检测配置变更（模型热换）
                 await self._maybe_hot_reload_provider()
                 cfg = self._cfg  # 可能已更新
@@ -336,13 +358,21 @@ class CognitionLoop:
 
         # 调度器：检查到期用户 cron 信号 → 注入 WM（心跳不走此路径）
         for sig in await self._task_store.due_signals():
+            _payload = sig.get("payload") or {}
+            _note = (_payload.get("note") or "").strip()
+            _repeat_desc = f"每 {sig['repeat_secs']}s 重复" if sig.get("repeat_secs") else "一次性"
+            _parts = [
+                f"[调度触发 #{sig['id']}] {sig['title']}（{_repeat_desc}，已自动确认，无需调用 schedule.ack）",
+            ]
+            if _note:
+                _parts.append(f"任务内容：{_note}")
             self._wm.add(WMItem(
                 kind="scheduler",
-                content=f"[提醒] {sig['title']}",
-                priority=_WM_PRI_SIGNAL,
+                content="\n".join(_parts),
+                priority=self._cfg.thresholds.wm_pri_signal,
             ))
             await self._task_store.ack_signal(sig["id"])
-            _log.info("[scheduler] signal fired: %s", sig["title"])
+            _log.info("[scheduler] signal fired: #%s %s", sig["id"], sig["title"])
 
         # 心跳自检：系统级计时（monotonic），独立于用户 cron。
         # HEARTBEAT.md 定义检查清单，LLM 自主决定是否行动（静默回复 HEARTBEAT_OK）。
@@ -357,17 +387,18 @@ class CognitionLoop:
                         self._wm.add(WMItem(
                             kind="heartbeat",
                             content=f"[心跳自检]\n{_hb_md}",
-                            priority=_WM_PRI_SIGNAL,
+                            priority=self._cfg.thresholds.wm_pri_signal,
                         ))
                         _log.info("[heartbeat] 注入 WM，间隔 %ds", self._cfg.loop.heartbeat_interval)
                 except Exception:
                     pass
             self._last_heartbeat_at = _now
 
-        # tick 间连续性：上轮 next_step 是否被执行？（首轮为 None）
+        # tick 间连续性：上轮 next_step 是否被执行且成功？（首轮为 None）
+        # P1-1: 同时检查 decision==act AND 上轮工具无错误，避免工具失败被误认为 step 已完成
         _next_step_fulfilled: bool | None = None
         if self._last_next_step:
-            _next_step_fulfilled = (self._last_decision == "act")
+            _next_step_fulfilled = (self._last_decision == "act" and not self._last_act_error)
         percept = await self._perception.sense(
             self._wm, active_task,
             last_next_step=self._last_next_step,
@@ -513,26 +544,41 @@ class CognitionLoop:
                 perception_replay=perception_replay,
                 cognitive_signals=cognitive_signals,
                 thinking_override=_thinking_override,
+                phase="initial",
+                prefer_tier=self._pending_tier,
             )
+            # 消费上一轮 LLM 表达的 tier 偏好（用完即清）
+            self._pending_tier = None
             self._ticks_since_judge = 0
 
         # 决策结果输出到 stdout
-        _model_tag = f" model={cfg.model} thinking={cfg.thinking}" if cfg.thinking != "off" else f" model={cfg.model}"
+        _call_meta = self._judgment.last_call_meta
+        _actual_model = _call_meta.get("model_ref") or cfg.model
+        _actual_thinking = _call_meta.get("thinking") or cfg.thinking
+        _actual_tier = _call_meta.get("tier") or "default"
+        _actual_phase = _call_meta.get("phase") or "initial"
+        _model_tag = (
+            f" model={_actual_model} tier={_actual_tier} phase={_actual_phase} thinking={_actual_thinking}"
+            if _actual_thinking != "off"
+            else f" model={_actual_model} tier={_actual_tier} phase={_actual_phase}"
+        )
         console.print(
             f"[bold cyan][loop][/bold cyan] tick={cycle} "
             f"decision={action.decision} tool={action.chosen_action_id}"
             f"[dim]{_model_tag}[/dim]"
         )
         _log.info(
-            "[loop] tick=%d decision=%s tool=%s model=%s thinking=%s rationale=%s",
-            cycle, action.decision, action.chosen_action_id, cfg.model, cfg.thinking,
-            (action.rationale or "")[:120],
+            "[loop] tick=%d decision=%s tool=%s model=%s tier=%s phase=%s thinking=%s rationale=%s",
+            cycle, action.decision, action.chosen_action_id, _actual_model, _actual_tier,
+            _actual_phase, _actual_thinking,
+            (action.rationale or "")[: _LOG_RATIONALE_CHARS],
         )
 
         # 3.5 行为模式感知（act 时追踪，wait/fallback 不计入）
         if action.decision == "act":
             _tool_id = action.chosen_action_id or ""
-            _key_param = (action.params or {}).get("path") or (action.params or {}).get("name") or ""
+            _p = action.params or {}
+            _key_param = _p.get("path") or _p.get("name") or _p.get("title") or str(_p.get("id") or "") or _p.get("key") or ""
             _cur_task_id = str(active_task.id) if active_task else None
             for _item in self._behavior.on_act(_tool_id, _key_param, _cur_task_id):
                 self._wm.add(_item)
@@ -566,12 +612,18 @@ class CognitionLoop:
             }]
             _affect = {"valence": self._emotion.valence, "arousal": self._emotion.arousal}
             for _inner in range(cfg.loop.max_tool_rounds - 1):
-                _cont = await self._judgment.decide_continue(_tool_history, user_message=user_message)
+                _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+                _cont = await self._judgment.decide_continue(
+                    _tool_history,
+                    user_message=user_message,
+                    prefer_tier=_next_tier or None,
+                )
 
                 # 内层行为追踪
                 if _cont.decision == "act":
                     _t = _cont.chosen_action_id or ""
-                    _kp = (_cont.params or {}).get("path") or (_cont.params or {}).get("name") or ""
+                    _cp = _cont.params or {}
+                    _kp = _cp.get("path") or _cp.get("name") or _cp.get("title") or str(_cp.get("id") or "") or _cp.get("key") or ""
                     for _bi in self._behavior.on_act(_t, _kp, str(active_task.id) if active_task else None):
                         self._wm.add(_bi)
                 _cont = self._behavior.apply_execution_gate(_cont, cognitive_signals)
@@ -581,7 +633,7 @@ class CognitionLoop:
                 if _cont_result.summary and not _cont_result.skipped:
                     _t = _cont.chosen_action_id or ""
                     _kp2 = (_cont.params or {}).get("path") or (_cont.params or {}).get("name") or (_cont.params or {}).get("title") or ""
-                    _pfx = f"[{_t}{'  ' + _kp2[:40] if _kp2 else ''}] "
+                    _pfx = f"[{_t}{'  ' + _kp2 if _kp2 else ''}] "
                     self._wm.add(WMItem(kind=_t or _cont_result.kind, content=_pfx + _cont_result.summary, priority=_cont_result.priority))
                 # 内层 rationale → 情节记忆
                 if _cont.rationale:
@@ -590,9 +642,17 @@ class CognitionLoop:
 
                 if _cont.decision == "act":
                     # 无论成功还是报错都追加历史，避免 LLM 重复调同一个失败工具
-                    _result_text = (
-                        f"ERROR: {_cont_result.summary}" if _cont_result.error else _cont_result.summary
-                    )
+                    # P1-2: 错误分类 transient(可重试) vs fatal(不可重试)，帮助 LLM 决策
+                    if _cont_result.error:
+                        _err_lower = (_cont_result.error or "").lower()
+                        _err_cat = (
+                            "transient"
+                            if any(k in _err_lower for k in ("timeout", "connect", "reset", "unavailable", "rate", "429", "503"))
+                            else "fatal"
+                        )
+                        _result_text = f"ERROR[{_err_cat}]: {_cont_result.summary}"
+                    else:
+                        _result_text = _cont_result.summary
                     _tool_history.append({
                         "tool":   _cont.chosen_action_id or "",
                         "params": _cont.params or {},
@@ -621,7 +681,7 @@ class CognitionLoop:
         # 10. 自进化检查：由内环失败模式驱动（Reflexion 2023 双环纠偏原则）
         _should_evolve = (
             cfg.evolution.enabled and (
-                perception_replay.high_error_streak >= 3
+                perception_replay.high_error_streak >= cfg.evolution.error_streak_evolve
                 or cycle % cfg.loop.evolve_every == 0
             )
         )
@@ -639,6 +699,26 @@ class CognitionLoop:
         # tick 间状态更新（下轮感知用）
         self._last_next_step = action.next_step or ""
         self._last_decision = action.decision
+        # P1-1: 记录本轮工具是否出错，供下轮 _next_step_fulfilled 判断
+        self._last_act_error = bool(action.decision == "act" and result.error)
+
+        # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好，存储到下轮传入
+        _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+        if _next_tier in {"reader", "reasoner", "repair"}:
+            self._pending_tier = _next_tier
+        else:
+            self._pending_tier = None
+
+        # LLM 通过 model_strategy.next_idle_gap_secs 动态调控下一轮空闲等待时长
+        _raw_gap = (action.model_strategy or {}).get("next_idle_gap_secs")
+        if _raw_gap is not None:
+            try:
+                _gap = float(_raw_gap)
+                self._pending_idle_gap = max(5.0, min(600.0, _gap))
+            except (TypeError, ValueError):
+                self._pending_idle_gap = None
+        else:
+            self._pending_idle_gap = None
 
         # 情绪状态持久化（跨重启情绪连续性，与 ethos_baseline 对称）
         await self._task_store.set_fact("soul:emotion_state", json.dumps({
@@ -682,14 +762,14 @@ class CognitionLoop:
                 _marker = f"crystallized:{refreshed.id}"
                 _, _already = await self._task_store.get_fact(_marker)
                 if not _already:
-                    _narrative = self._episodic.load_for_context(str(refreshed.id), max_chars=1200)
+                    _narrative = self._episodic.load_for_context(str(refreshed.id), max_chars=40000)
                     if _narrative.strip():
                         _nid = f"task_summary_{refreshed.id}"
                         self._semantic.upsert(MemoryNode(
                             id=_nid,
                             kind="task_summary",
                             title=f"[{refreshed.status}] {refreshed.title[:60]}",
-                            body=_narrative[-800:],
+                            body=_narrative,
                             activation=0.9 if refreshed.status == "done" else 0.7,
                             valence=self._emotion.valence,
                             tags=["task_summary", refreshed.status, f"task_{refreshed.id}"],
@@ -701,7 +781,7 @@ class CognitionLoop:
             tool_id = action.chosen_action_id or ""
             params = action.params or {}
             key_param = params.get("path") or params.get("name") or params.get("title") or ""
-            wm_prefix = f"[{tool_id}{'  ' + key_param[:40] if key_param else ''}] "
+            wm_prefix = f"[{tool_id}{'  ' + key_param if key_param else ''}] "
             self._wm.add(WMItem(
                 kind=tool_id or result.kind,
                 content=wm_prefix + result.summary,
@@ -709,28 +789,31 @@ class CognitionLoop:
             ))
 
         # 6. 内部独白写入情节记忆（Tulving 1983 四元素绑定：WHAT+WHEN+CONTEXT+AFFECT）
+        # P0-3: 写入前先剔除可能混入 LLM 输出的 <memory-context> 标签（防止跨-tick 内容污染）
         _affect = {"valence": self._emotion.valence, "arousal": self._emotion.arousal}
         if action.rationale:
+            _clean_rationale = _strip_memory_context(action.rationale)
             self._episodic.record(
                 role="assistant",
-                content=f"[cycle={cycle}] {action.rationale}",
+                content=f"[cycle={cycle}] {_clean_rationale}",
                 task_id=str(active_task.id) if active_task else None,
                 affect=_affect,
             )
 
         # 7. reflection → 语义记忆 + 情绪效价弱反写（P1-B，delta ≤ 0.05）
         if action.reflection:
-            _node_id = f"insight_{hashlib.md5(action.reflection.encode()).hexdigest()[:10]}"
+            _clean_reflection = _strip_memory_context(action.reflection)
+            _node_id = f"insight_{hashlib.md5(_clean_reflection.encode()).hexdigest()[:10]}"
             self._semantic.upsert(MemoryNode(
                 id=_node_id,
                 kind="learned_insight",
-                title=action.reflection[:60],
-                body=action.reflection,
+                title=_clean_reflection[:_SEM_TITLE_CHARS],
+                body=_clean_reflection,
                 activation=0.9,
                 valence=self._emotion.valence,
-                tags=["reflection", active_task.title[:20] if active_task else "free"],
+                tags=["reflection", active_task.title[:_SEM_TAG_TASK_CHARS] if active_task else "free"],
             ))
-            _ref_valence = _infer_valence_from_text(action.reflection, self._emotion.valence)
+            _ref_valence = _infer_valence_from_text(_clean_reflection, self._emotion.valence)
             _delta = _ref_valence - self._emotion.valence
             if abs(_delta) > 0.01:
                 self._emotion.valence = round(
@@ -751,7 +834,7 @@ class CognitionLoop:
                 _existing = self._semantic.get(_evt_id)
                 if _existing:
                     # 同一天：追加 reflection，保持最近 600 字
-                    _existing.body = (_existing.body + f"\n— {action.reflection[:200]}")[-600:]
+                    _existing.body = (_existing.body + f"\n— {_clean_reflection[:_EVENT_APPEND_CHARS]}")[- _EVENT_BODY_MAX_CHARS:]
                     _existing.activation = min(1.0, _existing.activation + 0.05)
                     self._semantic.upsert(_existing)
                 else:
@@ -763,8 +846,8 @@ class CognitionLoop:
                     self._semantic.upsert(MemoryNode(
                         id=_evt_id,
                         kind="event",
-                        title=f"[{_ts_label}] {active_task.title[:40]}",
-                        body=action.reflection[:400],
+                        title=f"[{_ts_label}] {active_task.title[:_EVENT_TITLE_CHARS]}",
+                        body=_clean_reflection[:_EVENT_NEW_BODY_CHARS],
                         activation=0.85,
                         valence=self._emotion.valence,
                         tags=_tags,
@@ -781,7 +864,7 @@ class CognitionLoop:
             if action.reply_to_user:
                 self._episodic.record(
                     role="assistant_reply",
-                    content=action.reply_to_user,
+                    content=_strip_memory_context(action.reply_to_user),
                     task_id=str(active_task.id) if active_task else None,
                     affect=_affect,
                 )
@@ -808,7 +891,7 @@ class CognitionLoop:
             self._wm.add(WMItem(
                 kind="conversation_history",
                 content=f"[近期对话记录]\n{hist_text}",
-                priority=_WM_PRI_HISTORY,
+                priority=self._cfg.thresholds.wm_pri_history,
             ))
         reply = await self._tick(cycle, user_message=user_message)
         # Hermes 借鉴：剥离 LLM 输出中意外泄露的 <memory-context> 标签内容

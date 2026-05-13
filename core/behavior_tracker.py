@@ -176,7 +176,12 @@ class BehaviorTracker:
         action: "JudgmentOutput",
         cognitive_signals: Any | None,
     ) -> "JudgmentOutput":
-        """执行前的确定性兜底门控：重复循环时强制 wait，减少对 prompt 遵守的单点依赖。"""
+        """执行前的确定性尺底门控：重复循环时强制 wait，减少对 prompt 遵守的单点依赖。
+
+        repeat_action_count 语义：从 1 开始计（第 1 次出现）。
+          count=3 = 上一轮 tick 已连续 3 次该工具，WMItem 已注入预警。
+          此处 >= 3 意味 LLM 看到预警后仍重复（第 4 次及以后），强制 wait 兼底。
+        """
         from core.judgment import JudgmentOutput
 
         if not cognitive_signals:
@@ -195,16 +200,35 @@ class BehaviorTracker:
         ):
             return JudgmentOutput.wait(
                 reason=(
-                    f"[gate] repeat_action_count={repeat_action_count} tool={repeat_action_tool}; "
-                    "force wait to break task loop"
+                    f"[反循环门控] 已连续 {repeat_action_count} 次调用 {repeat_action_tool}，"
+                    "本轮强制进入 wait 状态。\n"
+                    "必须改变策略：先通过 task.list 确认任务当前真实状态，"
+                    "再决定下一步行动；不要直接再次调用 task.advance/update。"
+                )
+            )
+
+        # 补强硬门控：连续重复的 shell.run / file.list 直接止损，避免高成本空转。
+        if (
+            repeat_action_count >= 3
+            and repeat_action_tool in {"shell.run", "file.list"}
+            and tool_id == repeat_action_tool
+        ):
+            return JudgmentOutput.wait(
+                reason=(
+                    f"[反循环门控] 已连续 {repeat_action_count} 次调用 {repeat_action_tool}，"
+                    "本轮强制进入 wait 状态。\n"
+                    "必须改变策略：你已经收集了足够信息，停止继续探索，"
+                    "转为根据已有信息做出决策或总结结论。"
                 )
             )
 
         if repeat_read_count >= 3 and tool_id == "file.read":
             return JudgmentOutput.wait(
                 reason=(
-                    f"[gate] repeat_read_count={repeat_read_count} path={repeat_read_path}; "
-                    "force wait to break read loop"
+                    f"[反循环门控] 已连续 {repeat_read_count} 次读取相同文件内容 ({repeat_read_path})，"
+                    "本轮强制进入 wait 状态。\n"
+                    "必须改变策略：该文件内容你已知晓，切换到其他文件、"
+                    "修改该文件、或基于已有内容直接作出决策。"
                 )
             )
 

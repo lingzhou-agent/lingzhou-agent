@@ -123,6 +123,7 @@ class OpenAICompatProvider:
             self._client = httpx.AsyncClient(
                 headers={"Content-Type": "application/json"},
                 timeout=cfg.timeout,
+                limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
             )
             # Copilot 短期 token 缓存（仅 mode=copilot 时使用）
             self._copilot_gh_token: str = self._api_key
@@ -145,6 +146,7 @@ class OpenAICompatProvider:
                     "Content-Type": "application/json",
                 },
                 timeout=cfg.timeout,
+                limits=httpx.Limits(max_keepalive_connections=5, keepalive_expiry=20),
             )
             self._copilot_api_base_url = ""
             self._copilot_gh_token = ""
@@ -162,17 +164,17 @@ class OpenAICompatProvider:
         headers["Content-Type"] = "application/json"
         return headers
 
-    async def _ensure_copilot_token(self) -> str:
+    async def _ensure_copilot_token(self, *, force_refresh: bool = False) -> str:
         """获取或刷新 GitHub Copilot 短期 token（TTL ~30 分钟，提前 5 分钟刷新）。
 
         主链路固定为：
           GitHub token → Copilot token exchange → Copilot API
         """
-        if self._copilot_token and time.time() < self._copilot_token_expires - 300:
+        if (not force_refresh) and self._copilot_token and time.time() < self._copilot_token_expires - 300:
             return self._copilot_token
 
         cache = load_copilot_token_cache()
-        if cache and (time.time() * 1000) < cache.expires_at_ms - 300_000:
+        if (not force_refresh) and cache and (time.time() * 1000) < cache.expires_at_ms - 300_000:
             self._copilot_token = cache.token
             self._copilot_token_expires = cache.expires_at_ms / 1000
             self._copilot_api_base_url = (
@@ -303,16 +305,36 @@ class OpenAICompatProvider:
             content=json.dumps(payload),
             headers=req_headers if req_headers else None,
         )
-        if self._provider_mode == "copilot" and resp.status_code == 400:
+
+        if self._provider_mode == "copilot" and resp.status_code in (400, 401, 403):
             body = resp.text
             if "Personal Access Tokens are not supported for this endpoint" in body:
                 raise RuntimeError(
                     "当前 GitHub token 没有成功走完 Copilot token exchange，或换到的 token 不可用。\n"
                     "请重新执行 `lingzhou auth login-copilot`，并提供可访问 copilot_internal 的 GitHub token。"
                 )
+            # token 轮换/失效窗口：强制刷新一次再重试，减少短时 400/401 抖动
+            refreshed = await self._ensure_copilot_token(force_refresh=True)
+            retry_headers = self._copilot_request_headers(refreshed)
+            resp = await self._client.post(
+                target_url,
+                content=json.dumps(payload),
+                headers=retry_headers,
+            )
+
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        # Qwen3/DashScope: thinking 有时内嵌在 content 中作为 <think>...</think> 而非分离到 reasoning_content。
+        # 两种情况都处理：优先用 reasoning_content（已分离），否则从 content 中剥离 <think> 块。
+        content: str = msg.get("content") or ""
+        if msg.get("reasoning_content"):
+            # 已正常分离， content 就是纯输出，无需处理
+            return content
+        import re as _re
+        # 剥除内嵌的 <think>...</think>（包括跨行）
+        content = _re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
+        return content
 
     async def close(self) -> None:
         await self._client.aclose()
