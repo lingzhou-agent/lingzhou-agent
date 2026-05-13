@@ -96,7 +96,7 @@ class LoopConfig(BaseModel):
             "原 interval×multiplier 体系已废弃，用此字段替代。"
         ),
     )
-    wake_poll_interval: float = Field(default=0.5, gt=0, description="事件轮询粒度（秒），越小响应越快但 CPU 开销越高")
+    wake_poll_interval: float = Field(default=0.2, gt=0, description="事件轮询粒度（秒），越小响应越快但 CPU 开销越高")
     wake_on_task_change: bool = Field(default=True, description="任务状态变化时是否提前唤醒")
     chat_reply_timeout: int = Field(
         default=300, ge=30,

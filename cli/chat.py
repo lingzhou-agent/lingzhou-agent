@@ -94,7 +94,7 @@ async def _ask_once(
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)
         msgs = await store.get_chat_messages_since(msg_id, session_id)
         for m in msgs:
             if m["role"] == "assistant":
@@ -163,7 +163,7 @@ async def _interactive(
         """持续轮询 DB，新 assistant 回复到达时立即打印。"""
         try:
             while not stop.is_set():
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
                 new_msgs = await store.get_chat_messages_since(cur_last_id, session_id)
                 for m in new_msgs:
                     cur_last_id = m["id"]
