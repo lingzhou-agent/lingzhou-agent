@@ -300,10 +300,20 @@ class OpenAICompatProvider:
         if self._provider_mode == "copilot":
             target_url = self._copilot_url("/chat/completions")
 
+        # thinking 激活时用更大的超时（thinking=medium 约 80-150s，high 可达 200s+）
+        # 即使 lingzhou.json 里配置了较小的 timeout，thinking 调用也至少保证 300s
+        _active_level = thinking_override if thinking_override is not None else self._thinking_level
+        _req_timeout = (
+            max(float(self._client.timeout.read or self._client.timeout.connect or 60.0), 300.0)
+            if _active_level not in (None, "off")
+            else None  # None = 使用 client 默认
+        )
+
         resp = await self._client.post(
             target_url,
             content=json.dumps(payload),
             headers=req_headers if req_headers else None,
+            timeout=_req_timeout,
         )
 
         if self._provider_mode == "copilot" and resp.status_code in (400, 401, 403):
@@ -320,6 +330,7 @@ class OpenAICompatProvider:
                 target_url,
                 content=json.dumps(payload),
                 headers=retry_headers,
+                timeout=_req_timeout,
             )
 
         resp.raise_for_status()

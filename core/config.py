@@ -318,7 +318,7 @@ class Config(BaseModel):
         )
     )
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
-    timeout: float = Field(default=60.0, gt=0)
+    timeout: float = Field(default=300.0, gt=0, description="LLM 请求超时（秒）。thinking 模型单次生成通常需要 60-180s，建议设置为 300 或更大")
     thinking: Literal["off", "minimal", "low", "medium", "high"] = Field(
         default="off",
         description=(
