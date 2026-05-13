@@ -171,7 +171,7 @@ def gateway_start(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
-    daemon: Annotated[bool, typer.Option("--daemon", "-d", help="后台运行（daemonize）")] = False,
+    daemon: Annotated[bool, typer.Option("--daemon/--no-daemon", "-d/-f", help="后台运行，默认已开启；--no-daemon 前台运行")] = True,
 ) -> None:
     """启动认知循环 + 消息渠道（loop 是内核，channel 是 I/O 层）。
 
@@ -255,7 +255,7 @@ def run(
     config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
-    daemon: Annotated[bool, typer.Option("--daemon", "-d", help="后台运行（daemonize）")] = False,
+    daemon: Annotated[bool, typer.Option("--daemon/--no-daemon", "-d/-f", help="后台运行，默认已开启；--no-daemon 前台运行")] = True,
 ) -> None:
     """启动认知循环（等同于 gateway start --channel local）。"""
     gateway_start(channel="local", config=config, debug=debug, dry_run=dry_run, daemon=daemon)

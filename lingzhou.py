@@ -43,7 +43,7 @@ def app_callback(
 ) -> None:
     """自编程自进化认知 agent 种子。不带子命令时直接启动认知循环。"""
     if ctx.invoked_subcommand is None:
-        gateway_start(channel="local")
+        gateway_start(channel="local", daemon=False)
 
 
 # ── 子命令注册 ────────────────────────────────────────────────────────────────
