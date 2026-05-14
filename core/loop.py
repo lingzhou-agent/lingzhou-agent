@@ -138,8 +138,7 @@ class CognitionLoop:
         self._ticks_since_judge: int = 0
         # 上一轮 tick 的决策类型（act/wait/fallback），用于动态 sleep 计算
         self._last_decision: str = "wait"
-        # 连续 wait 阻塞态节流计数：>0 表示处于“等待外部输入”模式，优先事件唤醒，减少空转判断。
-        self._wait_llm_skip_streak: int = 0        # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
+        # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
         self._pending_tier: str | None = None
         self._pending_idle_gap: float | None = None  # LLM 通过 model_strategy.next_idle_gap_secs 动态调控等待时长
         self._pending_routing_overrides: dict[str, str] | None = None  # LLM 通过 routing_overrides 临时覆盖 tier→model
@@ -283,7 +282,6 @@ class CognitionLoop:
                     chat_msg = await self._task_store.pop_pending_chat_message()
                     if chat_msg:
                         cycle += 1
-                        self._wait_llm_skip_streak = 0
                         reply = await self._tick(cycle, user_message=chat_msg["content"])
                         if reply:
                             reply = _strip_memory_context(reply)
@@ -294,18 +292,8 @@ class CognitionLoop:
                             chat_msg["session_id"],
                         )
                     else:
-                        # 阻塞态节流：连续 wait 时，优先事件驱动等待，跳过部分无增量 LLM 调用。
-                        # 这样在“等待用户日志/外部输入”阶段不会每轮都重跑高成本判断。
-                        if cycle > 0 and self._last_decision == "wait" and self._wait_llm_skip_streak < cfg.loop.wait_llm_skip_max:
-                            before_task = await self._task_store.get_active()
-                            await self._wait_for_event(cfg.loop.max_idle_gap, before_task)
-                            await self._maybe_hot_reload_provider()
-                            cfg = self._cfg
-                            self._wait_llm_skip_streak += 1
-                            continue
                         cycle += 1
                         await self._tick(cycle)
-                        self._wait_llm_skip_streak = 0
                     consecutive_errors = 0
                 except Exception:
                     consecutive_errors += 1

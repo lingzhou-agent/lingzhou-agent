@@ -19,6 +19,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from provider.catalog import lookup_model
@@ -158,7 +159,8 @@ class JudgmentLayer:
         self._system_prompt = cfg.load_prompt("system")
         self._identity_prefix: str = ""   # bootstrap 注入的永久身份前缀（不随 WM 驱逐）
         self._judgment_template = cfg.load_prompt("judgment")
-        self._skills = SkillRegistry()
+        _skills_dir = Path(cfg.loop.workspace_dir).expanduser() / "skills"
+        self._skills = SkillRegistry(skills_dir=_skills_dir)
         self._ref_resolver = ReferenceResolver(provider=provider)
         # 分层路由 providers：{"simple": <provider>, "complex": <provider>}
         # 由 loop.open() 在 bootstrap 后注入，未配置时为空字典

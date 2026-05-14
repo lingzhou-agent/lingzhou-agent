@@ -10,8 +10,12 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from core.perception import EthosState
@@ -83,10 +87,65 @@ _BUILTIN_SKILLS: list[Skill] = [
 # ── 技能注册表 ────────────────────────────────────────────────────────────────
 
 class SkillRegistry:
-    """内置技能注册表。后续可扩展为从 workspace/skills/*.md 动态加载。"""
+    """技能注册表：内置技能 + 从 workspace/skills/*.md 动态加载的自定义技能。
 
-    def __init__(self) -> None:
+    文件格式（每个 .md 文件是一个技能）：
+      - 可选 YAML frontmatter（--- 包裹）：description、tags 字段
+      - frontmatter 后的正文即为注入 LLM 的 guidance 文本
+      - 文件名（不含扩展名）作为技能 name
+      - 自定义技能与内置技能同名时覆盖内置技能
+    """
+
+    def __init__(self, skills_dir: Path | None = None) -> None:
         self._skills: list[Skill] = list(_BUILTIN_SKILLS)
+        if skills_dir is not None:
+            loaded = self._load_from_dir(skills_dir)
+            if loaded:
+                _log.info("[skill] 从 %s 加载了 %d 个自定义技能", skills_dir, loaded)
+
+    def _load_from_dir(self, skills_dir: Path) -> int:
+        """从目录加载 *.md 技能文件，返回加载数量。"""
+        if not skills_dir.exists():
+            return 0
+        loaded = 0
+        for md_file in sorted(skills_dir.glob("*.md")):
+            try:
+                content = md_file.read_text(encoding="utf-8").strip()
+                if not content:
+                    continue
+                name = md_file.stem
+                description = f"自定义技能: {name}"
+                tags: list[str] = ["custom"]
+                guidance = content
+                # 解析可选 frontmatter
+                if content.startswith("---"):
+                    lines = content.split("\n")
+                    end_fm = -1
+                    for i, line in enumerate(lines[1:], 1):
+                        if line.strip() == "---":
+                            end_fm = i
+                            break
+                    if end_fm > 0:
+                        for fm_line in lines[1:end_fm]:
+                            if fm_line.startswith("description:"):
+                                description = fm_line[len("description:"):].strip()
+                            elif fm_line.startswith("tags:"):
+                                raw = fm_line[len("tags:"):].strip().strip("[]")
+                                tags = [t.strip().strip("\"'") for t in raw.split(",") if t.strip()]
+                        guidance = "\n".join(lines[end_fm + 1:]).strip()
+                if not guidance:
+                    continue
+                skill = Skill(name=name, description=description, guidance=guidance, tags=tags)
+                existing = next((i for i, s in enumerate(self._skills) if s.name == name), -1)
+                if existing >= 0:
+                    self._skills[existing] = skill
+                    _log.debug("[skill] 覆盖内置技能: %s", name)
+                else:
+                    self._skills.append(skill)
+                loaded += 1
+            except Exception as exc:
+                _log.warning("[skill] 加载 %s 失败: %s", md_file, exc)
+        return loaded
 
     def all_skills(self) -> list[Skill]:
         """返回全部技能，供 LLM 自主判断适用哪些。"""

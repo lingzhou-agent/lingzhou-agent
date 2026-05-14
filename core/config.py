@@ -151,7 +151,7 @@ class LoopConfig(BaseModel):
     consolidate_every: int = Field(default=10, ge=1, description="每 N 轮 WM→语义整合")
     evolve_every: int = Field(default=30, ge=1, description="每 N 轮自进化检查")
     max_consecutive_errors: int = Field(default=5, ge=1, description="连续错误上限后暂停")
-    heartbeat_interval: int = Field(default=1800, ge=60, description="心跳自检信号触发间隔（秒，默认 30 分钟）")
+    heartbeat_interval: int = Field(default=300, ge=60, description="心跳自检信号触发间隔（秒，默认 5 分钟）")
     judge_every: int = Field(
         default=1, ge=1,
         description=(
@@ -165,14 +165,6 @@ class LoopConfig(BaseModel):
             "chat/interact 模式（有用户消息）时，单次 tick 内允许的最大工具调用轮次。"
             "首轮走完整 perception，后续轮追加工具历史直接续判，不重跑感知链路。"
             "达到上限后自动注入兜底回复，保证 chat 客户端不超时。"
-        ),
-    )
-    wait_llm_skip_max: int = Field(
-        default=3, ge=1,
-        description=(
-            "连续 wait 决策时，最多跳过 LLM 调用的次数。"
-            "超过此值后强制触发一次真实 LLM 判断，防止因事件驱动等待造成长时间无判断。"
-            "默认 3 = 最多跳过 3 轮再强制判断一次。"
         ),
     )
 
