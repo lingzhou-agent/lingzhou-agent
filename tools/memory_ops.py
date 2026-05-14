@@ -160,7 +160,7 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
         task_id=str(task.id) if task else None,
     )
     return ToolResult(
-        summary=f"结构性洞察已写入语义记忆: {title}（WM 压力不变；若需释放 WM，请调用 memory.snapshot）",
+        summary=f"结构性洞察已写入语义记忆: {title}",
         evidence=f"node_id={node.id}",
         priority=0.5,  # 洞察记录本身不需要长时间留在 WM
     )
@@ -168,7 +168,7 @@ async def reflect_structural(params: dict[str, Any], ctx: ToolContext) -> ToolRe
 
 @tool(ToolManifest(
     name="memory.snapshot",
-    description="快照当前工作记忆与运行时状态摘要，写入情节记忆供复盘，然后清空工作记忆（释放 WM 压力）",
+    description="【由 runtime 自动调用，禁止手动调用】快照当前工作记忆与运行时状态摘要，写入情节记忆供复盘，然后清空工作记忆（释放 WM 压力）",
     params=[],
 ))
 async def memory_snapshot(params: dict[str, Any], ctx: ToolContext) -> ToolResult:

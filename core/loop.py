@@ -58,6 +58,11 @@ _EVENT_NEW_BODY_CHARS = 16000  # 新事件节点 body 上限
 _VALENCE_POS = frozenset(["完成", "成功", "理解", "学到", "进步", "有效", "清晰", "好", "正确", "解决", "突破"])
 _VALENCE_NEG = frozenset(["失败", "错误", "困惑", "卡住", "无法", "问题", "不对", "不清", "循环", "重复", "卡顿"])
 
+# WM 大型工具输出压缩：超过此字符数的工具结果在写入 WM 时只保留元数据首行
+# LLM 已在本 tick 的工具历史（_tool_history）中看到全量内容，WM 仅需保留防循环标记
+_WM_RESULT_COMPRESS_CHARS = 400
+_WM_COMPRESS_TOOLS = frozenset({"file.read", "file.list"})
+
 
 def _infer_valence_from_text(text: str, current: float) -> float:
     """从 reflection 文本推断情绪效价倾向。
@@ -665,12 +670,19 @@ class CognitionLoop:
                 _cont = self._behavior.apply_execution_gate(_cont, cognitive_signals)
                 _cont_result = await self._execution.dispatch(_cont, ctx)
 
-                # 内层 WM 写入
+                # 内层 WM 写入（大型输出同外层压缩：只保留元数据首行）
                 if _cont_result.summary and not _cont_result.skipped:
                     _t = _cont.chosen_action_id or ""
                     _kp2 = (_cont.params or {}).get("path") or (_cont.params or {}).get("name") or (_cont.params or {}).get("title") or ""
                     _pfx = f"[{_t}{'  ' + _kp2 if _kp2 else ''}] "
-                    self._wm.add(WMItem(kind=_t or _cont_result.kind, content=_pfx + _cont_result.summary, priority=_cont_result.priority))
+                    _body2 = _cont_result.summary
+                    if len(_body2) > _WM_RESULT_COMPRESS_CHARS and _t in _WM_COMPRESS_TOOLS:
+                        _fl = _body2.split("\n", 1)[0]
+                        _body2 = _fl + f"  … [已处理 {len(_cont_result.summary)} 字符]"
+                    self._wm.add(WMItem(kind=_t or _cont_result.kind, content=_pfx + _body2, priority=_cont_result.priority))
+                # 内层 reflection → WM 高优先级合成条目（LLM 对工具结果的即时提炼）
+                if _cont.reflection and _cont.reflection.strip():
+                    self._wm.add(WMItem(kind="synthesis", content=f"[合成] {_cont.reflection.strip()}", priority=0.88))
                 # 内层 rationale → 情节记忆
                 if _cont.rationale:
                     self._episodic.record(role="assistant", content=f"[inner-{_inner + 1}] {_cont.rationale}",
@@ -874,15 +886,31 @@ class CognitionLoop:
                     await self._task_store.set_fact(_marker, "1", scope="system")
 
         # 5. 结果写入 WM（kind=tool_id，让反循环规则能识别来源）
+        # 大型工具输出（file.read / file.list 等）只存元数据首行：
+        # LLM 已在本 tick 工具历史中处理全量内容；WM 仅需保留"已访问"标记供反循环检测。
         if result.summary and not result.skipped:
             tool_id = action.chosen_action_id or ""
             params = action.params or {}
             key_param = params.get("path") or params.get("name") or params.get("title") or ""
             wm_prefix = f"[{tool_id}{'  ' + key_param if key_param else ''}] "
+            wm_body = result.summary
+            if len(wm_body) > _WM_RESULT_COMPRESS_CHARS and tool_id in _WM_COMPRESS_TOOLS:
+                first_line = wm_body.split("\n", 1)[0]
+                wm_body = first_line + f"  … [已处理 {len(result.summary)} 字符]"
             self._wm.add(WMItem(
                 kind=tool_id or result.kind,
-                content=wm_prefix + result.summary,
+                content=wm_prefix + wm_body,
                 priority=result.priority,
+            ))
+
+        # 5b. LLM reflection → WM 高优先级合成条目
+        # reflection 是 LLM 主动提炼的本轮理解，比原始工具输出更紧凑、更有价值，
+        # 应以高优先级写入 WM，确保下一 tick 能优先看到已提炼的认知，而非重新读原始数据。
+        if action.reflection and action.reflection.strip():
+            self._wm.add(WMItem(
+                kind="synthesis",
+                content=f"[合成] {action.reflection.strip()}",
+                priority=0.88,
             ))
 
         # 6. 内部独白写入情节记忆（Tulving 1983 四元素绑定：WHAT+WHEN+CONTEXT+AFFECT）
