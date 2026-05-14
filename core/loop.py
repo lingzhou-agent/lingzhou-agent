@@ -596,13 +596,17 @@ class CognitionLoop:
             (action.rationale or "")[: _LOG_RATIONALE_CHARS],
         )
 
-        # 3.5 行为模式感知（act 时追踪，wait/fallback 不计入）
+        # 3.5 行为模式感知
         if action.decision == "act":
             _tool_id = action.chosen_action_id or ""
             _p = action.params or {}
             _key_param = _p.get("path") or _p.get("name") or _p.get("title") or str(_p.get("id") or "") or _p.get("key") or ""
             _cur_task_id = str(active_task.id) if active_task else None
             for _item in self._behavior.on_act(_tool_id, _key_param, _cur_task_id):
+                self._wm.add(_item)
+        else:
+            # wait/pause 连续计数：超阈值注入自我感知提示
+            for _item in self._behavior.on_wait(action.decision, active_task is not None):
                 self._wm.add(_item)
 
         # 4. 执行前本地硬门控：重复循环时强制 wait

@@ -39,6 +39,8 @@ class BehaviorTracker:
         self._explore_count: int = 0
         self._explore_task_id: str | None = None
         self._explore_warned: set[int] = set()
+        self._wait_streak: int = 0          # 连续 wait/pause 决策次数
+        self._wait_streak_warned: set[int] = set()  # 已触发提示的阈值
 
     # ── 状态接口 ──────────────────────────────────────────────────────────────
 
@@ -169,6 +171,46 @@ class BehaviorTracker:
                 ),
                 priority=0.95,
             ))
+        return items
+
+    def on_wait(self, decision: str, has_active_task: bool) -> list["WMItem"]:
+        """追踪连续 wait/pause 决策，注入自我感知提示。
+
+        阈值（3, 6）：分别对应"轻提示"和"强提示"，不阻断，由 LLM 自主决策。
+        act 决策后重置计数。
+        """
+        from memory.working import WMItem
+
+        if decision not in ("wait", "pause"):
+            self._wait_streak = 0
+            self._wait_streak_warned = set()
+            return []
+
+        self._wait_streak += 1
+        items: list[WMItem] = []
+
+        _thresholds = (3, 6)
+        for thresh in _thresholds:
+            if self._wait_streak >= thresh and thresh not in self._wait_streak_warned:
+                self._wait_streak_warned.add(thresh)
+                if thresh == 3:
+                    _msg = (
+                        f"[自我感知] 我已连续 {self._wait_streak} 轮选择 wait/pause。"
+                        "请重新评估：当前等待的'信号'是否有明确的到达条件？"
+                        "若任务 next_step 不再准确，请用 task.advance 更新它，而非持续等待。"
+                    )
+                    _priority = 0.88
+                else:
+                    _msg = (
+                        f"[自我感知] 我已连续 {self._wait_streak} 轮 wait/pause，"
+                        "这可能是认知停滞的信号。"
+                        "必须采取行动：或用 task.advance 更新 next_step，"
+                        "或用 task.complete/task.fail 结束任务，或直接执行下一步工具调用。"
+                    )
+                    _priority = 0.95
+                _log.warning("[self-awareness] 连续 %d 轮 wait/pause", self._wait_streak)
+                items.append(WMItem(kind="self_awareness", content=_msg, priority=_priority))
+                break
         return items
 
     def apply_execution_gate(
