@@ -284,9 +284,11 @@ class CognitionLoop:
                     chat_msg = await self._task_store.pop_pending_chat_message()
                     if chat_msg:
                         cycle += 1
+                        _log.info("[chat] user › %s", chat_msg["content"][:200])
                         reply = await self._tick(cycle, user_message=chat_msg["content"])
                         if reply:
                             reply = _strip_memory_context(reply)
+                        _log.info("[chat] assistant › %s", (reply or "")[:200])
                         # 内层循环已兜底 reply；若 tick 意外返回空串，也写一条 ACK 防超时
                         await self._task_store.add_chat_message(
                             "assistant",
