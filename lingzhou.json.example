@@ -4,7 +4,7 @@
   "_doc_providers": [
     "providers 定义各 LLM 接入点（连接配置，与模型无关）。",
     "支持同时定义多个 provider，通过顶层 model 字段的 'provider-name/model-id' 格式切换。",
-    "api_key 从环境变量读取，绝不写入配置文件。"
+    "api_key 从环境变量/credentials/auth-profile 读取，绝不写入配置文件。"
   ],
   "providers": {
     "bailian": {
@@ -14,7 +14,8 @@
         "百炼套餐端点（sk-sp-* 前缀 key）：https://coding.dashscope.aliyuncs.com/v1"
       ],
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "api_key_env": "DASHSCOPE_API_KEY"
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "auth_profile_id": "bailian:default"
     },
     "copilot": {
       "type": "openai_compat",
@@ -57,6 +58,21 @@
     "reader": "bailian/qwen3.6-plus",
     "reasoner": "copilot/gpt-5.4",
     "repair": "bailian/qwen3.6-plus"
+  },
+
+  "_doc_model_fallbacks": [
+    "OpenClaw 风格显式回退链：每个 tier 按顺序尝试模型（超时/401/429 时自动切换）。",
+    "可用 key：reader/reasoner/repair（兼容 simple/complex）。"
+  ],
+  "model_fallbacks": {
+    "reader": [
+      "bailian/qwen-plus",
+      "copilot/gpt-5.4"
+    ],
+    "reasoner": [
+      "bailian/qwen3.6-plus",
+      "copilot/gpt-5.4-mini"
+    ]
   },
 
   "temperature": 0.7,

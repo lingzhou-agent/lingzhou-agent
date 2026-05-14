@@ -371,6 +371,14 @@ class Config(BaseModel):
             "未配置时所有 phase 均使用顶层 model 字段。"
         ),
     )
+    model_fallbacks: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description=(
+            "OpenClaw 风格显式模型回退链（按顺序尝试）。key 为 tier（reader/reasoner/repair，"
+            "兼容 simple/complex），value 为 'provider/model-id' 列表。\n"
+            "示例: {\"reader\": [\"bailian/qwen-plus\", \"copilot/gpt-5.4\"]}"
+        ),
+    )
 
     # ── 其他配置节 ────────────────────────────────────────────────────────
     loop: LoopConfig = Field(default_factory=LoopConfig)

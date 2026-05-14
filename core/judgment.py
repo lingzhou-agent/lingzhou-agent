@@ -217,6 +217,40 @@ class JudgmentLayer:
                 return alias, model_ref
         return "default", self._cfg.model
 
+    def _tier_fallback_models(self, tier: str) -> list[str]:
+        """返回某个 tier 的显式回退模型链（按配置顺序）。"""
+        out: list[str] = []
+        for key in (tier, *self._routing_aliases(tier)):
+            for m in self._cfg.model_fallbacks.get(key, []):
+                if m and m not in out:
+                    out.append(m)
+        return out
+
+    def _tier_model_candidates(
+        self,
+        tier: str,
+        routing_overrides: dict[str, str] | None = None,
+    ) -> list[str]:
+        """按优先级构建 tier 的候选模型：override -> routing 主模型 -> 显式 fallback -> 顶层 model。"""
+        candidates: list[str] = []
+
+        override_model = (routing_overrides or {}).get(tier)
+        if override_model:
+            candidates.append(override_model)
+
+        _, primary = self._resolve_tier_model(tier)
+        if primary and primary not in candidates:
+            candidates.append(primary)
+
+        for m in self._tier_fallback_models(tier):
+            if m not in candidates:
+                candidates.append(m)
+
+        if self._cfg.model not in candidates:
+            candidates.append(self._cfg.model)
+
+        return candidates
+
     def _get_health(self, model_ref: str) -> ModelHealth:
         h = self._model_health.get(model_ref)
         if h is None:
@@ -341,41 +375,29 @@ class JudgmentLayer:
             tool_history=tool_history,
             prefer_tier=prefer_tier,
         )
-        # routing_overrides 临时覆盖 tier→model（运行时动态切换，无需重启）
-        if routing_overrides and tier in routing_overrides:
-            override_model = routing_overrides[tier]
-            if override_model and self._is_model_available(override_model):
-                thinking = thinking_override if thinking_override is not None else self._cfg.thinking
-                return (
-                    self._find_or_create_provider(override_model),
-                    ModelSelection(phase=phase, tier=tier, model_ref=override_model, thinking=thinking),
-                )
-        route_key, model_ref = self._resolve_tier_model(tier)
         chosen_tier = tier
-        chosen_route_key = route_key
-        chosen_model = model_ref
+        chosen_model = self._cfg.model
+        provider: "Provider" = self._provider
+        selected = False
 
-        if not self._is_model_available(model_ref):
-            for fb in self._fallback_tiers(tier):
-                fb_route, fb_model = self._resolve_tier_model(fb)
-                if self._is_model_available(fb_model):
-                    chosen_tier = fb
-                    chosen_route_key = fb_route
-                    chosen_model = fb_model
+        # 先试当前 tier，再按 tier fallback 试其他 tier。
+        # 每个 tier 内按：override -> routing 主模型 -> model_fallbacks -> 顶层 model。
+        for cand_tier in (tier, *self._fallback_tiers(tier)):
+            for model_ref in self._tier_model_candidates(cand_tier, routing_overrides=routing_overrides):
+                if not self._is_model_available(model_ref):
+                    continue
+                try:
+                    provider = self._find_or_create_provider(model_ref)
+                    chosen_tier = cand_tier
+                    chosen_model = model_ref
+                    selected = True
                     break
+                except Exception as e:
+                    _log.warning("[routing] tier=%s model=%s provider 构建失败，跳过: %s", cand_tier, model_ref, e)
+                    continue
+            if selected:
+                break
 
-        provider = (
-            self._provider
-            if chosen_model == self._cfg.model
-            else self._routing_providers.get(chosen_route_key, self._provider)
-        )
-        # routing provider 创建失败时会缺失，打印警告并修正 model_ref 以免日志误导
-        if provider is self._provider and chosen_model != self._cfg.model:
-            _log.warning(
-                "[routing] tier=%s 期望模型 %s 的 provider 不存在（创建失败或未配置），实际回退至默认 %s",
-                chosen_tier, chosen_model, self._cfg.model,
-            )
-            chosen_model = self._cfg.model
         thinking = thinking_override if thinking_override is not None else self._cfg.thinking
         return provider, ModelSelection(phase=phase, tier=chosen_tier, model_ref=chosen_model, thinking=thinking)
 
