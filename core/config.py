@@ -105,13 +105,19 @@ class LoopConfig(BaseModel):
             "避免无限紧循环。不等固定 interval，执行中的任务可连续推进。"
         ),
     )
+    active_idle_gap: int = Field(
+        default=15, ge=2,
+        description=(
+            "有活跃任务但 decision=wait/pause 时的等待上限（秒），默认 15s。"
+            "LLM 通过 model_strategy.next_idle_gap_secs 可覆盖（有任务时有效范围 2-30s）。"
+        ),
+    )
     max_idle_gap: int = Field(
         default=60, ge=5,
         description=(
-            "空闲（无任务、无 chat、无外部事件）时的最长等待上限（秒），默认 60s。"
-            "此值不是固定节拍，而是事件驱动等待的超时兜底：chat 消息、task 状态变化、"
-            "heartbeat 任一事件发生即立即唤醒，不等满此值。"
-            "原 interval×multiplier 体系已废弃，用此字段替代。"
+            "无活跃任务时的最长等待上限（秒），默认 60s。"
+            "chat 消息、task 状态变化任一事件即立即唤醒，不等满此值。"
+            "LLM 通过 model_strategy.next_idle_gap_secs 可覆盖（无任务时有效范围 5-300s）。"
         ),
     )
     wake_poll_interval: float = Field(default=0.2, gt=0, description="事件轮询粒度（秒），越小响应越快但 CPU 开销越高")
