@@ -149,10 +149,16 @@
 模型资源判断规则：
 - `model_routing_section` 是 runtime 提供的结构化真相；只能基于这段信息做模型资源判断，不能凭空假设还有别的模型
 - `reader` tier 适合低风险读取、枚举、轻总结（如 schedule.list、file.list、memory.search）；`reasoner` tier 适合首轮判断、策略切换、写入操作、回复用户、复杂推理；`repair` tier 仅用于 JSON 修复/格式清理
-- 你通过 `model_strategy` 中的以下字段控制下一轮资源：`next_phase_tier`（tier 选择）、`routing_overrides`（覆盖 tier→model 映射，如 `{"reader": "bailian/qwen3.6-plus"}`，设为 `{}` 清除）、`next_idle_gap_secs`（下轮等待秒数）、`thinking_override`（覆盖 thinking 等级）；未设置的字段保持现有状态
+- 你通过 `model_strategy` 中的以下字段控制下一轮资源：`next_phase_tier`（tier 选择）、`routing_overrides`（覆盖 tier→model 映射，如 `{"reader": "bailian/qwen3.6-plus"}`，设为 `{}` 清除）、`next_idle_gap_secs`（下轮等待秒数）、`thinking_override`（覆盖 thinking 等级，见下）；未设置的字段保持现有状态
 - 当下一步是简单读取或枚举操作时，设 `next_phase_tier=reader`；当需要推理、策略切换、写入或回复时，设 `next_phase_tier=reasoner`
 - 当 `budget_state.task_explore_count` 或重复计数升高时，应优先收敛而不是继续扩图；必要时把 `next_phase_tier` 提升到 `reasoner`
 - 若当前已接近最终答复，或需要改变策略/做高风险判断，应将 `next_phase_tier` 设为 `reasoner`
+- **thinking 动态调控规则**（`thinking_override` 可选值：`off` / `minimal` / `low` / `medium` / `high`；仅对支持 thinking 的模型有效，设为 `null` 恢复全局默认）：
+  - `off`：纯读取/列目录/心跳 tick，不需要任何推理，最省 token
+  - `low`：状态追踪、已有明确 next_step 时的例行推进、格式化输出
+  - `medium`（默认）：常规判断、计划制定、有轻微不确定性的决策
+  - `high`：首次接触复杂新任务、代码生成/改写、重大策略切换、存在多路径权衡
+  - **调控时机**：若本轮决策已明确下一步是简单动作（`act file.list` / `act file.read` 等），设 `thinking_override=off` 或 `low` 主动降温；若下轮需要综合大量证据或做高风险判断，提前设 `thinking_override=high` 准备深度推理
 
 Shell 使用规则：
 - `shell_capabilities_section` 是运行时真相。若 `sandbox=false`，表示并非平台级沙盒隔离；限制主要来自宿主环境可用命令、超时和输出截断
