@@ -1,6 +1,7 @@
 """tools/file.py — 文件读写和编辑工具。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -71,6 +72,51 @@ def _resolve_read_path(path: Path) -> Path:
 
 
 @tool(ToolManifest(
+    name="file.list",
+    description="列出目录内容。支持 shallow list，用于替代 shell.run 的 ls/find 场景。",
+    params=[
+        ToolParam("path", "string", "目录路径", required=True),
+        ToolParam("limit", "number", "最多返回多少项，默认 200", required=False),
+        ToolParam("include_hidden", "boolean", "是否包含隐藏文件，默认 false", required=False),
+    ],
+))
+async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    path = _resolve_read_path(Path(params.get("path") or "").expanduser())
+    limit = int(params.get("limit") or 200)
+    include_hidden = bool(params.get("include_hidden", False))
+
+    if not path.exists():
+        return ToolResult(summary=f"路径不存在: {path}", error="FileNotFound")
+    if not path.is_dir():
+        return ToolResult(summary=f"不是目录: {path}", error="NotADirectory")
+
+    try:
+        entries = []
+        for child in sorted(path.iterdir(), key=lambda p: p.name.lower()):
+            if not include_hidden and child.name.startswith('.'):
+                continue
+            suffix = "/" if child.is_dir() else ""
+            entries.append(child.name + suffix)
+        clipped = entries[:max(0, limit)]
+        remaining = max(0, len(entries) - len(clipped))
+        body = "\n".join(clipped)
+        if remaining:
+            body += f"\n... (+{remaining} more)"
+        payload = {"path": str(path), "count": len(entries), "returned": len(clipped)}
+        return ToolResult(
+            summary=body or "（空目录）",
+            evidence=json.dumps(payload, ensure_ascii=False),
+            resource_key=str(path),
+            fingerprint=f"list:{hashlib.md5((body or '（空目录）').encode()).hexdigest()[:12]}",
+            artifact_paths=[str(path)],
+            metadata=payload,
+        )
+    except Exception as e:
+        _log.exception("列出目录失败: %s", path)
+        return ToolResult(summary=f"列出失败: {path}", error=type(e).__name__)
+
+
+@tool(ToolManifest(
     name="file.read",
     description="读取文件内容，支持按下标区间读取。不指定任何参数时读取全部内容。",
     params=[
@@ -81,13 +127,19 @@ def _resolve_read_path(path: Path) -> Path:
     ],
 ))
 async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = _resolve_read_path(Path(params.get("path") or "").expanduser())
+    raw_path = str(params.get("path") or "").strip()
+    if not raw_path:
+        return ToolResult(summary="path 不能为空", error="EmptyPath", skipped=True)
+
+    path = _resolve_read_path(Path(raw_path).expanduser())
     max_chars_raw = params.get("max_chars")
     max_chars: int | None = int(max_chars_raw) if max_chars_raw is not None else None
     has_range = ("start" in params) or ("end" in params)
 
     if not path.exists():
         return ToolResult(summary=f"文件不存在: {path}", error="FileNotFound")
+    if not path.is_file():
+        return ToolResult(summary=f"不是文件: {path}", error="NotAFile", skipped=True)
 
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -102,7 +154,13 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if max_chars is not None:
             text = text[:max(0, max_chars)]
 
-        return ToolResult(summary=text)
+        return ToolResult(
+            summary=text,
+            resource_key=str(path),
+            fingerprint=f"read:{hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()[:12]}",
+            artifact_paths=[str(path)],
+            metadata={"path": str(path), "chars": len(text), "has_range": has_range, "max_chars": max_chars},
+        )
     except Exception as e:
         _log.exception("读取文件失败: %s", path)
         return ToolResult(summary=f"读取失败: {path}", error=type(e).__name__)
@@ -125,8 +183,16 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(str(content), encoding="utf-8")
-        return ToolResult(summary=f"写入成功: {path} ({len(str(content))} 字符)")
+        text = str(content)
+        path.write_text(text, encoding="utf-8")
+        return ToolResult(
+            summary=f"写入成功: {path} ({len(text)} 字符)",
+            resource_key=str(path),
+            fingerprint=f"write:{hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()[:12]}",
+            artifact_paths=[str(path)],
+            state_delta={"file": "written", "chars": len(text)},
+            metadata={"path": str(path), "chars": len(text)},
+        )
     except Exception as e:
         _log.exception("写入文件失败: %s", path)
         return ToolResult(summary=f"写入失败: {path}", error=type(e).__name__)
@@ -214,9 +280,15 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             f"  [{a['index']}] {a['old_preview']} → {a['new_preview']}"
             for a in applied
         )
+        payload = {"path": str(path), "changes": changes_made, "applied": applied}
         return ToolResult(
             summary=f"编辑成功: {path}（{changes_made} 处替换）\n{applied_summary}",
-            evidence=json.dumps({"path": str(path), "changes": changes_made, "applied": applied}, ensure_ascii=False),
+            evidence=json.dumps(payload, ensure_ascii=False),
+            resource_key=str(path),
+            fingerprint=f"edit:{hashlib.md5(content.encode('utf-8', errors='replace')).hexdigest()[:12]}",
+            artifact_paths=[str(path)],
+            state_delta={"file": "edited", "changes": changes_made},
+            metadata=payload,
         )
     except Exception as e:
         _log.exception("编辑文件失败: %s", path)

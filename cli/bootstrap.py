@@ -9,14 +9,14 @@ from typing import Annotated
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg
+from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 
 
 def setup(
-    output: Annotated[Path, typer.Option("--output", "-o", help="输出配置文件路径")] = Path("lingzhou.json"),
+    output: Annotated[Path, typer.Option("--output", "-o", help="输出配置文件路径")] = DEFAULT_CONFIG_PATH,
     force: Annotated[bool, typer.Option("--force/--no-force", help="已存在时强制覆盖")] = False,
 ) -> None:
-    """向导式初始化：一步步引导生成 lingzhou.json 配置文件。"""
+    """向导式初始化：一步步引导生成 lingzhou.json 配置文件（默认写入 ~/.lingzhou/lingzhou.json）。"""
     from provider.catalog import list_providers, list_provider_models
 
     if output.exists() and not force:
@@ -188,7 +188,7 @@ def setup(
 
 
 def init(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     force: Annotated[bool, typer.Option("--force/--no-force", help="已存在时强制重新初始化")] = False,
 ) -> None:
     """初始化 lingzhou 运行环境（创建 DB、播种 soul、写 workspace 镜像文件）。

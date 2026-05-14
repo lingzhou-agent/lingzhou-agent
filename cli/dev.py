@@ -1,4 +1,4 @@
-"""cli/dev.py — dev 子命令组：evolve / tools / model / update / version / doctor。"""
+"""cli/dev.py — dev 子命令组：evolve / tools / skills / model / update / version / doctor。"""
 from __future__ import annotations
 
 import asyncio
@@ -10,12 +10,12 @@ from typing import Annotated, Optional
 
 import typer
 
-from cli._common import console, load_cfg, PROJECT_ROOT
+from cli._common import console, load_cfg, PROJECT_ROOT, DEFAULT_CONFIG_PATH
 from core.version import __version__, __codename__
 
 dev_app = typer.Typer(
     name="dev",
-    help="开发者工具：evolve / tools / model / update / version / doctor",
+    help="开发者工具：evolve / tools / skills / model / update / version / doctor",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
@@ -23,7 +23,7 @@ dev_app = typer.Typer(
 @dev_app.command("evolve")
 def evolve(
     description: Annotated[str, typer.Argument(help="新工具的自然语言描述")],
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """合成并热加载一个新工具（自进化）。"""
     cfg = load_cfg(config)
@@ -74,10 +74,44 @@ def tools(
         console.print(f"  [cyan]{m.name:<26}[/cyan] {m.description or ''}")
 
 
+@dev_app.command("skills")
+def skills(
+    search: Annotated[Optional[str], typer.Argument(help="关键词过滤")] = None,
+    disabled: Annotated[bool, typer.Option("--disabled", help="显示已禁用 skills，而不是 active skills")] = False,
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
+) -> None:
+    """列出当前 workspace 中可被运行态加载的 skills。"""
+    from core.skill import SkillRegistry
+
+    cfg = load_cfg(config)
+    skills_dir = Path(cfg.loop.workspace_dir).expanduser() / ("skills-disabled" if disabled else "skills")
+    reg = SkillRegistry(skills_dir=skills_dir)
+    items = [s for s in reg.all_skills() if bool(s.source_path)]
+
+    if search:
+        kw = search.lower()
+        items = [
+            s for s in items
+            if kw in s.name.lower()
+            or kw in (s.description or "").lower()
+            or kw in " ".join(s.triggers).lower()
+        ]
+
+    state = "disabled" if disabled else "active"
+    if not items:
+        console.print(f"（没有匹配的 {state} skills）")
+        return
+
+    console.print(f"[bold]{state} skills[/bold]  ({len(items)} 个)  [dim]{skills_dir}[/dim]\n")
+    for s in sorted(items, key=lambda x: x.name):
+        trig = f"  [dim]triggers: {', '.join(s.triggers[:6])}[/dim]" if s.triggers else ""
+        console.print(f"  [cyan]{s.name:<24}[/cyan] {s.description}{trig}")
+
+
 @dev_app.command("model")
 def model(
     set_model: Annotated[Optional[str], typer.Argument(help="要切换的模型 ID，如 bailian/qwen-plus")] = None,
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     list_all: Annotated[bool, typer.Option("--list", "-l", help="列出所有可用模型")] = False,
     interactive: Annotated[bool, typer.Option("--interactive", "-i", help="交互式选择 provider 和模型")] = False,
 ) -> None:

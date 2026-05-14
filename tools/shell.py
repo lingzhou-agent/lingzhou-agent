@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -69,7 +70,13 @@ async def shell_capabilities(params: dict[str, Any], ctx: ToolContext) -> ToolRe
         f"sandbox={caps['sandbox']} mode={caps['execution_model']} "
         f"timeout={caps['default_timeout_sec']}s cmds={len(caps['available_commands'])}"
     )
-    return ToolResult(summary=summary, evidence=json.dumps(caps, ensure_ascii=False))
+    return ToolResult(
+        summary=summary,
+        evidence=json.dumps(caps, ensure_ascii=False),
+        resource_key=workdir,
+        fingerprint=f"caps:{len(caps['available_commands'])}",
+        metadata={"caps": caps},
+    )
 
 
 @tool(_MANIFEST)
@@ -108,41 +115,54 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.communicate()
+            payload = {
+                "timeout": timeout,
+                "command": command[:120],
+                "workdir": workdir,
+                "timed_out": True,
+            }
             return ToolResult(
                 summary=f"执行超时（{timeout}s）: {command[:100]}",
-                evidence=json.dumps({
-                    "timeout": timeout,
-                    "command": command[:120],
-                    "workdir": workdir,
-                    "timed_out": True,
-                }, ensure_ascii=False),
+                evidence=json.dumps(payload, ensure_ascii=False),
                 error="TimeoutError",
+                resource_key=command[:120],
+                fingerprint=f"shell:timeout:{hashlib.md5(command.encode()).hexdigest()[:12]}",
+                metadata=payload,
             )
 
         output = stdout.decode(errors="replace").strip()
-        truncated = output[:preview_limit] + ("..." if len(output) > preview_limit else "")
-        evidence = json.dumps({
+        preview_text = output or "(无输出)"
+        truncated = preview_text[:preview_limit] + ("..." if len(preview_text) > preview_limit else "")
+        payload = {
             "command": command[:120],
             "exit_code": proc.returncode,
             "timeout": timeout,
             "workdir": workdir,
             "output_chars": len(output),
-            "preview_chars": min(len(output), preview_limit),
-        }, ensure_ascii=False)
+            "preview_chars": min(len(preview_text), preview_limit),
+        }
+        evidence = json.dumps(payload, ensure_ascii=False)
         if proc.returncode == 0:
             return ToolResult(
                 summary=f"执行成功:\n{truncated}",
                 evidence=evidence,
+                resource_key=command[:120],
+                fingerprint=f"shell:{proc.returncode}:{hashlib.md5(preview_text.encode()).hexdigest()[:12]}",
+                metadata=payload,
             )
         else:
             return ToolResult(
                 summary=f"执行出错 (exit={proc.returncode}):\n{truncated}",
                 evidence=evidence,
                 error=output[:300],
+                resource_key=command[:120],
+                fingerprint=f"shell:{proc.returncode}:{hashlib.md5(preview_text.encode()).hexdigest()[:12]}",
+                metadata=payload,
             )
     except Exception as exc:
         return ToolResult(
             summary=f"执行异常: {exc}",
             evidence=str(exc),
             error=str(exc),
+            resource_key=command[:120],
         )

@@ -33,10 +33,13 @@ class BehaviorTracker:
         self._wait_notify_thresholds: list[int] = sorted(wait_streak_notify) if wait_streak_notify else [3, 6]
         self._recent_actions: deque[tuple[str, str]] = deque(maxlen=3)
         self._recent_read_fps: deque[tuple[str, int, str]] = deque(maxlen=3)
+        self._recent_list_fps: deque[tuple[str, str]] = deque(maxlen=3)
         self._action_streak_sig: tuple[str, str] | None = None
         self._action_streak_count: int = 0
         self._read_streak_fp: tuple[str, int, str] | None = None
         self._read_streak_count: int = 0
+        self._list_streak_fp: tuple[str, str] | None = None
+        self._list_streak_count: int = 0
         self._loop_probe_version: int = 0
         self._explore_count: int = 0
         self._explore_task_id: str | None = None
@@ -59,6 +62,7 @@ class BehaviorTracker:
         """返回追踪器状态快照，供 state_snapshot 使用。"""
         _streak_tool, _streak_key = self._action_streak_sig or ("", "")
         _read_path = (self._read_streak_fp or ("", 0, ""))[0]
+        _list_path = (self._list_streak_fp or ("", ""))[0]
         return {
             "action_streak": {
                 "tool": _streak_tool,
@@ -68,6 +72,10 @@ class BehaviorTracker:
             "read_streak": {
                 "path": _read_path,
                 "count": self._read_streak_count,
+            },
+            "list_streak": {
+                "path": _list_path,
+                "count": self._list_streak_count,
             },
             "loop_probe_version": self._loop_probe_version,
         }
@@ -83,8 +91,8 @@ class BehaviorTracker:
         """追踪 act 行为（file.read 和非 file.read 均需调用）。
 
         - 探索预算感知：file.list / file.read 累计次数超阈值时返回 WMItem
-        - action streak：非 file.read 工具连续相同时返回 WMItem
-        （file.read 的内容去重由 on_read 处理）
+        - action streak：非 file.read / file.list 工具连续相同时返回 WMItem
+        （file.read 的内容去重由 on_read 处理，file.list 的结果去重由 on_list 处理）
 
         返回需注入 WM 的条目列表（通常为空或 1 项）。
         """
@@ -113,8 +121,8 @@ class BehaviorTracker:
                 ))
                 break  # 每次 tick 最多触发一个梯度
 
-        if tool_id == "file.read":
-            return items  # file.read streak 由 on_read 处理
+        if tool_id in {"file.read", "file.list"}:
+            return items  # file.read / file.list streak 由结果感知处理
 
         # action streak 检测（非 file.read）
         _sig = (tool_id, key_param)
@@ -174,6 +182,39 @@ class BehaviorTracker:
                     " 请你判断：(1) 这是必要的确认还是无效重复？"
                     " (2) 是否已从该文件获得了所需信息？"
                     " 你可以继续读取，也可以切换到下一步。"
+                ),
+                priority=0.95,
+            ))
+        return items
+
+    def on_list(self, path: str, result_summary: str) -> list["WMItem"]:
+        """追踪 file.list 相同目录结果的重复枚举。
+
+        只在“同一路径 + 同样列表结果”连续出现时报警；
+        同一路径但目录内容发生变化，不视为无效重复。
+        """
+        from memory.working import WMItem
+
+        digest = hashlib.md5(result_summary.encode("utf-8", errors="replace")).hexdigest()[:12]
+        fp = (path, digest)
+
+        self._recent_list_fps.append(fp)
+        if self._list_streak_fp == fp:
+            self._list_streak_count += 1
+        else:
+            self._list_streak_fp = fp
+            self._list_streak_count = 1
+        self._loop_probe_version += 1
+
+        items: list[WMItem] = []
+        if len(self._recent_list_fps) == 3 and len(set(self._recent_list_fps)) == 1:
+            _log.warning("[self-awareness] 连续 3 次列出相同目录结果: %s", path)
+            items.append(WMItem(
+                kind="self_awareness",
+                content=(
+                    f"[行为信号] 过去 3 次均列出了相同目录结果 ({path})，结果指纹一致。"
+                    " 这次不是仅路径相同，而是返回内容也没有变化。"
+                    " 请判断：这是必要确认，还是应切换到读取/写入/总结等下一步？"
                 ),
                 priority=0.95,
             ))

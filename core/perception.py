@@ -425,7 +425,7 @@ class CognitiveSignals:
                 )
         if self.next_step_fulfilled is False:
             lines.append(
-                "⚠️ 上一轮计划的 next_step 未被执行（上轮选择了 wait/pause），"
+                "⚠️ 上一轮计划的 next_step 未真正推进（可能是 wait/pause，或 act 但没有产生新结果），"
                 "注意避免计划漂移"
             )
         if not lines:

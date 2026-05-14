@@ -88,6 +88,80 @@ def _strip_memory_context(text: str) -> str:
     return cleaned.strip() or text.strip()
 
 
+def _action_key_param(params: dict[str, Any] | None) -> str:
+    """提取动作的主键参数，用于行为追踪与 WM 前缀。"""
+    p = params or {}
+    return (
+        p.get("path")
+        or p.get("name")
+        or p.get("title")
+        or p.get("key")
+        or str(p.get("id") or "")
+        or p.get("command")
+        or p.get("query")
+        or ""
+    )
+
+
+_PROGRESS_MUTATION_TOOLS = frozenset({
+    "file.write", "file.edit",
+    "shell.run", "exec", "process.write", "process.kill",
+    "task.add", "task.update", "task.advance", "task.complete", "task.fail",
+    "memory.add_wm", "memory.add_semantic", "memory.set_fact",
+    "schedule.add", "schedule.ack", "schedule.cancel",
+    "failure.dismiss",
+})
+
+_PROGRESS_INFO_TOOLS = frozenset({
+    "file.read", "file.list",
+    "memory.search", "memory.get_fact",
+    "task.list", "schedule.list",
+    "skill.list", "skill.search",
+    "process.poll", "process.log",
+    "shell.capabilities",
+})
+
+
+def _result_fingerprint(summary: str) -> str:
+    text = (summary or "").strip()
+    if not text:
+        return ""
+    return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _action_made_progress(
+    action: JudgmentOutput,
+    result: ToolResult,
+    *,
+    prev_sig: str = "",
+    prev_fp: str = "",
+) -> bool:
+    """结果感知版“是否推进了 next_step”。
+
+    核心原则：不再把“任何 act 且没报错”都视为已推进。
+    - 写入 / 执行 / task 状态变更类工具：成功即视为推进
+    - 读取 / 枚举类工具：只有读到了非空结果，且结果相对上一轮有变化，才视为推进
+    """
+    if action.decision != "act" or result.error or result.skipped:
+        return False
+
+    tool = action.chosen_action_id or ""
+    if tool in _PROGRESS_MUTATION_TOOLS:
+        return True
+
+    if tool in _PROGRESS_INFO_TOOLS:
+        fp = _result_fingerprint(result.summary)
+        if not fp:
+            return False
+        cur_sig = f"{tool}|{_action_key_param(action.params)}"
+        if cur_sig == prev_sig and fp == prev_fp:
+            return False
+        return True
+
+    # 未知工具保守处理：成功视为推进，但后续可按工具类型细化
+    return True
+
+
 class CognitionLoop:
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
@@ -131,7 +205,10 @@ class CognitionLoop:
         # tick 间连续性追踪（预测误差 + 认知信号计算用）
         self._last_next_step: str = ""
         self._last_decision: str = "wait"
-        self._last_act_error: bool = False   # P1-1: 上轮 act 是否以工具错误结束
+        self._last_act_error: bool = False   # 兼容旧信号：上轮 act 是否以工具错误结束
+        self._last_act_progressful: bool = False
+        self._last_action_sig: str = ""
+        self._last_result_fp: str = ""
         self._idle_cycles: int = 0
 
         # 多轮对话历史（最多保留 6 轮 user/assistant 对）
@@ -419,11 +496,11 @@ class CognitionLoop:
                     pass
             self._last_heartbeat_at = _now
 
-        # tick 间连续性：上轮 next_step 是否被执行且成功？（首轮为 None）
-        # P1-1: 同时检查 decision==act AND 上轮工具无错误，避免工具失败被误认为 step 已完成
+        # tick 间连续性：上轮 next_step 是否真正推进？（首轮为 None）
+        # 结果感知版：不再把“没报错的 act”直接当成 fulfilled。
         _next_step_fulfilled: bool | None = None
         if self._last_next_step:
-            _next_step_fulfilled = (self._last_decision == "act" and not self._last_act_error)
+            _next_step_fulfilled = self._last_act_progressful
         percept = await self._perception.sense(
             self._wm, active_task,
             last_next_step=self._last_next_step,
@@ -608,8 +685,7 @@ class CognitionLoop:
         # 3.5 行为模式感知
         if action.decision == "act":
             _tool_id = action.chosen_action_id or ""
-            _p = action.params or {}
-            _key_param = _p.get("path") or _p.get("name") or _p.get("title") or str(_p.get("id") or "") or _p.get("key") or _p.get("command") or ""
+            _key_param = _action_key_param(action.params)
             _cur_task_id = str(active_task.id) if active_task else None
             for _item in self._behavior.on_act(_tool_id, _key_param, _cur_task_id):
                 self._wm.add(_item)
@@ -624,16 +700,17 @@ class CognitionLoop:
         # 5. 执行
         result = await self._execution.dispatch(action, ctx)
 
-        # 5a. file.read 去重感知：只对"读取到相同内容"发出循环警告
-        if (
-            action.decision == "act"
-            and (action.chosen_action_id or "") == "file.read"
-            and not result.error
-        ):
+        # 5a. 结果感知型反循环：file.read/file.list 只在“结果未变化”时发出警告
+        if action.decision == "act" and not result.error:
+            _tool = action.chosen_action_id or ""
             _path = (action.params or {}).get("path") or ""
-            _max_chars = int((action.params or {}).get("max_chars") or 4000)
-            for _item in self._behavior.on_read(_path, _max_chars, result.summary):
-                self._wm.add(_item)
+            if _tool == "file.read":
+                _max_chars = int((action.params or {}).get("max_chars") or 4000)
+                for _item in self._behavior.on_read(_path, _max_chars, result.summary):
+                    self._wm.add(_item)
+            elif _tool == "file.list":
+                for _item in self._behavior.on_list(_path, result.summary):
+                    self._wm.add(_item)
 
         # 5b. 内层工具循环（仅 chat/interact 模式：有 user_message 且首轮决策是 act）
         # 目标：让 LLM 在单次 tick 内连续调用工具直到生成回复，节省 perception 重装 token。
@@ -658,8 +735,7 @@ class CognitionLoop:
                 # 内层行为追踪
                 if _cont.decision == "act":
                     _t = _cont.chosen_action_id or ""
-                    _cp = _cont.params or {}
-                    _kp = _cp.get("path") or _cp.get("name") or _cp.get("title") or str(_cp.get("id") or "") or _cp.get("key") or ""
+                    _kp = _action_key_param(_cont.params)
                     for _bi in self._behavior.on_act(_t, _kp, str(active_task.id) if active_task else None):
                         self._wm.add(_bi)
                     # 每次 on_act 后同步 cognitive_signals，确保 gate 看到最新计数
@@ -670,7 +746,7 @@ class CognitionLoop:
                 # 内层 WM 写入
                 if _cont_result.summary and not _cont_result.skipped:
                     _t = _cont.chosen_action_id or ""
-                    _kp2 = (_cont.params or {}).get("path") or (_cont.params or {}).get("name") or (_cont.params or {}).get("title") or ""
+                    _kp2 = _action_key_param(_cont.params)
                     _pfx = f"[{_t}{'  ' + _kp2 if _kp2 else ''}] "
                     self._wm.add(WMItem(kind=_t or _cont_result.kind, content=_pfx + _cont_result.summary, priority=_cont_result.priority))
                 # 内层 reflection → WM 高优先级合成条目（LLM 对工具结果的即时提炼）
@@ -738,10 +814,16 @@ class CognitionLoop:
             await self._soul.refresh_identity(self._judgment)
 
         # tick 间状态更新（下轮感知用）
+        _prev_sig = self._last_action_sig
+        _prev_fp = self._last_result_fp
+        _cur_sig = f"{action.chosen_action_id or ''}|{_action_key_param(action.params)}" if action.decision == "act" else ""
+        _cur_fp = _result_fingerprint(result.summary) if action.decision == "act" and not result.error and not result.skipped else ""
         self._last_next_step = action.next_step or ""
         self._last_decision = action.decision
-        # P1-1: 记录本轮工具是否出错，供下轮 _next_step_fulfilled 判断
         self._last_act_error = bool(action.decision == "act" and result.error)
+        self._last_act_progressful = _action_made_progress(action, result, prev_sig=_prev_sig, prev_fp=_prev_fp)
+        self._last_action_sig = _cur_sig
+        self._last_result_fp = _cur_fp
 
         # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好，存储到下轮传入
         _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
@@ -881,8 +963,7 @@ class CognitionLoop:
         # 5. 结果写入 WM（kind=tool_id，让反循环规则能识别来源）
         if result.summary and not result.skipped:
             tool_id = action.chosen_action_id or ""
-            params = action.params or {}
-            key_param = params.get("path") or params.get("name") or params.get("title") or ""
+            key_param = _action_key_param(action.params)
             wm_prefix = f"[{tool_id}{'  ' + key_param if key_param else ''}] "
             self._wm.add(WMItem(
                 kind=tool_id or result.kind,

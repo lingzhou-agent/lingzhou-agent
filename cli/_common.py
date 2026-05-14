@@ -15,10 +15,12 @@ PROJECT_ROOT: Path = Path(__file__).parent.parent
 
 console = Console()
 
+DEFAULT_CONFIG_PATH: Path = Path.home() / ".lingzhou" / "lingzhou.json"
+
 # 全局配置文件搜索顺序（当 --config 指向的路径不存在时依次尝试）
 # 用户目录优先于当前工作目录，避免源码目录的 lingzhou.json 被误加载。
 _CONFIG_SEARCH_PATHS: list[Path] = [
-    Path.home() / ".lingzhou" / "lingzhou.json",
+    DEFAULT_CONFIG_PATH,
     Path.home() / ".config" / "lingzhou" / "lingzhou.json",
     Path("lingzhou.json"),
 ]
@@ -27,6 +29,7 @@ _CONFIG_SEARCH_PATHS: list[Path] = [
 def find_config(hint: Path) -> Path:
     """返回可用的配置文件路径；若 hint 存在则直接使用，否则按预设顺序搜索。
     若均不存在，自动启动 setup 向导，向导完成后返回生成的路径。
+    默认配置归属为 ~/.lingzhou/lingzhou.json，而不是仓库根目录。
     """
     if hint.exists():
         return hint
@@ -36,9 +39,8 @@ def find_config(hint: Path) -> Path:
     # 未找到配置 — 自动引导 setup
     console.print("[yellow]未找到 lingzhou.json，自动启动初始化向导…[/yellow]\n")
     from cli.bootstrap import setup as _setup
-    _setup()
-    # setup 默认写到 ./lingzhou.json
-    default_out = Path("lingzhou.json")
+    default_out = DEFAULT_CONFIG_PATH
+    _setup(output=default_out)
     if default_out.exists():
         return default_out
     # 兜底：再搜一遍
@@ -60,7 +62,7 @@ def resolve_config_path(config: Path) -> Path:
     if candidate.exists():
         return candidate
     if candidate.name == "lingzhou.json" and not candidate.is_absolute():
-        state_cfg = Path("~/.lingzhou/lingzhou.json").expanduser()
+        state_cfg = DEFAULT_CONFIG_PATH
         if state_cfg.exists():
             return state_cfg
     return candidate

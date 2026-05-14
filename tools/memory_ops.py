@@ -92,6 +92,34 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 
 
 @tool(ToolManifest(
+    name="memory.search",
+    description="搜索语义记忆节点。当你需要像 OpenClaw 那样先回忆再行动时使用。",
+    params=[
+        ToolParam("query", "string", "搜索查询", required=True),
+        ToolParam("top_k", "number", "返回条数，默认 5", required=False),
+    ],
+))
+async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    query = (params.get("query") or "").strip()
+    if not query:
+        return ToolResult(summary="query 不能为空", skipped=True)
+    top_k = int(params.get("top_k") or 5)
+    hits = ctx.semantic.retrieve(query, top_k=top_k)
+    if not hits:
+        return ToolResult(summary=f"没有找到与 {query!r} 相关的语义记忆", skipped=True)
+    lines = []
+    for i, hit in enumerate(hits, 1):
+        title = str(hit.get("title") or "")
+        body = str(hit.get("body") or "")[:180]
+        score = hit.get("score")
+        score_part = ""
+        if isinstance(score, (int, float)):
+            score_part = f" (score={float(score):.3f})"
+        lines.append(f"[{i}] {title}{score_part}\n{body}")
+    return ToolResult(summary="\n\n".join(lines))
+
+
+@tool(ToolManifest(
     name="memory.get_fact",
     description="读取一个持久化 key-value 事实",
     params=[

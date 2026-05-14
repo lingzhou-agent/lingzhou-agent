@@ -201,6 +201,293 @@ def test_tool_registry():
     assert "shell.capabilities" in names
     assert "task.complete" in names
     assert "memory.add_wm" in names
+    assert "memory.search" in names
+    assert "file.list" in names
+    assert "file.edit" in names
+    assert "exec" in names
+    assert "process.write" in names
+    assert "skill.list" in names
+    assert "skill.search" in names
+
+
+def test_file_list_and_memory_search():
+    asyncio.run(_file_list_and_memory_search())
+
+
+async def _file_list_and_memory_search():
+    from types import SimpleNamespace
+    from tools.file import file_list, file_read
+    from tools.memory_ops import memory_search, memory_add_semantic
+    from tools.registry import ToolContext
+    from memory.semantic import SemanticMemory
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        (root / 'a.txt').write_text('hello', encoding='utf-8')
+        (root / 'sub').mkdir()
+        semantic = SemanticMemory(root)
+        ctx = ToolContext(
+            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=str(root))),
+            wm=None, task_store=None, episodic=None, semantic=semantic, emotion=None,
+        )
+        listed = await file_list({'path': str(root)}, ctx)
+        assert 'a.txt' in listed.summary
+        assert 'sub/' in listed.summary
+
+        read_file = await file_read({'path': str(root / 'a.txt')}, ctx)
+        assert read_file.error is None
+        assert read_file.summary == 'hello'
+
+        read_dir = await file_read({'path': str(root)}, ctx)
+        assert read_dir.error == 'NotAFile'
+
+        read_empty = await file_read({'path': ''}, ctx)
+        assert read_empty.error == 'EmptyPath'
+
+        await memory_add_semantic({'title': 'bug fix note', 'body': 'reader tasks should use qwen3.6-plus', 'kind': 'fact'}, ctx)
+        found = await memory_search({'query': 'bug'}, ctx)
+        assert 'bug fix note' in found.summary
+
+
+def test_exec_process_write_pipe_roundtrip():
+    asyncio.run(_exec_process_write_pipe_roundtrip())
+
+
+async def _exec_process_write_pipe_roundtrip():
+    import json
+    from types import SimpleNamespace
+    from tools.exec import exec_run, process_write, process_poll, process_log, _MANAGER
+    from tools.registry import ToolContext
+
+    _MANAGER.clear()
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+
+    res = await exec_run({
+        "command": "python3 -c \"import sys; print(sys.stdin.readline().strip())\"",
+        "background": True,
+        "timeout": 2,
+    }, ctx)
+    sid = json.loads(res.evidence)["session_id"]
+    await process_write({"session_id": sid, "data": "hello\\n", "eof": True}, ctx)
+
+    for _ in range(40):
+        poll = await process_poll({"session_id": sid}, ctx)
+        status = json.loads(poll.summary)
+        if status["status"] == "finished":
+            break
+        await asyncio.sleep(0.05)
+
+    log = await process_log({"session_id": sid, "offset": 0, "limit": 200}, ctx)
+    assert "hello" in log.summary
+
+
+def test_exec_process_timeout_background():
+    asyncio.run(_exec_process_timeout_background())
+
+
+async def _exec_process_timeout_background():
+    import json
+    from types import SimpleNamespace
+    from tools.exec import exec_run, process_poll, _MANAGER
+    from tools.registry import ToolContext
+
+    _MANAGER.clear()
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+
+    res = await exec_run({
+        "command": "python3 -c \"import time; time.sleep(5)\"",
+        "background": True,
+        "timeout": 0.2,
+    }, ctx)
+    sid = json.loads(res.evidence)["session_id"]
+
+    timed_out = False
+    for _ in range(60):
+        poll = await process_poll({"session_id": sid}, ctx)
+        status = json.loads(poll.summary)
+        if status["status"] == "finished":
+            timed_out = bool(status["timed_out"])
+            break
+        await asyncio.sleep(0.05)
+
+    assert timed_out is True
+
+
+def test_exec_and_shell_explicit_no_output():
+    asyncio.run(_exec_and_shell_explicit_no_output())
+
+
+async def _exec_and_shell_explicit_no_output():
+    from types import SimpleNamespace
+    from tools.exec import exec_run
+    from tools.shell import shell_run
+    from tools.registry import ToolContext
+
+    ctx = ToolContext(
+        config=SimpleNamespace(
+            loop=SimpleNamespace(act=True),
+            thresholds=SimpleNamespace(shell_timeout=5, shell_max_output_chars=200),
+        ),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+
+    exec_res = await exec_run({"command": "python3 -c \"pass\""}, ctx)
+    assert exec_res.error is None
+    assert "(无输出)" in exec_res.summary
+
+    shell_res = await shell_run({"command": "python3 -c \"pass\""}, ctx)
+    assert shell_res.error is None
+    assert "(无输出)" in shell_res.summary
+
+
+def test_execution_durable_failure_sensing():
+    asyncio.run(_execution_durable_failure_sensing())
+
+
+async def _execution_durable_failure_sensing():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from types import SimpleNamespace
+
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from memory.task_store import TaskStore
+    from tools.registry import ToolContext, ToolRegistry
+
+    with TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = ExecutionLayer(reg, SimpleNamespace(loop=SimpleNamespace(debug=False)))
+        ctx = ToolContext(
+            config=SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False),
+                thresholds=SimpleNamespace(shell_timeout=5, shell_max_output_chars=200),
+            ),
+            wm=None,
+            task_store=store,
+            episodic=None,
+            semantic=None,
+            emotion=None,
+        )
+        action = JudgmentOutput(
+            decision="act",
+            chosen_action_id="exec",
+            params={"command": "bash /definitely/missing-lingzhou-script.sh"},
+            rationale="test durable failure sensing",
+        )
+
+        first = second = third = fourth = None
+        first = await layer.dispatch(action, ctx)
+        second = await layer.dispatch(action, ctx)
+        third = await layer.dispatch(action, ctx)
+        fourth = await layer.dispatch(action, ctx)
+
+        assert first is not None and first.error
+        assert second is not None and second.error
+        assert third is not None and third.error
+        assert fourth is not None
+        assert fourth.skipped is True
+        assert fourth.error == "KnownStableFailure"
+        assert "跳过已知稳定失败动作" in fourth.summary
+
+        await store.close()
+
+
+def test_execution_durable_failure_sensing_for_file_tool():
+    asyncio.run(_execution_durable_failure_sensing_for_file_tool())
+
+
+async def _execution_durable_failure_sensing_for_file_tool():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+    from types import SimpleNamespace
+
+    from core.execution import ExecutionLayer
+    from core.judgment import JudgmentOutput
+    from memory.task_store import TaskStore
+    from tools.registry import ToolContext, ToolRegistry
+
+    with TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = ExecutionLayer(reg, SimpleNamespace(loop=SimpleNamespace(debug=False)))
+        ctx = ToolContext(
+            config=SimpleNamespace(
+                loop=SimpleNamespace(act=True, debug=False),
+                thresholds=SimpleNamespace(shell_timeout=5, shell_max_output_chars=200),
+            ),
+            wm=None,
+            task_store=store,
+            episodic=None,
+            semantic=None,
+            emotion=None,
+        )
+        action = JudgmentOutput(
+            decision="act",
+            chosen_action_id="file.read",
+            params={"path": ""},
+            rationale="test durable failure sensing for file tool",
+        )
+
+        for _ in range(3):
+            res = await layer.dispatch(action, ctx)
+            assert res.error == "EmptyPath"
+        fourth = await layer.dispatch(action, ctx)
+        assert fourth.skipped is True
+        assert fourth.error == "KnownStableFailure"
+
+        await store.close()
+
+
+def test_exec_process_write_pty_roundtrip():
+    import subprocess
+    script = r'''
+import asyncio, json
+from types import SimpleNamespace
+from tools.exec import exec_run, process_write, process_poll, process_log, _MANAGER
+from tools.registry import ToolContext
+
+async def main():
+    _MANAGER.clear()
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+    res = await exec_run({
+        "command": "bash -lc 'stty -echo; read a; echo got:$a'",
+        "background": True,
+        "pty": True,
+        "timeout": 5,
+    }, ctx)
+    sid = json.loads(res.evidence)["session_id"]
+    await asyncio.sleep(0.2)
+    await process_write({"session_id": sid, "data": "hi\\n"}, ctx)
+    for _ in range(60):
+        poll = await process_poll({"session_id": sid}, ctx)
+        status = json.loads(poll.summary)
+        if status["status"] == "finished":
+            break
+        await asyncio.sleep(0.1)
+    await asyncio.sleep(0.1)
+    log = await process_log({"session_id": sid, "offset": 0, "limit": 400}, ctx)
+    print(log.summary)
+
+asyncio.run(main())
+'''
+    out = subprocess.check_output(["python3", "-c", script], cwd=str(_proj_root()), text=True)
+    assert "TimeoutError" not in out
+    assert "ProcessNotFound" not in out
 
 
 def test_skill_registry():
@@ -214,6 +501,133 @@ def test_skill_registry():
     skills_fail = reg.match_for_context(wm_pressure=0.5, has_active_task=True,
                                          has_next_step=True, failure_count=3, high_error_streak=3)
     assert any(s.name == "failure.reflection" for s in skills_fail)
+
+
+def test_skill_registry_loads_package_skill_and_matches_context(tmp_path):
+    from core.skill import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+
+    pkg = skills_dir / "karpathy-coding-base"
+    pkg.mkdir(parents=True)
+    (pkg / "SKILL.md").write_text(
+        """---
+name: karpathy-coding-base
+description: |
+  Andrej Karpathy-inspired coding guardrails. Triggers: 修复bug、重构、写脚本、代码审查
+---
+先思考，再编码。极简优先。手术式变更。目标驱动验证。
+""",
+        encoding="utf-8",
+    )
+
+    pkg2 = skills_dir / "interaction"
+    pkg2.mkdir(parents=True)
+    (pkg2 / "SKILL.md").write_text(
+        """---
+name: interaction
+description: |
+  统一人际交互入口。Triggers: 提问/确认/好奇追问/理解语境
+---
+先判断意图，再决定是回答、提问还是确认。方向不清时问一个最小问题。
+""",
+        encoding="utf-8",
+    )
+
+    pkg3 = skills_dir / "proactive-work"
+    pkg3.mkdir(parents=True)
+    (pkg3 / "SKILL.md").write_text(
+        """---
+name: proactive-work
+description: |
+  主动工作方法论。Triggers: 完成任务后、等回复时、需自主决定下一步
+---
+完成任务后不要等待，主动判断并推进下一步。
+""",
+        encoding="utf-8",
+    )
+
+    pkg4 = skills_dir / "self-monitoring"
+    pkg4.mkdir(parents=True)
+    (pkg4 / "SKILL.md").write_text(
+        """---
+name: self-monitoring
+description: |
+  Self-monitoring. Triggers: 工具执行失败、编辑失败、文件异常、日志错误、执行偏离预期
+---
+发现漂移、日志错误、编辑失败后，先检查并修复。
+""",
+        encoding="utf-8",
+    )
+
+    pkg5 = skills_dir / "error-handling"
+    pkg5.mkdir(parents=True)
+    (pkg5 / "SKILL.md").write_text(
+        """---
+name: error-handling
+description: |
+  Error handling. Triggers: tool call fails, exec denied, network timeout, permission error
+---
+失败后先分类错误，再决定重试、替代还是汇报。
+""",
+        encoding="utf-8",
+    )
+
+    reg = SkillRegistry(skills_dir=skills_dir)
+    skills = reg.match_for_context(
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=False,
+        failure_count=0,
+        high_error_streak=0,
+        context_text="请你修复 bug，并顺手重构这个脚本",
+        max_inject=5,
+    )
+    assert any(s.name == "karpathy-coding-base" for s in skills)
+
+    interaction_skills = reg.match_for_context(
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=False,
+        failure_count=0,
+        high_error_streak=0,
+        context_text="我有点好奇，你觉得这里真正的分歧是什么？",
+        max_inject=3,
+    )
+    assert any(s.name == "interaction" for s in interaction_skills)
+
+    proactive_skills = reg.match_for_context(
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=False,
+        failure_count=0,
+        high_error_streak=0,
+        context_text="做完了当前任务，接下来你自己判断往前推进",
+        max_inject=3,
+    )
+    assert any(s.name == "proactive-work" for s in proactive_skills)
+
+    monitor_skills = reg.match_for_context(
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=False,
+        failure_count=1,
+        high_error_streak=1,
+        context_text="这次 edit 失败了，日志也有异常，帮我看看哪里偏了",
+        max_inject=3,
+    )
+    assert any(s.name == "self-monitoring" for s in monitor_skills)
+
+    err_skills = reg.match_for_context(
+        wm_pressure=0.1,
+        has_active_task=True,
+        has_next_step=False,
+        failure_count=1,
+        high_error_streak=1,
+        context_text="exec 被拒绝了，还报了 timeout 和 permission error",
+        max_inject=3,
+    )
+    assert any(s.name == "error-handling" for s in err_skills)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -430,7 +844,10 @@ def test_cognition_loop_init():
     from core.config import Config
     from core.loop import CognitionLoop
 
-    cfg = Config.load(_proj_root() / "lingzhou.json")
+    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
+    if not cfg_path.exists():
+        cfg_path = _proj_root() / "lingzhou.json.example"
+    cfg = Config.load(cfg_path)
     with tempfile.TemporaryDirectory() as d:
         cfg.loop.db_path = f"{d}/state/runtime.db"
         cfg.loop.memory_dir = f"{d}/memory"
@@ -674,7 +1091,7 @@ def test_select_tier_logic():
 def test_behavior_gate_passthrough():
     """apply_execution_gate 为纯透传：决策权归 LLM，不做硬拦截。
 
-    重复行为信号由 on_act/on_read 以 WMItem 形式注入工作记忆，
+    重复行为信号由 on_act/on_read/on_list 以 WMItem 形式注入工作记忆，
     LLM 在下一轮 judgment 时自主决定是否改变策略。
     """
     from core.behavior_tracker import BehaviorTracker
@@ -715,4 +1132,343 @@ def test_behavior_gate_passthrough():
     assert not any("行为信号" in i.content for i in items2), (
         "不同 shell.run 命令不应触发 streak（key_param 已区分命令内容）"
     )
+
+
+def test_behavior_list_result_aware():
+    """file.list 应按“结果是否相同”而不是仅按路径判定重复。"""
+    from core.behavior_tracker import BehaviorTracker
+
+    tracker = BehaviorTracker()
+
+    # 同一路径，但目录结果不同：不应触发重复警告
+    for _ in range(3):
+        tracker.on_act("file.list", "/root", task_id="t-list")
+    items = tracker.on_list("/root", "a.txt\n")
+    items = tracker.on_list("/root", "a.txt\nb.txt\n")
+    items = tracker.on_list("/root", "a.txt\nb.txt\nc.txt\n")
+    assert not any("行为信号" in i.content for i in items), "同路径但结果变化，不应判定为无效重复"
+
+    # 同一路径且结果相同：才触发重复警告
+    tracker2 = BehaviorTracker()
+    for _ in range(3):
+        tracker2.on_act("file.list", "/root", task_id="t-list-2")
+    same = []
+    for _ in range(3):
+        same = tracker2.on_list("/root", "a.txt\nb.txt\n")
+    assert any("行为信号" in i.content for i in same), "同路径且结果相同，才应触发 file.list 重复信号"
+
+
+def test_action_made_progress_result_aware():
+    from core.judgment import JudgmentOutput
+    from core.loop import _action_made_progress, _result_fingerprint
+    from tools.registry import ToolResult
+
+    list_action = JudgmentOutput(decision="act", chosen_action_id="file.list", params={"path": "/tmp"})
+    list_res = ToolResult(summary="a.txt\nb.txt\n")
+    assert _action_made_progress(list_action, list_res, prev_sig="", prev_fp="") is True
+    assert _action_made_progress(
+        list_action,
+        list_res,
+        prev_sig="file.list|/tmp",
+        prev_fp=_result_fingerprint(list_res.summary),
+    ) is False
+
+    write_action = JudgmentOutput(decision="act", chosen_action_id="file.write", params={"path": "/tmp/x"})
+    write_res = ToolResult(summary="写入成功: /tmp/x")
+    assert _action_made_progress(write_action, write_res) is True
+
+    fail_action = JudgmentOutput(decision="act", chosen_action_id="file.read", params={"path": "/tmp/missing"})
+    fail_res = ToolResult(summary="文件不存在: /tmp/missing", error="FileNotFound")
+    assert _action_made_progress(fail_action, fail_res) is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 新增工具测试（file.edit / skill_ops / exec 覆盖）
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_file_edit_single_replace():
+    """file.edit 单处替换成功。"""
+    asyncio.run(_file_edit_single_replace())
+
+async def _file_edit_single_replace():
+    from types import SimpleNamespace
+    from tools.file import file_write, file_read, file_edit
+    from tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ctx = ToolContext(
+            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
+            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+        )
+        fpath = root / "test.py"
+        await file_write({"path": str(fpath), "content": "x = 1\ny = 2\nz = 3\n"}, ctx)
+
+        # 单处替换
+        res = await file_edit({"path": str(fpath), "edits": [{"oldText": "y = 2", "newText": "y = 20"}]}, ctx)
+        assert res.error is None
+        assert "1 处替换" in res.summary
+
+        # 验证内容
+        content = await file_read({"path": str(fpath)}, ctx)
+        assert content.summary == "x = 1\ny = 20\nz = 3\n"
+
+
+def test_file_edit_multiple_replace():
+    """file.edit 多处替换成功。"""
+    asyncio.run(_file_edit_multiple_replace())
+
+async def _file_edit_multiple_replace():
+    from types import SimpleNamespace
+    from tools.file import file_write, file_read, file_edit
+    from tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ctx = ToolContext(
+            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
+            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+        )
+        fpath = root / "multi.py"
+        await file_write({"path": str(fpath), "content": "a = 1\nb = 2\nc = 3\n"}, ctx)
+
+        res = await file_edit({"path": str(fpath), "edits": [
+            {"oldText": "a = 1", "newText": "a = 10"},
+            {"oldText": "c = 3", "newText": "c = 30"},
+        ]}, ctx)
+        assert res.error is None
+        assert "2 处替换" in res.summary
+
+        content = await file_read({"path": str(fpath)}, ctx)
+        assert "a = 10" in content.summary
+        assert "c = 30" in content.summary
+
+
+def test_file_edit_errors():
+    """file.edit 错误处理：oldText 不唯一 / 不存在 / 空 edits / 文件不存在。"""
+    asyncio.run(_file_edit_errors())
+
+async def _file_edit_errors():
+    from types import SimpleNamespace
+    from tools.file import file_write, file_edit
+    from tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ctx = ToolContext(
+            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
+            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+        )
+        fpath = root / "err.py"
+        await file_write({"path": str(fpath), "content": "x = 1\nx = 1\ny = 2\n"}, ctx)
+
+        # 文件不存在
+        r = await file_edit({"path": str(root / "nonexistent.py"), "edits": [{"oldText": "a", "newText": "b"}]}, ctx)
+        assert r.error == "FileNotFound"
+
+        # 空 edits
+        r2 = await file_edit({"path": str(fpath), "edits": []}, ctx)
+        assert r2.skipped is True
+        assert r2.error == "EmptyEdits"
+
+        # oldText 不存在
+        r3 = await file_edit({"path": str(fpath), "edits": [{"oldText": "ZZZ", "newText": "b"}]}, ctx)
+        assert r3.skipped is True
+        assert r3.error == "OldTextNotFound"
+
+        # oldText 不唯一
+        r4 = await file_edit({"path": str(fpath), "edits": [{"oldText": "x = 1", "newText": "x = 10"}]}, ctx)
+        assert r4.skipped is True
+        assert r4.error == "NonUniqueOldText"
+
+
+def test_skill_list_and_search():
+    """skill.list 和 skill.search 工具正常返回。"""
+    asyncio.run(_skill_list_and_search())
+
+async def _skill_list_and_search():
+    from types import SimpleNamespace
+    from tools.skill_ops import skill_list, skill_search
+    from tools.registry import ToolContext
+
+    ws = _proj_root() / "workspace"
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=str(ws))),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+
+    r = await skill_list({}, ctx)
+    assert r.error is None
+    # 至少有 builtin skills
+    assert "runtime.bootstrap" in r.summary
+
+    r2 = await skill_search({"query": "失败"}, ctx)
+    assert r2.error is None
+    # 搜索 "失败" 应匹配 failure.reflection
+    assert "failure.reflection" in r2.summary
+
+    # 搜索不存在的词 → 返回"未找到"，不是 skipped
+    r3 = await skill_search({"query": "zxcvbnm_nonexistent_skill_query"}, ctx)
+    assert r3.error is None
+    assert "没有找到" in r3.summary
+
+
+def test_exec_empty_command():
+    """exec 空命令应被拒绝。"""
+    asyncio.run(_exec_empty_command())
+
+async def _exec_empty_command():
+    from types import SimpleNamespace
+    from tools.exec import exec_run
+    from tools.registry import ToolContext
+
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+    res = await exec_run({"command": ""}, ctx)
+    assert res.skipped is True
+    assert res.error == "EmptyCommand"
+
+
+def test_process_kill():
+    """process.kill 可以终止后台进程。"""
+    asyncio.run(_process_kill())
+
+async def _process_kill():
+    import json
+    from types import SimpleNamespace
+    from tools.exec import exec_run, process_kill, process_poll, process_list, _MANAGER
+    from tools.registry import ToolContext
+
+    _MANAGER.clear()
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+
+    res = await exec_run({"command": "sleep 60", "background": True, "timeout": 60}, ctx)
+    sid = json.loads(res.evidence)["session_id"]
+
+    # 确认进程存在
+    poll1 = await process_poll({"session_id": sid}, ctx)
+    status = json.loads(poll1.summary)
+    assert status["status"] == "running"
+
+    # kill
+    kill_res = await process_kill({"session_id": sid}, ctx)
+    assert kill_res.error is None
+    assert "已终止" in kill_res.summary
+
+    # 确认已终止
+    poll2 = await process_poll({"session_id": sid}, ctx)
+    status2 = json.loads(poll2.summary)
+    assert status2["status"] == "finished"
+
+
+def test_process_list():
+    """process.list 返回通过 exec 启动的进程。"""
+    asyncio.run(_process_list())
+
+async def _process_list():
+    import json
+    from types import SimpleNamespace
+    from tools.exec import exec_run, process_list, _MANAGER
+    from tools.registry import ToolContext
+
+    _MANAGER.clear()
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+
+    # 空列表
+    r = await process_list({"state": "all"}, ctx)
+    assert "无进程" in r.summary
+
+    # 启动一个后台进程
+    res = await exec_run({"command": "sleep 5", "background": True, "timeout": 10}, ctx)
+    sid = json.loads(res.evidence)["session_id"]
+
+    r2 = await process_list({"state": "running"}, ctx)
+    assert sid in r2.summary
+
+
+def test_process_write_to_finished():
+    """向已结束的进程写入应被拒绝。"""
+    asyncio.run(_process_write_to_finished())
+
+async def _process_write_to_finished():
+    import json
+    from types import SimpleNamespace
+    from tools.exec import exec_run, process_write, _MANAGER
+    from tools.registry import ToolContext
+
+    _MANAGER.clear()
+    ctx = ToolContext(
+        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
+        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+    )
+
+    res = await exec_run({"command": "echo done"}, ctx)  # 前台，立即结束
+    assert res.error is None
+
+    # 前台进程不在 _MANAGER 中，所以写一个短命令后台
+    res2 = await exec_run({"command": "echo hi", "background": True, "timeout": 2}, ctx)
+    sid = json.loads(res2.evidence)["session_id"]
+    await asyncio.sleep(0.5)  # 等待完成
+
+    # 写入已结束进程
+    w = await process_write({"session_id": sid, "data": "hello"}, ctx)
+    assert w.skipped is True
+    assert w.error == "ProcessFinished"
+
+
+def test_file_edit_json_string_edits():
+    """file.edit 支持 edits 为 JSON 字符串。"""
+    asyncio.run(_file_edit_json_string_edits())
+
+async def _file_edit_json_string_edits():
+    import json as _json
+    from types import SimpleNamespace
+    from tools.file import file_write, file_read, file_edit
+    from tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ctx = ToolContext(
+            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
+            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+        )
+        fpath = root / "jsontest.py"
+        await file_write({"path": str(fpath), "content": "v = 1\n"}, ctx)
+
+        edits_str = _json.dumps([{"oldText": "v = 1", "newText": "v = 2"}])
+        res = await file_edit({"path": str(fpath), "edits": edits_str}, ctx)
+        assert res.error is None
+
+        content = await file_read({"path": str(fpath)}, ctx)
+        assert content.summary == "v = 2\n"
+
+
+def test_file_read_max_chars():
+    """file.read max_chars 参数正确截断。"""
+    asyncio.run(_file_read_max_chars())
+
+async def _file_read_max_chars():
+    from types import SimpleNamespace
+    from tools.file import file_write, file_read
+    from tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        ctx = ToolContext(
+            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
+            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
+        )
+        fpath = root / "big.txt"
+        await file_write({"path": str(fpath), "content": "abcdefghij" * 100}, ctx)  # 1000 chars
+
+        r = await file_read({"path": str(fpath), "max_chars": 20}, ctx)
+        assert len(r.summary) == 20
 

@@ -58,6 +58,11 @@ class ToolResult:
     error: str | None = None
     kind: str = "execute_result"   # WM 条目类型
     priority: float = 0.9          # WM 注入优先级
+    resource_key: str = ""        # 结果所对应的主要资源（path / command / task_id 等）
+    fingerprint: str = ""         # 结果指纹（用于 novelty / 去重 / 结果感知）
+    artifact_paths: list[str] = field(default_factory=list)
+    state_delta: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +70,11 @@ class ToolResult:
             "evidence": self.evidence,
             "skipped": self.skipped,
             "error": self.error,
+            "resource_key": self.resource_key,
+            "fingerprint": self.fingerprint,
+            "artifact_paths": list(self.artifact_paths),
+            "state_delta": dict(self.state_delta),
+            "metadata": dict(self.metadata),
         }
 
 

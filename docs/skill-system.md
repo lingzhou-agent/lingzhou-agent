@@ -173,18 +173,29 @@ class SkillRegistry:
 
 ---
 
-## 7. 未来扩展：workspace 技能扫描
+## 7. workspace 技能扫描（已支持）
 
 ```
 ~/.lingzhou/workspace/
   skills/
     my-python-style/
-      SKILL.md     ← 自动注册为技能节点
+      SKILL.md
     code-review-checklist/
       SKILL.md
+    legacy-flat-skill.md
 ```
 
-启动时自动扫描 `skills/*/SKILL.md`，注册为技能，激活条件从 frontmatter 读取：
+当前已支持两种载体：
+- `skills/*.md`
+- `skills/*/SKILL.md`
+
+其中目录型 `SKILL.md` 兼容 OpenClaw / AgentSkills 风格，适合直接迁移已有 skill 包。
+激活时会结合：
+- 内部状态（失败数、WM 压力、active task）
+- `user_message + task.goal/title + failure.kind` 组成的 `context_text`
+- frontmatter `trigger/triggers` 或 description 中的 `Triggers:` 文本
+
+也就是说，自定义 skill 不再只是“能加载但不会触发”，而是可以基于文本语境参与匹配。
 
 ```markdown
 ---
@@ -194,7 +205,7 @@ trigger: "工具调用包含 file.write 且文件是 .py"
 本项目使用 ruff + mypy，写 Python 时优先...
 ```
 
-这使得技能可以由用户在 workspace 中定义和演化，而不仅限于内置的 5 条。
+这使得技能可以由用户在 workspace 中定义和演化，而不仅限于内置的 5 条。需要注意的是，当前仍属于**轻量 prompt 注入机制**：skill body 会以 guidance 形式进入 `skills_section`，超长技能会被截断保留前段核心内容，因此更适合迁移“重要 skills / 方法论 skills”，而不是把所有大型参考文档都直接塞进 prompt。
 
 ---
 

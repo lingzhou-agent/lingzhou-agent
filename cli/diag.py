@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg, PROJECT_ROOT, resolve_config_path
+from cli._common import console, load_cfg, PROJECT_ROOT, resolve_config_path, DEFAULT_CONFIG_PATH
 from auth_store import resolve_copilot_token, AUTH_PROFILES_PATH
 
 
@@ -21,7 +21,7 @@ def version() -> None:
 
 
 def doctor(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """自检：诊断运行环境、配置、API key 和数据库状态。"""
     import sys

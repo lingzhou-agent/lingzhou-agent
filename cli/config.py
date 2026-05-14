@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 import typer
 
-from cli._common import console, resolve_config_path
+from cli._common import console, resolve_config_path, DEFAULT_CONFIG_PATH
 
 config_app = typer.Typer(name="config", help="配置文件管理", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
 
@@ -15,7 +15,7 @@ config_app = typer.Typer(name="config", help="配置文件管理", no_args_is_he
 @config_app.command("get")
 def config_get(
     key: Annotated[str, typer.Argument(help="配置键（支持点号路径，如 loop.debug）")],
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """读取配置文件中某个键的值。"""
     config = resolve_config_path(config)
@@ -39,7 +39,7 @@ def config_get(
 def config_set(
     key: Annotated[str, typer.Argument(help="配置键（支持点号路径，如 loop.debug）")],
     value: Annotated[str, typer.Argument(help="新值（true/false/数字/字符串自动推断类型）")],
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """修改配置文件中某个键的值（支持点号嵌套路径）。"""
     config = resolve_config_path(config)

@@ -15,7 +15,7 @@ from typing import Annotated, Any, Optional
 
 import typer
 
-from cli._common import console, load_cfg
+from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
 
@@ -118,7 +118,7 @@ def gateway_channels() -> None:
 @gateway_app.command("setup")
 def gateway_setup(
     channel: Annotated[str, typer.Option("--channel", "-ch", help="渠道名称")] = "webhook",
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """配置消息渠道（向导模式）。local 渠道无需配置。"""
     from rich.panel import Panel
@@ -224,7 +224,7 @@ def gateway_status() -> None:
 @gateway_app.command("restart")
 def gateway_restart(
     channel: Annotated[str, typer.Option("--channel", "-ch", help="消息渠道（默认 local）")] = "local",
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
 ) -> None:
@@ -236,7 +236,7 @@ def gateway_restart(
 @gateway_app.command("start")
 def gateway_start(
     channel: Annotated[str, typer.Option("--channel", "-ch", help="消息渠道（默认 local）")] = "local",
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
     daemon: Annotated[bool, typer.Option("--daemon/--no-daemon", "-d/-f", help="后台运行，默认已开启；--no-daemon 前台运行")] = True,
@@ -320,7 +320,7 @@ def gateway_start(
 
 
 def run(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
     daemon: Annotated[bool, typer.Option("--daemon/--no-daemon", "-d/-f", help="后台运行，默认已开启；--no-daemon 前台运行")] = True,

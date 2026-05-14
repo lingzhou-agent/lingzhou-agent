@@ -1,7 +1,22 @@
 # lingzhou vs OpenClaw/Hermes 能力差距根因分析
 
 **分析日期：** 2026-05-14
+**修复日期：** 2026-05-14
 **前提：** 同等大模型（相同 provider、相同 model），能力差距不在 LLM，而在架构和执行面。
+
+---
+
+## 已修复项（2026-05-14）
+
+| 修复 | 状态 | 文件 |
+|---|---|---|
+| P0-1: file.edit 工具 | ✅ 完成 | tools/file.py |
+| P0-2: exec/process 工具 | ✅ 完成 | tools/exec.py |
+| P2: 反循环 + 读取预算 + 写入冲动 | ✅ 完成 | prompts/judgment.md |
+| P1-1: 向量检索接入 | ✅ 完成 | lingzhou.json.example |
+| P1-2: 写入冲动规则 | ✅ 完成 | prompts/judgment.md |
+
+**工具数：** 15 → **27 个**（新增 12 个）
 
 ---
 

@@ -901,16 +901,27 @@ class JudgmentLayer:
 
         # 按当前情境过滤技能，注入最相关的护栏（阈值及上限从配置传入）
         _wm_items = wm.get_top(15)
+        skill_context_text = "\n".join(x for x in [
+            task.goal if task else "",
+            task.title if task else "",
+            user_message or "",
+            failures[0].kind if failures else "",
+            emotion_label,
+        ] if x)
+        all_skills = self._skills.all_skills()
         skills = self._skills.match_for_context(
             wm_pressure=wm.pressure,
             has_active_task=task is not None,
             has_next_step=bool(task and task.next_step),
             failure_count=len(failures),
             high_error_streak=perception_replay.high_error_streak if perception_replay else 0,
+            context_text=skill_context_text,
             failure_threshold=self._cfg.thresholds.skill_failure_threshold,
             wm_pressure_threshold=self._cfg.thresholds.skill_wm_pressure_threshold,
             max_inject=self._cfg.thresholds.skill_max_inject,
         )
+        primary_skill = skills[0] if skills else None
+        secondary_skills = skills[1:] if primary_skill else skills
 
         ctx = {
             "task_section": _fmt_task(task),
@@ -932,7 +943,9 @@ class JudgmentLayer:
             "signals_section": _fmt_judgment_signals(judgment_signals),
             "hard_boundaries_section": _fmt_hard_boundaries(hard_boundaries),
             "perception_replay_section": _fmt_perception_replay(perception_replay),
-            "skills_section": _fmt_skills(skills),
+            "skills_catalog_section": _fmt_skill_catalog(all_skills),
+            "primary_skill_section": _fmt_primary_skill(primary_skill),
+            "skills_section": _fmt_skills(secondary_skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
             "model_routing_section": self._build_model_routing_section(
                 phase=phase,
@@ -1148,6 +1161,7 @@ def apply_context_budget(
     budgeted = dict(ctx)
     priority = [
         "skills_section",
+        "skills_catalog_section",
         "memories_section",
         "episodic_section",
         "wm_section",
@@ -1155,6 +1169,7 @@ def apply_context_budget(
     ]
     minimum_keep = {
         "skills_section": skill_min_tokens,
+        "skills_catalog_section": max(40, skill_min_tokens // 2),
         "memories_section": 1,
         "episodic_section": 2,
         "wm_section": 1,
@@ -1319,13 +1334,44 @@ def _fmt_perception_replay(replay: "PerceptionReplaySummary | None") -> str:
     return "\n".join(lines)
 
 
+def _short_skill_desc(desc: str, limit: int = 90) -> str:
+    text = desc.strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
+def _fmt_skill_catalog(skills: "list[Skill]") -> str:
+    if not skills:
+        return "（暂无 skills）"
+    lines = ["你当前可用的 active skills 摘要如下；当当前命中的 skills 不够时，可以据此调整判断或调用 skill.search/skill.list："]
+    for s in skills:
+        origin = "builtin" if not getattr(s, 'source_path', '') else "workspace"
+        trig = f" | triggers: {', '.join(s.triggers[:4])}" if getattr(s, 'triggers', None) else ""
+        lines.append(f"- {s.name} [{origin}] — {_short_skill_desc(s.description)}{trig}")
+    return "\n".join(lines)
+
+
+def _fmt_primary_skill(skill: "Skill | None") -> str:
+    if skill is None:
+        return "（本轮未命中主技能；按一般 judgment 规则执行。如判断受阻，再参考下方 activated skills 或调用 skill.search）"
+    origin = "builtin" if not getattr(skill, 'source_path', '') else skill.source_path
+    return (
+        f"**{skill.name}** — {skill.description}\n"
+        f"> 本轮主技能，优先遵守。source: {origin}\n"
+        f"> {skill.guidance}"
+    )
+
+
 def _fmt_skills(skills: "list[Skill]") -> str:
     if not skills:
-        return "（暂无认知框架）"
+        return "（除主技能外，本轮无其他补充技能；如判断受阻，可参考上方 skill catalog 或调用 skill.search/skill.list）"
     parts: list[str] = []
     for s in skills:
-        parts.append(f"**{s.name}** — {s.description}\n> {s.guidance}")
-    return "（以下为全部可选框架，根据实际情境自行判断适用哪些，可全部忽略）\n\n" + "\n\n".join(parts)
+        origin = "builtin" if not getattr(s, 'source_path', '') else s.source_path
+        trig = f" | triggers: {', '.join(s.triggers[:4])}" if getattr(s, 'triggers', None) else ""
+        parts.append(f"- {s.name} [{origin}] — {_short_skill_desc(s.description)}{trig}")
+    return "（以下为本轮的补充技能摘要；主技能优先，补充技能仅在主技能不足时参考）\n" + "\n".join(parts)
 
 
 def _fmt_cognitive_signals(signals: "CognitiveSignals | None") -> str:

@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 
 import typer
 
-from cli._common import console, load_cfg
+from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 
 task_app = typer.Typer(
     name="task",
@@ -21,7 +21,7 @@ def task_add(
     title: Annotated[str, typer.Argument(help="任务标题")],
     goal: Annotated[str, typer.Option("--goal", "-g", help="任务目标")] = "",
     priority: Annotated[str, typer.Option("--priority", "-p")] = "normal",
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """向任务队列添加一个任务。"""
     cfg = load_cfg(config)
@@ -42,7 +42,7 @@ def task_add(
 @task_app.command("list")
 def task_list(
     status: Annotated[Optional[str], typer.Option("--status", "-s", help="状态过滤（pending / running / done / failed）")] = None,
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
 ) -> None:
     """列出任务。"""
     cfg = load_cfg(config)

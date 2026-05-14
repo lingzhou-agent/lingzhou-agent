@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 import typer
 from rich.panel import Panel
 
-from cli._common import console, load_cfg
+from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 from auth_store import (
     AUTH_PROFILES_PATH,
     COPILOT_PROFILE_ID,
@@ -254,7 +254,7 @@ def _login_copilot_impl(
 
 @auth_app.command("login-copilot")
 def auth_login_copilot(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     force: Annotated[bool, typer.Option("--force/--no-force", help="已有 token 时强制重新授权")] = False,
     method: Annotated[
         Literal["auto", "gh", "device", "token"],
@@ -271,7 +271,7 @@ def auth_login_copilot(
 
 @auth_app.command("copilot")
 def auth_copilot(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     force: Annotated[bool, typer.Option("--force/--no-force", help="已有 token 时强制重新授权")] = False,
     method: Annotated[
         Literal["auto", "gh", "device", "token"],

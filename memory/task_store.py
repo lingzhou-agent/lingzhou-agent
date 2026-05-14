@@ -109,6 +109,15 @@ class Task:
     goal: str = ""
     source: str = "external"
     next_step: str = ""
+    chain_id: str = ""
+    parent_task_id: str = ""
+    current_step: str = ""
+    wait_kind: str = ""
+    wait_key: str = ""
+    state_json: dict[str, Any] = field(default_factory=dict[str, Any])
+    wait_json: dict[str, Any] = field(default_factory=dict[str, Any])
+    result_json: dict[str, Any] = field(default_factory=dict[str, Any])
+    async_job_id: str = ""
     # 其余 data 键，动态扩展无需代码变动
     extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
@@ -123,6 +132,15 @@ class Task:
         goal = data.pop("goal", "")
         source = data.pop("source", "external")
         next_step = data.pop("next_step", "")
+        chain_id = data.pop("chain_id", "")
+        parent_task_id = data.pop("parent_task_id", "")
+        current_step = data.pop("current_step", "")
+        wait_kind = data.pop("wait_kind", "")
+        wait_key = data.pop("wait_key", "")
+        state_json = data.pop("state_json", {}) or {}
+        wait_json = data.pop("wait_json", {}) or {}
+        result_json = data.pop("result_json", {}) or {}
+        async_job_id = data.pop("async_job_id", "")
         return cls(
             id=rid,
             title=title,
@@ -132,11 +150,33 @@ class Task:
             goal=goal,
             source=source,
             next_step=next_step,
+            chain_id=chain_id,
+            parent_task_id=parent_task_id,
+            current_step=current_step,
+            wait_kind=wait_kind,
+            wait_key=wait_key,
+            state_json=state_json,
+            wait_json=wait_json,
+            result_json=result_json,
+            async_job_id=async_job_id,
             extras=data,
         )
 
     def to_data_json(self) -> str:
-        d = {"goal": self.goal, "source": self.source, "next_step": self.next_step}
+        d = {
+            "goal": self.goal,
+            "source": self.source,
+            "next_step": self.next_step,
+            "chain_id": self.chain_id,
+            "parent_task_id": self.parent_task_id,
+            "current_step": self.current_step,
+            "wait_kind": self.wait_kind,
+            "wait_key": self.wait_key,
+            "state_json": self.state_json,
+            "wait_json": self.wait_json,
+            "result_json": self.result_json,
+            "async_job_id": self.async_job_id,
+        }
         d.update(self.extras)
         return json.dumps(d, ensure_ascii=False)
 
@@ -311,11 +351,39 @@ class TaskStore:
         goal: str = "",
         priority: str = "normal",
         source: str = "external",
+        *,
+        status: str = "pending",
+        next_step: str = "",
+        chain_id: str = "",
+        parent_task_id: str = "",
+        current_step: str = "",
+        wait_kind: str = "",
+        wait_key: str = "",
+        state_json: dict[str, Any] | None = None,
+        wait_json: dict[str, Any] | None = None,
+        result_json: dict[str, Any] | None = None,
+        async_job_id: str = "",
+        extras: dict[str, Any] | None = None,
     ) -> int:
-        data = json.dumps({"goal": goal, "source": source, "next_step": ""}, ensure_ascii=False)
+        data = {
+            "goal": goal,
+            "source": source,
+            "next_step": next_step,
+            "chain_id": chain_id,
+            "parent_task_id": parent_task_id,
+            "current_step": current_step,
+            "wait_kind": wait_kind,
+            "wait_key": wait_key,
+            "state_json": state_json or {},
+            "wait_json": wait_json or {},
+            "result_json": result_json or {},
+            "async_job_id": async_job_id,
+        }
+        if extras:
+            data.update(extras)
         async with self._db.execute(
-            "INSERT INTO tasks (title, priority, data) VALUES (?,?,?)",
-            (title.strip(), priority, data),
+            "INSERT INTO tasks (title, status, priority, data) VALUES (?,?,?,?)",
+            (title.strip(), status, priority, json.dumps(data, ensure_ascii=False)),
         ) as cur:
             task_id: int = cur.lastrowid or 0
         await self._db.commit()
@@ -329,20 +397,30 @@ class TaskStore:
             row = await cur.fetchone()
         return Task.from_row(row) if row else None
 
-    async def get_active(self) -> Optional[Task]:
-        """返回优先级最高的待处理/进行中任务（pending → in_progress，priority 高优先）。"""
+    async def list_runnable_tasks(self, limit: int = 20) -> list[Task]:
+        """返回当前可运行的任务链节点。
+
+        runnable = pending / ready / in_progress / resumed
+        waiting / blocked / cooldown / done / failed / cancelled 不参与本轮调度。
+        """
         async with self._db.execute(
             """SELECT id, title, status, priority, created_at, data
                FROM tasks
-               WHERE status IN ('pending','in_progress')
+               WHERE status IN ('pending','ready','in_progress','resumed')
                ORDER BY
                  CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
                                WHEN 'normal' THEN 2 ELSE 3 END,
                  id
-               LIMIT 1""",
+               LIMIT ?""",
+            (limit,),
         ) as cur:
-            row = await cur.fetchone()
-        return Task.from_row(row) if row else None
+            rows = await cur.fetchall()
+        return [Task.from_row(r) for r in rows]
+
+    async def get_active(self) -> Optional[Task]:
+        """返回当前最适合推进的一条 runnable 任务。"""
+        runnable = await self.list_runnable_tasks(limit=1)
+        return runnable[0] if runnable else None
 
     async def list_tasks(
         self, status: Optional[str] = None, limit: int = 50
@@ -372,6 +450,61 @@ class TaskStore:
         await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
             (status, task.to_data_json(), task_id),
+        )
+        await self._db.commit()
+
+    async def mark_waiting(
+        self,
+        task_id: int,
+        *,
+        wait_kind: str,
+        wait_key: str = "",
+        wait_json: dict[str, Any] | None = None,
+        current_step: str = "",
+        next_step: str = "",
+    ) -> None:
+        task = await self.get_task_by_id(task_id)
+        if not task:
+            return
+        task.status = "waiting"
+        task.wait_kind = wait_kind
+        task.wait_key = wait_key
+        task.wait_json = wait_json or {}
+        if current_step:
+            task.current_step = current_step
+        if next_step:
+            task.next_step = next_step
+        await self._db.execute(
+            "UPDATE tasks SET status=?, data=? WHERE id=?",
+            (task.status, task.to_data_json(), task_id),
+        )
+        await self._db.commit()
+
+    async def resume_task(
+        self,
+        task_id: int,
+        *,
+        status: str = "resumed",
+        current_step: str = "",
+        next_step: str = "",
+        result_json: dict[str, Any] | None = None,
+    ) -> None:
+        task = await self.get_task_by_id(task_id)
+        if not task:
+            return
+        task.status = status
+        task.wait_kind = ""
+        task.wait_key = ""
+        task.wait_json = {}
+        if current_step:
+            task.current_step = current_step
+        if next_step:
+            task.next_step = next_step
+        if result_json is not None:
+            task.result_json = result_json
+        await self._db.execute(
+            "UPDATE tasks SET status=?, data=? WHERE id=?",
+            (task.status, task.to_data_json(), task_id),
         )
         await self._db.commit()
 

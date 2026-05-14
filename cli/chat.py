@@ -18,14 +18,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from memory.task_store import TaskStore
 
-from cli._common import console, load_cfg
+from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 
 # 等待回复最长秒数（-a 模式）
 _DEFAULT_TIMEOUT = 300
 
 
 def chat(
-    config: Annotated[Path, typer.Option("--config", "-c")] = Path("lingzhou.json"),
+    config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     ask: Annotated[
         Optional[str],
         typer.Option("--ask", "-a", help="发送一条消息并等待回复，收到回复后退出"),

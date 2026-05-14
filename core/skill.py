@@ -5,28 +5,28 @@
 
 设计原则：
 - 技能本身可以被 evolution 进化（本文件理论上可热替换）
-- MatchForContext 是贝叶斯证据累积：多个触发条件 → 最相关的护栏先激活
+- 支持两种载体：workspace/skills/*.md 与 workspace/skills/<name>/SKILL.md
 - 最多注入 3 个技能，避免 prompt 被护栏淹没
+- 自定义技能匹配不仅看内部状态，也看 user_message / task 文本触发
 """
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 _log = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from core.perception import EthosState
 
 
 @dataclass
 class Skill:
     name: str
     description: str      # 对人类的一句话说明（日志 / debug 用）
-    guidance: str         # 注入 LLM 的引导文本（简洁，不超过 3 句）
+    guidance: str         # 注入 LLM 的引导文本
     tags: list[str] = field(default_factory=list)
+    triggers: list[str] = field(default_factory=list)
+    source_path: str = ""
 
 
 # ── 五个内置技能 ──────────────────────────────────────────────────────────────
@@ -42,6 +42,7 @@ _BUILTIN_SKILLS: list[Skill] = [
             "请根据工作记忆中的身份信息，创建一个有意义的自驱任务。"
         ),
         tags=["bootstrap", "cold_start"],
+        triggers=["冷启动", "bootstrap", "启动"],
     ),
     Skill(
         name="provider.integration",
@@ -52,6 +53,7 @@ _BUILTIN_SKILLS: list[Skill] = [
             "如果某个文件不存在（FileNotFound），不要反复尝试读取，换一个策略。"
         ),
         tags=["act", "tool_call"],
+        triggers=["工具失败", "参数错误", "file not found", "调用失败"],
     ),
     Skill(
         name="task.continuity",
@@ -61,6 +63,7 @@ _BUILTIN_SKILLS: list[Skill] = [
             "每一步完成后立即更新 next_step，保持任务状态连续可追溯。"
         ),
         tags=["continuity", "task"],
+        triggers=["next_step", "继续推进", "当前任务"],
     ),
     Skill(
         name="evidence-first-change",
@@ -70,6 +73,7 @@ _BUILTIN_SKILLS: list[Skill] = [
             "操作完成后再次读取验证结果。不确定时，选择范围更小、可逆的操作。"
         ),
         tags=["caution", "verification"],
+        triggers=["修改", "写入", "验证", "证据"],
     ),
     Skill(
         name="failure.reflection",
@@ -80,21 +84,156 @@ _BUILTIN_SKILLS: list[Skill] = [
             "选择不同策略，或向用户报告当前困境请求帮助。"
         ),
         tags=["failure", "reflection"],
+        triggers=["失败", "报错", "根因", "重试"],
     ),
 ]
+
+
+def _split_frontmatter(content: str) -> tuple[dict[str, str], str]:
+    if not content.startswith("---"):
+        return {}, content.strip()
+    lines = content.splitlines()
+    end = -1
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            end = i
+            break
+    if end <= 0:
+        return {}, content.strip()
+
+    raw = lines[1:end]
+    body = "\n".join(lines[end + 1:]).strip()
+    meta: dict[str, str] = {}
+    i = 0
+    while i < len(raw):
+        line = raw[i]
+        m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", line)
+        if not m:
+            i += 1
+            continue
+        key, value = m.group(1), m.group(2).strip()
+        if value in {"|", ">"}:
+            i += 1
+            block: list[str] = []
+            while i < len(raw):
+                nxt = raw[i]
+                if nxt and not nxt.startswith((" ", "\t")) and re.match(r"^[A-Za-z_][\w-]*:\s*", nxt):
+                    break
+                block.append(nxt.lstrip())
+                i += 1
+            meta[key] = "\n".join(block).strip()
+            continue
+        meta[key] = value.strip().strip('"\'')
+        i += 1
+    return meta, body
+
+
+def _parse_listish(raw: str) -> list[str]:
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    raw = raw.strip("[]")
+    parts = re.split(r"[,，、;；/／\n|]+", raw)
+    return [p.strip().strip('"\'') for p in parts if p.strip()]
+
+
+def _extract_trigger_text(description: str, meta: dict[str, str]) -> list[str]:
+    triggers: list[str] = []
+    for key in ("trigger", "triggers"):
+        if key in meta:
+            triggers.extend(_parse_listish(meta[key]))
+    m = re.search(r"(?:Triggers?|触发(?:词|器|条件)?)[：:]\s*(.+)$", description, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        triggers.extend(_parse_listish(m.group(1)))
+    return [t for t in dict.fromkeys(t.strip() for t in triggers if t.strip())]
+
+
+def _description_without_trigger_tail(description: str) -> str:
+    return re.sub(r"(?:Triggers?|触发(?:词|器|条件)?)[：:].*$", "", description, flags=re.IGNORECASE | re.DOTALL).strip()
+
+
+def _text_terms(text: str, *, expand_ngrams: bool = False) -> set[str]:
+    text = (text or "").lower()
+    terms: set[str] = set(re.findall(r"[a-z0-9_+-]{3,}", text))
+    for seq in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+        terms.add(seq)
+        if not expand_ngrams:
+            continue
+        max_n = min(4, len(seq))
+        for n in range(2, max_n + 1):
+            for i in range(0, len(seq) - n + 1):
+                terms.add(seq[i:i + n])
+    return terms
+
+
+def _trim_guidance(text: str, limit: int = 1600) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    trimmed = text[:limit]
+    if "\n" in trimmed:
+        trimmed = trimmed.rsplit("\n", 1)[0]
+    return trimmed.rstrip() + "\n\n[技能内容已截断，保留前段核心 guidance]"
+
+
+_LOW_SIGNAL_TERMS = {
+    '什么', '为什么', '怎么', '如何', '可以', '应该', '需要', '当前', '这个', '那个', '这里',
+}
+
+
+def _custom_context_boost(skill: Skill, hay: str) -> float:
+    rules: dict[str, list[str]] = {
+        'interaction': ['好奇', '分歧', '你觉得', '对吗', '确认', '提问', '追问', '真正想要', '理解语境'],
+        'proactive-work': ['接下来', '下一步', '自己判断', '自主决定', '往前推进', '完成任务后', '等回复'],
+        'self-monitoring': ['日志', '异常', '偏了', '漂移', 'edit 失败', '工具执行失败', '文件异常'],
+        'error-handling': ['timeout', 'permission', 'denied', '被拒绝', '报错', '错误', 'exec'],
+    }
+    phrases = rules.get(skill.name, [])
+    score = 0.0
+    for phrase in phrases:
+        if phrase.lower() in hay:
+            score += 1.6 if len(phrase) >= 3 else 0.8
+    return score
+
+
+def _context_score(skill: Skill, context_text: str) -> float:
+    hay = (context_text or "").lower().strip()
+    if not hay:
+        return 0.0
+
+    score = 0.0
+    hay_terms = _text_terms(hay, expand_ngrams=True)
+    seen: set[str] = set()
+    phrases = list(skill.triggers) + [t for t in skill.tags if t != "custom"]
+    phrases += re.split(r"[-_.]", skill.name)
+
+    for phrase in phrases:
+        p = phrase.lower().strip()
+        if len(p) < 2 or p in seen:
+            continue
+        seen.add(p)
+        if p in _LOW_SIGNAL_TERMS:
+            continue
+        if p in hay:
+            score += 3.0 if len(p) >= 4 else 1.2
+            continue
+        p_terms = {t for t in _text_terms(p, expand_ngrams=True) if t not in _LOW_SIGNAL_TERMS}
+        shared = len(p_terms & hay_terms)
+        if shared:
+            score += min(shared, 4) * 0.55
+
+    desc = _description_without_trigger_tail(skill.description).lower()
+    desc_terms = {t for t in _text_terms(desc, expand_ngrams=False) if t not in _LOW_SIGNAL_TERMS}
+    overlap = len(desc_terms & hay_terms)
+    score += min(overlap, 8) * 0.28
+    score += _custom_context_boost(skill, hay)
+    return score
 
 
 # ── 技能注册表 ────────────────────────────────────────────────────────────────
 
 class SkillRegistry:
-    """技能注册表：内置技能 + 从 workspace/skills/*.md 动态加载的自定义技能。
-
-    文件格式（每个 .md 文件是一个技能）：
-      - 可选 YAML frontmatter（--- 包裹）：description、tags 字段
-      - frontmatter 后的正文即为注入 LLM 的 guidance 文本
-      - 文件名（不含扩展名）作为技能 name
-      - 自定义技能与内置技能同名时覆盖内置技能
-    """
+    """技能注册表：内置技能 + workspace 自定义技能。"""
 
     def __init__(self, skills_dir: Path | None = None) -> None:
         self._skills: list[Skill] = list(_BUILTIN_SKILLS)
@@ -103,39 +242,40 @@ class SkillRegistry:
             if loaded:
                 _log.info("[skill] 从 %s 加载了 %d 个自定义技能", skills_dir, loaded)
 
+    def _iter_skill_files(self, skills_dir: Path) -> list[Path]:
+        files: list[Path] = []
+        for md in sorted(skills_dir.glob("*.md")):
+            if md.name != "SKILL.md":
+                files.append(md)
+        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+            files.append(skill_md)
+        return files
+
     def _load_from_dir(self, skills_dir: Path) -> int:
-        """从目录加载 *.md 技能文件，返回加载数量。"""
         if not skills_dir.exists():
             return 0
         loaded = 0
-        for md_file in sorted(skills_dir.glob("*.md")):
+        for md_file in self._iter_skill_files(skills_dir):
             try:
                 content = md_file.read_text(encoding="utf-8").strip()
                 if not content:
                     continue
-                name = md_file.stem
-                description = f"自定义技能: {name}"
-                tags: list[str] = ["custom"]
-                guidance = content
-                # 解析可选 frontmatter
-                if content.startswith("---"):
-                    lines = content.split("\n")
-                    end_fm = -1
-                    for i, line in enumerate(lines[1:], 1):
-                        if line.strip() == "---":
-                            end_fm = i
-                            break
-                    if end_fm > 0:
-                        for fm_line in lines[1:end_fm]:
-                            if fm_line.startswith("description:"):
-                                description = fm_line[len("description:"):].strip()
-                            elif fm_line.startswith("tags:"):
-                                raw = fm_line[len("tags:"):].strip().strip("[]")
-                                tags = [t.strip().strip("\"'") for t in raw.split(",") if t.strip()]
-                        guidance = "\n".join(lines[end_fm + 1:]).strip()
+                meta, body = _split_frontmatter(content)
+                name = meta.get("name") or (md_file.parent.name if md_file.name == "SKILL.md" else md_file.stem)
+                description = meta.get("description") or f"自定义技能: {name}"
+                tags = _parse_listish(meta.get("tags", "")) or ["custom"]
+                triggers = _extract_trigger_text(description, meta)
+                guidance = _trim_guidance(body or content)
                 if not guidance:
                     continue
-                skill = Skill(name=name, description=description, guidance=guidance, tags=tags)
+                skill = Skill(
+                    name=name,
+                    description=description,
+                    guidance=guidance,
+                    tags=tags,
+                    triggers=triggers,
+                    source_path=str(md_file),
+                )
                 existing = next((i for i, s in enumerate(self._skills) if s.name == name), -1)
                 if existing >= 0:
                     self._skills[existing] = skill
@@ -148,7 +288,6 @@ class SkillRegistry:
         return loaded
 
     def all_skills(self) -> list[Skill]:
-        """返回全部技能，供 LLM 自主判断适用哪些。"""
         return list(self._skills)
 
     def match_for_context(
@@ -159,18 +298,12 @@ class SkillRegistry:
         has_next_step: bool,
         failure_count: int,
         high_error_streak: int,
+        context_text: str = "",
         failure_threshold: int = 3,
         wm_pressure_threshold: float = 0.4,
         max_inject: int = 3,
     ) -> list[Skill]:
-        """按当前情境挑选最相关的技能护栏。
-
-        评分函数从离散阈值改为连续强度映射：
-        - failure.reflection 得分随失败次数平滑增加，不再是">=3 才激活"
-        - evidence-first-change 得分随 WM 压力平滑增加
-        阈值参数（failure_threshold / wm_pressure_threshold）是"满分基准点"，
-        不是开关门槛——内部状态的连续变化能连续影响护栏权重。
-        """
+        """按当前情境挑选最相关的技能护栏。"""
         scored: list[tuple[float, Skill]] = []
         for skill in self._skills:
             score: float = 0.0
@@ -180,11 +313,9 @@ class SkillRegistry:
                 score += 5.0
             if skill.name == "task.continuity" and has_active_task and has_next_step:
                 score += 5.0
-            # 失败反思：连续评分，failure_count/high_error_streak 越高得分越高（上限 6）
             if skill.name == "failure.reflection":
-                _intensity = min((failure_count + high_error_streak) / max(failure_threshold * 2, 1), 1.0)
-                score += _intensity * 6.0
-            # 证据优先：WM 压力越大，护栏权重越高（上限 2）
+                intensity = min((failure_count + high_error_streak) / max(failure_threshold * 2, 1), 1.0)
+                score += intensity * 6.0
             if skill.name == "evidence-first-change":
                 score += min(wm_pressure / max(wm_pressure_threshold, 0.01), 1.0) * 2.0
             if skill.name == "provider.integration" and failure_count > 0:
@@ -199,15 +330,18 @@ class SkillRegistry:
             if wm_pressure >= wm_pressure_threshold and "verification" in tags:
                 score += 1.0
 
+            context_bonus = _context_score(skill, context_text)
+            score += context_bonus
+            if skill.source_path and context_bonus >= 0.5:
+                score += 1.0
+
             if score > 0:
                 scored.append((score, skill))
 
         scored.sort(key=lambda item: (-item[0], item[1].name))
         selected = [skill for _, skill in scored[:max_inject]]
         if not selected and not has_active_task:
-            # 冷启动兜底：至少注入 bootstrap
             bootstrap = next((s for s in self._skills if s.name == "runtime.bootstrap"), None)
             if bootstrap:
                 selected = [bootstrap]
         return selected
-
