@@ -327,3 +327,13 @@ def auth_set_token(
         f"  legacy:   [dim]{LEGACY_CREDENTIALS_PATH}[/dim]\n"
         "  [dim]提示：若要优先使用 auth profile，请在对应 provider 配置中设置 auth_profile_id。[/dim]"
     )
+
+
+@auth_app.command("bailian")
+def auth_bailian(
+    token: Annotated[str, typer.Option("--token", help="百炼 API Key", prompt=True, hide_input=True)],
+    profile_id: Annotated[str, typer.Option("--profile-id", help="auth profile id，默认 bailian:default")] = "bailian:default",
+    env_name: Annotated[str, typer.Option("--env", help="写入 credentials.json 的键名，默认 DASHSCOPE_API_KEY")] = "DASHSCOPE_API_KEY",
+) -> None:
+    """快捷配置百炼 token：等价于 lingzhou auth set-token --provider bailian。"""
+    auth_set_token(provider="bailian", token=token, env_name=env_name, profile_id=profile_id)
