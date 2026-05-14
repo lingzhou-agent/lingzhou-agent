@@ -247,10 +247,39 @@ def model(
 
         set_model = f"{chosen_provider}/{chosen_model_id}"
 
+        # 选思考等级
+        _THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"]
+        _THINKING_DESC = {
+            "off":     "关闭思考，速度最快，省 token",
+            "minimal": "极浅思考，轻量推理",
+            "low":     "低强度思考，例行决策",
+            "medium":  "中等思考，常规判断（推荐日常）",
+            "high":    "深度思考，复杂推理/代码生成",
+        }
+        current_thinking = cfg_data.get("thinking", "off")
+        console.print(f"\n[bold]选择思考等级[/bold]  [dim](当前: {current_thinking})[/dim]")
+        for i, lvl in enumerate(_THINKING_LEVELS, 1):
+            mark = "[bold cyan]●[/bold cyan]" if lvl == current_thinking else " "
+            console.print(f"  {i}. {mark} {lvl:<8} [dim]{_THINKING_DESC[lvl]}[/dim]")
+        cur_default = str(_THINKING_LEVELS.index(current_thinking) + 1) if current_thinking in _THINKING_LEVELS else "1"
+        raw_t = typer.prompt("  等级编号", default=cur_default)
+        try:
+            tidx = int(raw_t.strip()) - 1
+        except ValueError:
+            tidx = -1
+        chosen_thinking = _THINKING_LEVELS[tidx] if 0 <= tidx < len(_THINKING_LEVELS) else current_thinking
+
     # ── 写入配置 ───────────────────────────────────────────────────────────
     cfg_data["model"] = set_model
+    if not interactive:
+        chosen_thinking = cfg_data.get("thinking", "off")  # 非交互模式保持原值
+
+    old_thinking = cfg_data.get("thinking", "off")
+    cfg_data["thinking"] = chosen_thinking
     cfg_path.write_text(_json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
     console.print(f"[green]✓ 模型已切换:[/green] {current} → [bold cyan]{set_model}[/bold cyan]")
+    if chosen_thinking != old_thinking:
+        console.print(f"[green]✓ 思考等级已更新:[/green] {old_thinking} → [bold cyan]{chosen_thinking}[/bold cyan]")
     console.print("[dim]lingzhou 运行中时将在下一轮自动生效（配置热重载）[/dim]")
 
 
