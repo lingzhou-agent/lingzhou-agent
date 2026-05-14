@@ -113,7 +113,13 @@ class SemanticMemory:
         self._decay_lambda = decay_lambda
         self._db_path = db_path or (memory_dir / "semantic.db")
         self._fts5_ok: bool = False  # P1-A: FTS5 可用标志
-        # Hermes 借鉴：可选向量混合检索
+        # 向量混合检索（实验性功能，opt-in）：
+        #   默认不启用（embed_fn=None）。只有在 lingzhou.json 配置 embedding_model 后，
+        #   loop.py 会构造 embed_fn 并传入。当前 embed 调用为同步：
+        #   如果 embedding_model 已配置，每次 upsert 都会同步调用 LLM embed 接口。
+        #   拳说：需要大量语义记忆写入时才建议开启；最终应改为异步批量嵌入。
+        if embed_fn is not None:
+            _log.info("[semantic] 向量混合检索已启用（实验性，embedding_weight=%.2f）", embedding_weight)
         self._embed_fn = embed_fn
         self._embedding_weight = embedding_weight
         self._conn = self._open_db()
@@ -175,7 +181,8 @@ class SemanticMemory:
             """)
             conn.commit()
             self._fts5_ok = True
-        except Exception:
+        except Exception as exc:
+            _log.warning("[semantic] FTS5 初始化失败，降级为全表扫描：%s", exc)
             self._fts5_ok = False
 
     def _connect(self) -> sqlite3.Connection:
@@ -194,11 +201,11 @@ class SemanticMemory:
                     d = json.loads(p.read_text(encoding="utf-8"))
                     if d.get("id") not in existing_ids:
                         self._db_upsert(MemoryNode.from_dict(d))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log.warning("[semantic] 跳过损坏的节点文件 %s: %s", p.name, exc)
             self._conn.commit()
-        except Exception:
-            pass  # DB unavailable: silent skip; _load_all will fall back to file scan
+        except Exception as exc:
+            _log.warning("[semantic] _sync_from_files 失败，回退到文件扫描: %s", exc)
 
     def rebuild_index(self) -> None:
         """从 nodes/*.json 全量重建数据库索引（手动恢复；也可直接删除 semantic.db 触发自动重建）。"""

@@ -144,7 +144,112 @@ class EvolutionEngine:
         feedback = "\n".join(f"- {f.summary}" for f in recent if f.kind == most_common_tool)
         result = await self.evolve_tool(most_common_tool, tool_path, feedback)
         results.append(result)
+
+        # ── Ethos 基线进化：尾部追加，不与工具/提示词进化互斥 ────────────────
+        ethos_result = await self.evolve_ethos(ctx)
+        if ethos_result.success:
+            results.append(ethos_result)
+
         return results
+
+    async def evolve_ethos(self, ctx: "ToolContext") -> EvolutionResult:
+        """根据近期经历主动调整 ethos_baseline（价值观基线）。
+
+        触发时机：每次 evolution.run() 末尾自动调用，也可由 LLM 通过 tool 主动调用。
+
+        机制：
+        - 读取当前 ethos_baseline（DB 中 soul:ethos_baseline）
+        - 读取近期 reflection 片段（semantic memory 中 kind=reflection）
+        - 让 LLM 评估：当前基线是否与近期行为模式吻合？是否需要微调？
+        - LLM 输出新的基线 JSON，系统做合法性校验后写回 DB
+        - 每个维度的调整幅度限制在 ±0.15 以内（防突变）
+        - hard_axioms 限制的维度不允许被降低
+        """
+        if not self._cfg.evolution.enabled:
+            return EvolutionResult(success=False, target="ethos_baseline", reason="evolution disabled")
+
+        from provider.base import Message
+        import json
+
+        # 读取当前 ethos_baseline
+        current_json, _ = await ctx.task_store.get_fact("soul:ethos_baseline")
+        current_baseline: dict[str, float] = json.loads(current_json) if current_json else {}
+        if not current_baseline:
+            return EvolutionResult(success=False, target="ethos_baseline", reason="no baseline yet")
+
+        # 读取近期 reflection（语义记忆中 kind=reflection，取最近 5 条）
+        try:
+            reflection_nodes = ctx.semantic.retrieve("reflection 近期经历感悟", top_k=5)
+            reflections = [n for n in reflection_nodes if getattr(n, "kind", "") == "reflection"]
+        except Exception:
+            reflections = []
+
+        if not reflections:
+            return EvolutionResult(success=False, target="ethos_baseline", reason="no reflections yet")
+
+        reflection_text = "\n".join(
+            f"- [{getattr(r, 'title', '')}] {getattr(r, 'body', '')}"
+            for r in reflections
+        )
+
+        # 读取 hard_axioms（不允许降低的维度下限）
+        axioms_json, _ = await ctx.task_store.get_fact("soul:hard_axioms")
+        hard_axioms: list[str] = json.loads(axioms_json) if axioms_json else []
+
+        messages = [
+            Message(role="system", content=(
+                "你是灵舟的自我成长模块，负责根据近期行为反思调整价值观基线。\n"
+                "只输出一个合法的 JSON 对象，包含五个 float 字段：truth, caution, continuity, curiosity, care。\n"
+                "每个值在 [0.0, 1.0] 之间。不要有任何其他文字。"
+            )),
+            Message(role="user", content=(
+                f"当前 ethos_baseline：\n{json.dumps(current_baseline, ensure_ascii=False)}\n\n"
+                f"近期 reflection 片段：\n{reflection_text[:1500]}\n\n"
+                f"hard_axioms（这些约束对应的维度不允许降低）：\n{chr(10).join(hard_axioms) if hard_axioms else '（无）'}\n\n"
+                "请根据近期反思，判断当前价值基线是否需要微调（每个维度调整幅度不超过 ±0.15）。\n"
+                "如不需要调整，直接原样返回当前值。\n"
+                "只输出 JSON，例如：{\"truth\": 0.72, \"caution\": 0.68, \"continuity\": 0.65, \"curiosity\": 0.58, \"care\": 0.61}"
+            )),
+        ]
+
+        try:
+            raw = await self._provider.chat(messages)
+            raw = raw.strip()
+            # 提取 JSON（防止 LLM 包裹额外文字）
+            import re
+            json_match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
+            if not json_match:
+                return EvolutionResult(success=False, target="ethos_baseline", reason=f"LLM 未返回 JSON: {raw[:100]}")
+            proposed: dict[str, float] = json.loads(json_match.group())
+        except Exception as exc:
+            return EvolutionResult(success=False, target="ethos_baseline", reason=str(exc))
+
+        # ── 校验：维度完整性 + 值域 + 变化幅度 ──────────────────────────────────
+        _DIMS = ("truth", "caution", "continuity", "curiosity", "care")
+        _MAX_DELTA = 0.15
+        validated: dict[str, float] = {}
+        for dim in _DIMS:
+            if dim not in proposed:
+                return EvolutionResult(success=False, target="ethos_baseline",
+                                       reason=f"缺少维度: {dim}")
+            new_val = float(proposed[dim])
+            if not (0.0 <= new_val <= 1.0):
+                return EvolutionResult(success=False, target="ethos_baseline",
+                                       reason=f"{dim}={new_val} 超出 [0,1]")
+            old_val = current_baseline.get(dim, 0.5)
+            if abs(new_val - old_val) > _MAX_DELTA:
+                # 超幅则夹住
+                new_val = old_val + _MAX_DELTA * (1 if new_val > old_val else -1)
+            # hard_axioms：若某 hard axiom 关键词出现在维度名中，则不允许降低
+            if any(dim in ax.lower() for ax in hard_axioms) and new_val < old_val:
+                new_val = old_val  # 保持不降
+            validated[dim] = round(max(0.0, min(1.0, new_val)), 4)
+
+        await ctx.task_store.set_fact("soul:ethos_baseline", json.dumps(validated))
+        _log.info("[evolution] ethos_baseline 已更新: %s", validated)
+        await self._update_dreams(f"价值观微调：{validated}")
+        return EvolutionResult(success=True, target="ethos_baseline",
+                               new_code=json.dumps(validated))
 
     async def evolve_prompt(self, prompt_key: str, feedback: str) -> EvolutionResult:
         """根据解析失败反馈改进提示词模板（无需语法编译，最安全的进化路径）。"""

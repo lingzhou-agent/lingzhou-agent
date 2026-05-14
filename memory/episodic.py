@@ -221,12 +221,28 @@ class EpisodicMemory:
             _log.warning("[episodic] FTS5 写入失败（不影响 .md 主流程）: %s", _fts_err)
 
     def load_for_context(self, task_id: str | None, max_chars: int = 4000) -> str:
-        """读取情节记忆末尾 max_chars 字符，直接注入 LLM context。"""
+        """读取情节记忆，注入 LLM context。
+
+        分段策略（"头部摘要 + 尾部完整"）：
+        - 全文 <= max_chars：直接返回全文
+        - 全文 > max_chars：取头部 head_chars 字符（包含任务目标/关键决策）
+          + 省略提示 + 尾部 tail_chars 字符（最近行动/当前状态）
+          head:tail = 1:3，尾部权重更高（近期上下文更重要）。
+        比纯末尾截断保留了任务起点信息，避免 LLM 对长任务"失忆"。
+        """
         path = self._task_path(task_id)
         if not path.exists():
             return ""
         text = path.read_text(encoding="utf-8")
-        return text[-max_chars:] if len(text) > max_chars else text
+        if len(text) <= max_chars:
+            return text
+        head_chars = max_chars // 4
+        tail_chars = max_chars - head_chars - 60  # 60 for separator
+        head = text[:head_chars]
+        tail = text[-tail_chars:]
+        omitted = len(text) - head_chars - tail_chars
+        sep = f"\n\n… （省略约 {omitted} 字符的中间部分）…\n\n"
+        return head + sep + tail
 
     def load_for_task_narrative(self, task_id: str | None, max_chars: int = 4000) -> str:
         """任务叙事模式（Ricoeur 1984）：跨 chat 读取该任务的完整情节流。"""
