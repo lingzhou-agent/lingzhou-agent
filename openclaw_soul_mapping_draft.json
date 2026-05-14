@@ -1,0 +1,20 @@
+{
+  "source": ".openclaw/openclaw.json",
+  "target": "lingzhou/SOUL.md & config",
+  "identity_mapping": {
+    "name": "小懒",
+    "emoji": "🫡",
+    "role": "自进化数字生命种子"
+  },
+  "values_mapping": {
+    "note": "openclaw 无显式价值观字段，建议沿用 lingzhou 默认 EMA 或从历史交互中蒸馏",
+    "suggested_defaults": {"truth": 0.75, "caution": 0.70, "continuity": 0.80, "curiosity": 0.38, "care": 0.62}
+  },
+  "core_config_mapping": {
+    "primary_model": "deepseek/deepseek-v4-flash",
+    "fallback_models": ["deepseek/deepseek-v4-pro", "deepseek/deepseek-chat", "deepseek/deepseek-reasoner"],
+    "enabled_skills": [],
+    "enabled_plugins": ["browser", "followthrough-bridge-plugin", "github-copilot", "memory-core", "memory-wiki", "memory-recall-takeover-plugin", "memory-freshness-bridge-plugin", "deepseek"],
+    "env_keys": ["GITHUB_TOKEN", "TB_TOKEN", "DEEPSEEK_API_KEY"]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "migration_target": "openclaw soul/skill/memory -> lingzhou",
+  "source_carriers": {
+    "soul": "openclaw.json (identity/values/config)",
+    "skills": "skills/, plugin-skills/, extensions/",
+    "memory": "memory/, weixin/, openclaw-weixin/ (logs/context)"
+  },
+  "target_carriers": {
+    "soul": "SOUL.md (EMA values), IDENTITY.md, BOOTSTRAP.md",
+    "skills": "lingzhou/tools/ (hot-loadable Python modules)",
+    "memory": "memory/nodes/*.json (JSON-first) + SQLite index (auto-sync)"
+  },
+  "core_strategy": "解析源配置 -> 字段映射 -> 生成目标JSON节点 -> 写入nodes/ -> 触发索引重建",
+  "execution_steps": [
+    "1. 提取 openclaw.json 身份/价值观字段，转为 lingzhou SOUL.md/EMA 格式",
+    "2. 遍历 skills/ 目录，剥离核心逻辑为独立 Python 模块，注册至 tools/",
+    "3. 导出 memory/ 上下文，按时间戳分片转为 nodes/*.json，避免直接操作 DB",
+    "4. 写入 nodes/ 后等待自动同步机制触发索引重建",
+    "5. 校验语义检索准确率与工具热加载状态"
+  ],
+  "risk_mitigation": "全程只读源目录；写入前备份目标 nodes/；采用 JSON 优先策略，不直接修改 sqlite；失败可回滚节点文件"
+}

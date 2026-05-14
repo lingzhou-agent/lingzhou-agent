@@ -1,6 +1,7 @@
-"""tools/file.py — 文件读写工具。"""
+"""tools/file.py — 文件读写和编辑工具。"""
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,65 @@ from typing import Any
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
 
 _log = logging.getLogger("lingzhou.tools.file")
+
+
+def _tail_after_anchor(path: Path, anchor: str) -> Path | None:
+    parts = path.parts
+    if anchor not in parts:
+        return None
+    idx = len(parts) - 1 - parts[::-1].index(anchor)
+    tail = parts[idx + 1 :]
+    if not tail:
+        return None
+    return Path(*tail)
+
+
+def _resolve_read_path(path: Path) -> Path:
+    if path.exists():
+        return path
+
+    cwd = Path.cwd()
+    home = Path.home()
+
+    bases: list[Path] = [cwd, *cwd.parents, home, home / ".openclaw"]
+    rels: list[Path] = []
+
+    if not path.is_absolute():
+        rels.append(path)
+
+    for anchor in ("workspace", "lingzhou", ".openclaw"):
+        rel = _tail_after_anchor(path, anchor)
+        if rel is not None:
+            rels.append(rel)
+            if rel.parts and rel.parts[0] == "workspace" and len(rel.parts) > 1:
+                rels.append(Path(*rel.parts[1:]))
+
+    if path.name:
+        rels.append(Path(path.name))
+
+    seen_rel: set[str] = set()
+    uniq_rels: list[Path] = []
+    for rel in rels:
+        key = str(rel)
+        if key not in seen_rel and key not in ("", "."):
+            seen_rel.add(key)
+            uniq_rels.append(rel)
+
+    seen_candidates: set[str] = set()
+    for rel in uniq_rels:
+        for base in bases:
+            candidates = [base / rel]
+            if rel.parts and rel.parts[0] != "workspace":
+                candidates.append(base / "workspace" / rel)
+            for candidate in candidates:
+                key = str(candidate)
+                if key in seen_candidates:
+                    continue
+                seen_candidates.add(key)
+                if candidate.exists():
+                    return candidate
+
+    return path
 
 
 @tool(ToolManifest(
@@ -21,12 +81,14 @@ _log = logging.getLogger("lingzhou.tools.file")
     ],
 ))
 async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = Path(params.get("path") or "").expanduser()
-    max_chars_raw = params.get("max_chars")  # None = 不限制，读全部
+    path = _resolve_read_path(Path(params.get("path") or "").expanduser())
+    max_chars_raw = params.get("max_chars")
     max_chars: int | None = int(max_chars_raw) if max_chars_raw is not None else None
     has_range = ("start" in params) or ("end" in params)
+
     if not path.exists():
         return ToolResult(summary=f"文件不存在: {path}", error="FileNotFound")
+
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
         total = len(text)
@@ -35,141 +97,127 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             start = int(params.get("start") or 0)
             end_raw = params.get("end")
             end = int(end_raw) if end_raw is not None else total
-
-            # 区间归一化：允许越界输入，最终收敛到 [0, total]
-            start = max(0, start)
-            end = max(0, end)
-            start = min(start, total)
-            end = min(end, total)
-            if end < start:
-                end = start
-
-            sliced = text[start:end]
-            completed = (start == 0 and end == total)
-            _cont_hint = f"\n⚠️ 未读完，使用 start={end} 续读剩余 {total - end} 字符" if not completed else ""
-            return ToolResult(
-                summary=(
-                    f"[已读取 {path}  区间[{start}:{end})/{total}  completed={str(completed).lower()}]"
-                    f"{_cont_hint}\n{sliced}"
-                ),
-                evidence=(
-                    f"path={path} mode=range range={start}:{end} chars={len(sliced)}/{total} "
-                    f"completed={str(completed).lower()}"
-                ),
-                priority=0.6,
-            )
+            text = text[start:end]
 
         if max_chars is not None:
-            content = text[:max_chars]
-            completed = (total <= max_chars)
-            mode_label = f"max_chars={max_chars}"
-        else:
-            content = text
-            completed = True
-            mode_label = "full"
-        _cont_hint = f"\n⚠️ 未读完，使用 start={len(content)} 续读剩余 {total - len(content)} 字符" if not completed else ""
-        return ToolResult(
-            summary=(
-                f"[已读取 {path}  {total}字符  {mode_label}  "
-                f"range=[0:{len(content)})  completed={str(completed).lower()}]"
-                f"{_cont_hint}\n{content}"
-            ),
-            evidence=(
-                f"path={path} mode={mode_label} range=0:{len(content)} "
-                f"chars={len(content)}/{total} completed={str(completed).lower()}"
-            ),
-            priority=0.6,   # 文件内容不需长期捤占 WM
-        )
-    except Exception as exc:
-        _log.error("[file.read] failed on %s: %s", path, exc, exc_info=True)
-        return ToolResult(summary=f"读取失败: {exc}", error=str(exc))
+            text = text[:max(0, max_chars)]
+
+        return ToolResult(summary=text)
+    except Exception as e:
+        _log.exception("读取文件失败: %s", path)
+        return ToolResult(summary=f"读取失败: {path}", error=type(e).__name__)
 
 
 @tool(ToolManifest(
     name="file.write",
-    description="将文本写入文件（覆盖）",
+    description="写入文件内容。如果文件已存在则覆盖全部内容。创建新文件时自动创建父目录。",
     params=[
         ToolParam("path", "string", "文件路径", required=True),
-        ToolParam("content", "string", "写入内容", required=True),
+        ToolParam("content", "string", "要写入的内容", required=True),
     ],
 ))
 async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    if ctx.dry_run:
-        return ToolResult(
-            summary=f"[dry-run] file.write: {params.get('path')}",
-            skipped=True,
-        )
     path = Path(params.get("path") or "").expanduser()
-    content = params.get("content") or ""
+    content = params.get("content")
+
+    if content is None:
+        return ToolResult(summary="写入内容为空", error="EmptyContent", skipped=True)
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return ToolResult(
-            summary=f"已写入 {path}（{len(content)} 字符）",
-            evidence=f"path={path} chars={len(content)}",
-            priority=0.5,   # 写入结果是过渡信息
-        )
-    except Exception as exc:
-        return ToolResult(summary=f"写入失败: {exc}", error=str(exc))
+        path.write_text(str(content), encoding="utf-8")
+        return ToolResult(summary=f"写入成功: {path} ({len(str(content))} 字符)")
+    except Exception as e:
+        _log.exception("写入文件失败: %s", path)
+        return ToolResult(summary=f"写入失败: {path}", error=type(e).__name__)
 
 
 @tool(ToolManifest(
-    name="file.list",
-    description="列出目录内容",
+    name="file.edit",
+    description=(
+        "对文件进行精确文本替换。支持单处或多处替换（edit 列表）。"
+        "每个 edit 包含 oldText（原文本）和 newText（新文本），oldText 必须在文件中唯一匹配。"
+        "这是修改文件的首选工具——相比全量覆盖的 file.write，edit 只改需要改的部分，安全且节省 token。"
+    ),
     params=[
-        ToolParam("path", "string", "目录路径", required=True),
-        ToolParam("pattern", "string", "glob 模式，默认 *", required=False),
+        ToolParam("path", "string", "文件路径", required=True),
+        ToolParam("edits", "object",
+                  "替换操作列表，每项包含 oldText（要替换的原文）和 newText（替换后的内容）。"
+                  "例: [{\"oldText\": \"foo\", \"newText\": \"bar\"}, {\"oldText\": \"baz\", \"newText\": \"qux\"}]",
+                  required=True),
     ],
 ))
-async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    raw_path = params.get("path") or "."
-    path = Path(raw_path).expanduser()
+async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    path = Path(params.get("path") or "").expanduser()
+    edits_raw = params.get("edits")
 
     if not path.exists():
-        alt_path = Path.cwd() / raw_path
-        if alt_path.exists():
-            path = alt_path
-        else:
-            # ENOENT 写入语义记忆：WM 被清空后该证据仍然存在，阻断错误学习循环
-            import hashlib as _hash
-            from memory.semantic import MemoryNode as _MN
-            _pid = f"enoent_{_hash.md5(raw_path.encode()).hexdigest()[:8]}"
-            ctx.semantic.upsert(_MN(
-                id=_pid,
-                kind="path_not_exist",
-                title=f"路径不存在: {raw_path}",
-                body=(
-                    f"已通过 file.list 确认：`{raw_path}` 在文件系统中不存在。"
-                    "不要再尝试此路径。如果之前的记忆说它存在，那是幻觉或旧记忆错误。"
-                ),
-                activation=0.95,
-                valence=0.0,
-                tags=["enoent", "path_not_exist"],
-            ))
-            return ToolResult(
-                summary=f"[ENOENT] 路径不存在: {raw_path}  ——已记入长期记忆，禁止再次尝试",
-                error="PathNotFound",
-                priority=0.3,
-            )
+        return ToolResult(summary=f"文件不存在: {path}（edit 只能修改已存在的文件，新文件请用 file.write）", error="FileNotFound")
 
-    pattern = params.get("pattern") or "*"
+    if not edits_raw:
+        return ToolResult(summary="edits 参数为空，请提供至少一个 {oldText, newText} 替换操作", error="EmptyEdits", skipped=True)
 
-    if not path.is_dir():
-        return ToolResult(
-            summary=f"[NOT_DIR] 路径不是目录: {path}  ——无法列出，请检查路径是否为文件",
-            error="NotADirectory",
-            priority=0.3,
-        )
+    # 支持 list 或 JSON 字符串
+    if isinstance(edits_raw, str):
+        try:
+            edits = json.loads(edits_raw)
+        except json.JSONDecodeError:
+            return ToolResult(summary="edits 不是合法的 JSON 数组", error="InvalidJSON")
+    elif isinstance(edits_raw, list):
+        edits = edits_raw
+    else:
+        return ToolResult(summary="edits 必须是数组或 JSON 字符串", error="InvalidType", skipped=True)
 
     try:
-        items = sorted(path.glob(pattern))
-        lines = [str(p.relative_to(path)) + ("/" if p.is_dir() else "") for p in items[:100]]
-        listing = "\n".join(lines) if lines else "（空目录）"
-        # summary 以路径+数量开头，让 LLM 在 WM 中区分「已列过」就0资料
-        return ToolResult(
-            summary=f"[已列导 {path}  共 {len(items)} 项]\n{listing}",
-            evidence=f"path={path} count={len(items)}",
-            priority=0.5,   # 目录列表是过渡信息，不应长期占据 WM
+        content = path.read_text(encoding="utf-8", errors="replace")
+        original = content
+        changes_made = 0
+        applied = []
+
+        for i, edit in enumerate(edits):
+            old_text = edit.get("oldText", "") if isinstance(edit, dict) else ""
+            new_text = edit.get("newText", "") if isinstance(edit, dict) else ""
+
+            if not old_text:
+                return ToolResult(summary=f"edits[{i}]: oldText 不能为空", error="EmptyOldText", skipped=True)
+
+            # 检查唯一性
+            first_idx = content.find(old_text)
+            if first_idx == -1:
+                return ToolResult(
+                    summary=f"edits[{i}]: oldText 在文件中未找到。请先用 file.read 确认当前内容。",
+                    error="OldTextNotFound",
+                    skipped=True,
+                )
+
+            second_idx = content.find(old_text, first_idx + len(old_text))
+            if second_idx != -1:
+                return ToolResult(
+                    summary=(
+                        f"edits[{i}]: oldText 在文件中出现 {content.count(old_text)} 次，不够唯一。"
+                        f"请扩大 oldText 范围使其唯一，或拆分为多次 edit 调用。"
+                    ),
+                    error="NonUniqueOldText",
+                    skipped=True,
+                )
+
+            content = content.replace(old_text, new_text, 1)
+            changes_made += 1
+            applied.append({
+                "index": i,
+                "old_preview": old_text[:60] + ("..." if len(old_text) > 60 else ""),
+                "new_preview": new_text[:60] + ("..." if len(new_text) > 60 else ""),
+            })
+
+        path.write_text(content, encoding="utf-8")
+        applied_summary = "\n".join(
+            f"  [{a['index']}] {a['old_preview']} → {a['new_preview']}"
+            for a in applied
         )
-    except Exception as exc:
-        return ToolResult(summary=f"列出目录失败: {exc}", error=str(exc))
+        return ToolResult(
+            summary=f"编辑成功: {path}（{changes_made} 处替换）\n{applied_summary}",
+            evidence=json.dumps({"path": str(path), "changes": changes_made, "applied": applied}, ensure_ascii=False),
+        )
+    except Exception as e:
+        _log.exception("编辑文件失败: %s", path)
+        return ToolResult(summary=f"编辑失败: {path}", error=type(e).__name__)
