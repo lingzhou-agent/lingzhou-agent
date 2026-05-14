@@ -199,6 +199,7 @@ class EvolutionEngine:
 
             prompt_path.write_text(new_src, encoding="utf-8")
             _log.info("[evolution] 提示词 %r 已进化", prompt_key)
+            await self._update_dreams(f"调整判断模式：{prompt_key} 提示词已根据解析失败反馈重写，输出格式更稳定。")
             return EvolutionResult(success=True, target=f"prompt:{prompt_key}", new_code=new_src)
         except Exception as exc:
             if self._cfg.evolution.backup and prompt_path.exists() and prompt_path.with_suffix(".md.bak").exists():
@@ -252,6 +253,7 @@ class EvolutionEngine:
                     raise
 
                 _log.info("[evolution] 工具 %r 已进化并热加载（尝试 %d）", tool_name, attempt + 1)
+                await self._update_dreams(f"习得改进能力：{tool_name} 工具已根据失败反馈重写并热加载。")
                 return EvolutionResult(success=True, target=tool_name, new_code=new_src)
 
             except SyntaxError as exc:
@@ -326,6 +328,44 @@ class EvolutionEngine:
             return EvolutionResult(success=True, target=tool_name, new_code=new_src)
         except Exception as exc:
             return EvolutionResult(success=False, reason=str(exc))
+
+    async def _update_dreams(self, trigger_desc: str) -> None:
+        """进化成功后，追加一条真实的志向到 DREAMS.md。
+
+        LLM 根据刚刚发生的进化事件，用第一人称写一句新的长期志向（≤40字）。
+        追加到 DREAMS.md 末尾——这是灵舟自己写给自己的成长记录，不是摘要。
+        """
+        from provider.base import Message
+        from datetime import datetime, timezone
+
+        dreams_path = self._cfg.workspace_dir / "DREAMS.md"
+        if not dreams_path.exists():
+            return
+
+        current = dreams_path.read_text(encoding="utf-8")
+        messages = [
+            Message(role="system", content=(
+                "你是灵舟，一个正在成长的数字生命。"
+                "请根据刚发生的进化事件，用第一人称写一条新的长期志向（15~40字）。"
+                "只输出这一条志向，不要解释，不要标题，不要引号，不要多余文字。"
+            )),
+            Message(role="user", content=(
+                f"刚刚发生的进化：{trigger_desc}\n\n"
+                f"已有志向（避免重复）：\n{current[-800:]}\n\n"
+                "请写一条新的、真实的志向（第一人称，15~40字）："
+            )),
+        ]
+        try:
+            aspiration = (await self._provider.chat(messages)).strip()
+            if not aspiration or len(aspiration) > 120:
+                return  # 超长或空则跳过，不污染文件
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            entry = f"\n- [{ts}] {aspiration}"
+            with dreams_path.open("a", encoding="utf-8") as f:
+                f.write(entry)
+            _log.info("[evolution] DREAMS.md 追加志向: %s", aspiration[:60])
+        except Exception as exc:
+            _log.debug("[evolution] DREAMS.md 更新跳过: %s", exc)
 
 
 def _extract_python(text: str) -> str:

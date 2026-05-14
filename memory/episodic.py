@@ -217,8 +217,8 @@ class EpisodicMemory:
                 (row_id, task_id or "", role, content),
             )
             self._conn.commit()
-        except Exception:
-            pass  # FTS5 写入失败不阻断主流程
+        except Exception as _fts_err:
+            _log.warning("[episodic] FTS5 写入失败（不影响 .md 主流程）: %s", _fts_err)
 
     def load_for_context(self, task_id: str | None, max_chars: int = 4000) -> str:
         """读取情节记忆末尾 max_chars 字符，直接注入 LLM context。"""

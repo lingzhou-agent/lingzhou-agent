@@ -43,6 +43,8 @@ _WORKSPACE_FILES: list[tuple[str, str]] = [
 
 # 冷启动时注入 WM 的文件顺序（越靠前越优先被 LLM 读到）
 _BOOTSTRAP_FILES = ("BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "USER.md", "TOOLS.md", "HEARTBEAT.md")
+# DREAMS.md 单独注入：给 LLM 看自己的长期志向演化记录（不进 system prompt 前缀，只进 WM）
+_DREAMS_FILE = "DREAMS.md"
 
 
 class SoulManager:
@@ -158,6 +160,20 @@ class SoulManager:
             _log.info("[boot] 身份注入: %s", " ".join(injected))
         if judgment is not None and identity_parts:
             judgment.set_identity_prefix("\n\n".join(identity_parts))
+
+        # DREAMS.md：长期志向，进 WM 供 LLM 感知自己的成长轨迹（priority 略低于身份文件）
+        dreams_path = workspace / _DREAMS_FILE
+        if dreams_path.exists():
+            try:
+                dreams_content = dreams_path.read_text(encoding="utf-8").strip()
+                if dreams_content:
+                    self._wm.add(WMItem(
+                        kind="bootstrap_identity",
+                        content=f"[{_DREAMS_FILE}]\n{dreams_content}",
+                        priority=self._cfg.thresholds.wm_pri_identity * 0.9,
+                    ))
+            except Exception:
+                pass
 
         # 清理旧版 heartbeat cron 信号（旧实现将 heartbeat 存入 signals 表；
         # 新版改为 monotonic 时间戳机制，DB 中遗留的 source=heartbeat 条目应移除）
