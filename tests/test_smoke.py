@@ -168,6 +168,29 @@ def test_chat_erase_last_input_echo_when_tty(monkeypatch):
     assert fake_stdout.getvalue() == "\x1b[1A\r\x1b[2K\r"
 
 
+def test_chat_input_prompt_prefers_agent_name_then_session_id():
+    from cli.chat import _chat_input_prompt
+
+    assert _chat_input_prompt("小懒", "chat-42") == "小懒> "
+    assert _chat_input_prompt("", "chat-42") == "chat-42> "
+    assert _chat_input_prompt("", "") == "chat> "
+
+
+def test_chat_print_input_prompt_when_tty(monkeypatch):
+    from cli.chat import _print_input_prompt
+
+    class _FakeStdout(io.StringIO):
+        def isatty(self):
+            return True
+
+    fake_stdout = _FakeStdout()
+    monkeypatch.setattr("sys.stdout", fake_stdout)
+
+    _print_input_prompt("小懒> ")
+
+    assert fake_stdout.getvalue() == "小懒> "
+
+
 def test_configure_lingzhou_logging_resets_console_log_each_time():
     from cli.gateway import _configure_lingzhou_logging
 

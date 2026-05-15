@@ -40,6 +40,26 @@ def _erase_last_input_echo() -> None:
         pass
 
 
+def _chat_input_prompt(agent_name: str = "", session_id: str = "") -> str:
+    """优先使用对方 chat 名称；未知时退回 session/chat id。"""
+    label = str(agent_name or "").strip() or str(session_id or "").strip() or "chat"
+    return f"{label}> "
+
+
+def _print_input_prompt(prompt: str) -> None:
+    """在 TTY 上重绘输入提示符，减少异步回复后光标悬空。"""
+    import sys
+
+    stdout = sys.stdout
+    if not hasattr(stdout, "isatty") or not stdout.isatty():
+        return
+    try:
+        stdout.write(prompt)
+        stdout.flush()
+    except OSError:
+        pass
+
+
 def chat(
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     ask: Annotated[
@@ -159,6 +179,7 @@ async def _interactive(
         title="💬 Chat",
         border_style="green",
     ))
+    input_prompt = _chat_input_prompt(agent_name, session_id)
 
     ev_loop = asyncio.get_running_loop()
     stop = asyncio.Event()
@@ -167,7 +188,7 @@ async def _interactive(
         """读取用户输入，写入 DB，立即允许下一条输入。"""
         try:
             while not stop.is_set():
-                line = await ev_loop.run_in_executor(None, _read_line)
+                line = await ev_loop.run_in_executor(None, _read_line, input_prompt)
                 if not line:  # EOF / Ctrl-D
                     stop.set()
                     break
@@ -190,9 +211,8 @@ async def _interactive(
                     cur_last_id = m["id"]
                     if m["role"] == "assistant":
                         # \n 前缀避免把回复直接挤到用户当前输入后面。
-                        # 不再额外手写 prompt；后台 input() 会自己维护当前输入行，
-                        # 否则容易和 IME/多字节编辑状态互相踩坏。
                         console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}\n")
+                        _print_input_prompt(input_prompt)
         except asyncio.CancelledError:
             pass
 
@@ -212,7 +232,7 @@ async def _interactive(
     console.print("\n[dim]再见。[/dim]")
 
 
-def _read_line() -> str:
+def _read_line(prompt: str = _CHAT_INPUT_PROMPT) -> str:
     """在 executor 线程中打印提示符并读取一行输入。
 
     服务器环境 locale 可能不是 UTF-8（如 POSIX/C locale），
@@ -220,10 +240,10 @@ def _read_line() -> str:
     """
     import sys
     try:
-        return _sanitize_chat_content(input(_CHAT_INPUT_PROMPT))
+        return _sanitize_chat_content(input(prompt))
     except UnicodeDecodeError:
         try:
-            sys.stdout.write(_CHAT_INPUT_PROMPT)
+            sys.stdout.write(prompt)
             sys.stdout.flush()
             raw = sys.stdin.buffer.readline()
             return _sanitize_chat_content(raw.decode("utf-8", errors="replace"))
