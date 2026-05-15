@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,8 @@ from provider.catalog import lookup_model
 
 if TYPE_CHECKING:
     from core.config import Config
+
+_log = logging.getLogger("lingzhou.provider.openai_compat")
 
 # embed 输入字符上限（DashScope text-embedding-v3 单次最大约 6000 tokens，保守按字符计）
 _EMBED_MAX_CHARS: int = 6000
@@ -37,9 +40,10 @@ COPILOT_EDITOR_PLUGIN_VERSION = "copilot-chat/0.35.0"
 COPILOT_GITHUB_API_VERSION = "2025-04-01"
 DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilot.com"
 
-# gpt-5.x / o-series 在该兼容端点上不接受传统 max_tokens，
-# 需要改走 max_completion_tokens。
-_MAX_COMPLETION_TOKENS_MODELS = ("gpt-5", "o1", "o3", "o4")
+# 仅对 o-series 自动注入 max_completion_tokens。
+# gpt-5.* 在 Copilot chat/completions 上兼容性不稳定，
+# 自动塞大额上限（如 65536）反而更容易触发 400。
+_MAX_COMPLETION_TOKENS_MODELS = ("o1", "o3", "o4")
 _MAX_COMPLETION_TOKENS_DEFAULT = 16384
 
 
@@ -272,6 +276,35 @@ class OpenAICompatProvider:
             limit = int(spec["max_tokens"]) if spec and spec.get("max_tokens") else _MAX_COMPLETION_TOKENS_DEFAULT
             payload["max_completion_tokens"] = limit
 
+    def _copilot_compat_fallback_payload(
+        self,
+        *,
+        base_payload: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if self._provider_mode != "copilot":
+            return None
+
+        fallback = dict(payload)
+        changed = False
+
+        if "reasoning_effort" in fallback:
+            fallback.pop("reasoning_effort", None)
+            changed = True
+        if "max_completion_tokens" in fallback:
+            fallback.pop("max_completion_tokens", None)
+            changed = True
+
+        base_temp = base_payload.get("temperature")
+        if fallback.get("temperature") != base_temp:
+            if base_temp is None:
+                fallback.pop("temperature", None)
+            else:
+                fallback["temperature"] = base_temp
+            changed = True
+
+        return fallback if changed else None
+
     # ── chat ───────────────────────────────────────────────────────────────
 
     async def chat(
@@ -281,11 +314,12 @@ class OpenAICompatProvider:
         temperature: float | None = None,
         thinking_override: str | None = None,
     ) -> str:
-        payload: dict[str, Any] = {
+        base_payload: dict[str, Any] = {
             "model": self._model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": temperature if temperature is not None else self._temperature,
         }
+        payload: dict[str, Any] = dict(base_payload)
         self._inject_thinking(payload, level_override=thinking_override)
         self._inject_completion_limits(payload)
         if self._extra_body:
@@ -332,6 +366,24 @@ class OpenAICompatProvider:
                 headers=retry_headers,
                 timeout=_req_timeout,
             )
+
+            if resp.status_code == 400:
+                fallback_payload = self._copilot_compat_fallback_payload(
+                    base_payload=base_payload,
+                    payload=payload,
+                )
+                if fallback_payload is not None:
+                    _log.warning(
+                        "[copilot] chat/completions 400，去除兼容性字段后重试: model=%s body=%s",
+                        self._model,
+                        body.replace("\n", " ")[:240],
+                    )
+                    resp = await self._client.post(
+                        target_url,
+                        content=json.dumps(fallback_payload),
+                        headers=retry_headers,
+                        timeout=_req_timeout,
+                    )
 
         resp.raise_for_status()
         data = resp.json()

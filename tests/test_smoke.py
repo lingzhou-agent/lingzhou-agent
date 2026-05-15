@@ -2536,7 +2536,7 @@ def test_github_device_client_id_prefers_env(monkeypatch, tmp_path):
     assert auth_mod.load_github_device_client_id() == "Iv1.env-client"
 
 
-def test_copilot_gpt5_uses_max_completion_tokens():
+def test_copilot_gpt5_does_not_auto_inject_max_completion_tokens():
     from provider.openai_compat import OpenAICompatProvider
 
     provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
@@ -2546,7 +2546,78 @@ def test_copilot_gpt5_uses_max_completion_tokens():
     payload = {}
     provider._inject_completion_limits(payload)
 
-    assert payload["max_completion_tokens"] == 65536  # gpt-5.4 在 models.json 中的 max_tokens
+    assert "max_completion_tokens" not in payload
+
+
+def test_copilot_o_series_uses_max_completion_tokens():
+    from provider.openai_compat import OpenAICompatProvider
+
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider._provider_mode = "copilot"
+    provider._model = "o3"
+
+    payload = {}
+    provider._inject_completion_limits(payload)
+
+    assert payload["max_completion_tokens"] == 100000
+
+
+def test_copilot_chat_retries_without_reasoning_fields_after_400():
+    import httpx
+    from provider.base import Message
+    from provider.openai_compat import OpenAICompatProvider
+
+    class _FakeAsyncClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+            self.timeout = SimpleNamespace(read=30.0, connect=30.0)
+            self._responses = [
+                httpx.Response(400, text='{"error":"bad request"}', request=httpx.Request("POST", "https://api.individual.githubcopilot.com/chat/completions")),
+                httpx.Response(400, text='{"error":"unsupported field"}', request=httpx.Request("POST", "https://api.individual.githubcopilot.com/chat/completions")),
+                httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]}, request=httpx.Request("POST", "https://api.individual.githubcopilot.com/chat/completions")),
+            ]
+
+        async def post(self, url, *, content=None, headers=None, timeout=None):
+            self.calls.append({
+                "url": url,
+                "payload": json.loads(content or "{}"),
+                "headers": headers,
+                "timeout": timeout,
+            })
+            return self._responses.pop(0)
+
+    fake_client = _FakeAsyncClient()
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider._provider_mode = "copilot"
+    provider._model = "gpt-5.4-mini"
+    provider._temperature = 0.7
+    provider._thinking_level = "high"
+    provider._extra_body = {}
+    provider._client = cast(Any, fake_client)
+    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"
+
+    async def _ensure_token(*, force_refresh: bool = False) -> str:
+        return "copilot-token-2" if force_refresh else "copilot-token-1"
+
+    provider._ensure_copilot_token = _ensure_token
+    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}
+    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"
+
+    result = asyncio.run(provider.chat(
+        [Message(role="system", content="s"), Message(role="user", content="u")],
+        temperature=0.0,
+    ))
+
+    assert result == "ok"
+    assert len(fake_client.calls) == 3
+    first_payload = fake_client.calls[0]["payload"]
+    third_payload = fake_client.calls[2]["payload"]
+    assert first_payload["reasoning_effort"] == "high"
+    assert "max_completion_tokens" not in first_payload
+    assert first_payload["temperature"] == 1
+    assert "reasoning_effort" not in third_payload
+    assert "max_completion_tokens" not in third_payload
+    assert third_payload["temperature"] == 0.0
 
 
 def test_copilot_base_url_derives_from_proxy_ep():
