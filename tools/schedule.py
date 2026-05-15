@@ -3,7 +3,7 @@
 数字生命的时间感知层：让灵舟能设置备忘录、定期反思触发器、自动提醒。
 
 信号触发后通过 WM 注入本轮认知上下文，优先级=0.9（高于普通工作记忆）。
-重复信号在 ack 后自动推进 run_at（无漂移，基于上次计划时间递增）。
+对已送达 WM 的到期信号，runtime 会自动推进/完成 signal；schedule.ack 主要保留给手动管理/兼容旧流程。
 """
 from __future__ import annotations
 
@@ -105,9 +105,9 @@ async def schedule_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="schedule.list",
     description=(
-        "列出调度信号。注意：重复信号由 loop 自动触发并自动 ack，status='pending' 表示'活跃计划'而非'待手动处理'。"
+        "列出调度信号。注意：重复信号由 loop 自动触发并在 delivery 后自动推进，status='pending' 表示'活跃计划'而非'待手动处理'。"
         "⚡ 表示当前已到期（需处理），⏰ 表示未来触发（无需处理）。"
-        "仅在需要查看计划列表或管理信号时使用，不要用此工具确认信号是否已处理——信号触发时 WM 中已有完整提醒。"
+        "仅在需要查看计划列表或管理信号时使用，不要用此工具确认信号是否已处理——信号触发时 WM 中已有完整提醒，已送达的到期信号通常无需再手动 ack。"
     ),
     params=[
         ToolParam("include_done", "boolean", "是否包含已完成信号，默认 false", required=False),
@@ -144,9 +144,9 @@ async def schedule_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="schedule.ack",
     description=(
-        "确认一条调度信号已处理完毕。"
+        "手动确认一条调度信号已处理完毕。"
         "一次性信号标记为 done；重复信号自动推进到下次触发时间。"
-        "处理完 schedule.list 返回的信号后必须调用此工具，否则信号将持续出现在 pending 列表。"
+        "兼容旧流程保留；对已通过 WM delivery 自动推进/完成的到期信号，通常不需要再调用。"
     ),
     params=[
         ToolParam("id", "number", "信号 id（由 schedule.list 查询）", required=True),

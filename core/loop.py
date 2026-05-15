@@ -608,7 +608,11 @@ class CognitionLoop:
             _note = (_payload.get("note") or "").strip()
             _repeat_desc = f"每 {sig['repeat_secs']}s 重复" if sig.get("repeat_secs") else "一次性"
             _parts = [
-                f"[调度触发 #{sig['id']}] {sig['title']}（{_repeat_desc}，已自动确认，无需调用 schedule.ack）",
+                (
+                    f"[调度触发 #{sig['id']}] {sig['title']}"
+                    f"（{_repeat_desc}，已送达本轮上下文；是否响应由你决定。"
+                    "delivery 后该 signal 会由 runtime 自动推进/完成，通常无需再调用 schedule.ack）"
+                ),
             ]
             if _note:
                 _parts.append(f"任务内容：{_note}")

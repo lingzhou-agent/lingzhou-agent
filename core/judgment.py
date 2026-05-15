@@ -46,6 +46,12 @@ _REASONER_TOOLS = frozenset({
     "schedule.add",
 })
 
+_TOOL_TIER_MAPPING = {
+    "reader": sorted(_READER_TOOLS),
+    "reasoner": sorted(_REASONER_TOOLS),
+    "repair": [],
+}
+
 
 @dataclass
 class ModelSelection:
@@ -481,6 +487,7 @@ class JudgmentLayer:
         payload = {
             "available_models": available_models,
             "active_overrides": routing_overrides or {},
+            "tool_tier_mapping": _TOOL_TIER_MAPPING,
             "tier_descriptions": {
                 "reader": "轻量感知层：适合常规状态查询、读文件、检查计划、无复杂推理的心跳 tick",
                 "reasoner": "深度推理层：适合用户交互、要求判断、处理复杂状态、制定或调整计划",
@@ -490,6 +497,7 @@ class JudgmentLayer:
                 "你是当前层的决策者，可以通过 model_strategy 中的以下字段调控下一轮行为：\n"
                 "• next_phase_tier：分配下轮的推理层级。reader=轻量感知，reasoner=深度推理，repair=修复。"
                 "示例：本轮已完成复杂判断并写入任务，下轮只需追踪状态 → next_phase_tier=reader；\n"
+                "• tool_tier_mapping：runtime 当前对工具族的默认分层真相；若你觉得某次具体动作应临时跨层处理，可通过 next_phase_tier 或 routing_overrides 调整，但不要假装这份映射不存在。\n"
                 "• next_idle_gap_secs：下一轮空闲等待时长（秒，整数，范围 5-600）。默认 60。"
                 "示例：已发起 shell 命令，预计 30s 出结果 → next_idle_gap_secs=35；"
                 "无任务等待用户下一步 → next_idle_gap_secs=120；任务进行中需快速追踪 → next_idle_gap_secs=10；\n"
@@ -877,6 +885,7 @@ class JudgmentLayer:
         episodic_text = episodic.load_for_context(task_id_str, self._cfg.memory.episodic_max_chars)
         recent_runs = await task_store.list_runs(task_id=task.id, limit=6) if task else []
         waiting_tasks = await task_store.list_tasks(status="waiting", limit=5)
+        durable_failure_snapshot = await _load_durable_failure_snapshot(task_store)
 
         search_query = (task.goal or task.title) if task else user_message
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
@@ -935,6 +944,7 @@ class JudgmentLayer:
             "wm_section": _fmt_wm(_wm_items, wm_count=len(wm), wm_capacity=wm._capacity,
                                    wm_tokens=wm.total_tokens, wm_token_budget=wm._token_budget),
             "failures_section": _fmt_failures(failures),
+            "durable_failure_section": _fmt_durable_failures(durable_failure_snapshot),
             "episodic_section": episodic_text or "（暂无情节记忆）",
             "entity_section": entity_section,
             "memories_section": _fmt_memories(memories),
@@ -1091,6 +1101,57 @@ def _fmt_failures(failures: "list[Failure]") -> str:
     if not failures:
         return "（无近期失败）"
     lines = [f"- [#{f.id}][{f.kind}] {f.summary}" for f in failures]
+    return "\n".join(lines)
+
+
+async def _load_durable_failure_snapshot(task_store: "TaskStore") -> dict[str, Any]:
+    from core.execution import _load_durable_failure_policy
+
+    policy = await _load_durable_failure_policy(task_store)
+    muted_actions: list[dict[str, Any]] = []
+    now = time.time()
+    for _, raw in await task_store.list_facts(prefix="durable_failure:", limit=12):
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        muted_until = float(payload.get("muted_until") or 0)
+        if muted_until <= now:
+            continue
+        muted_actions.append({
+            "tool": str(payload.get("tool") or ""),
+            "key": str(payload.get("key") or "").strip(),
+            "reason": str(payload.get("reason") or "stable_failure"),
+            "count": int(payload.get("count") or 0),
+            "remaining_sec": max(0, int(muted_until - now)),
+        })
+    muted_actions.sort(key=lambda item: item["remaining_sec"])
+    return {
+        "threshold": int(policy.get("threshold") or 0),
+        "ttl_sec": int(policy.get("ttl_sec") or 0),
+        "muted_actions": muted_actions[:5],
+    }
+
+
+def _fmt_durable_failures(snapshot: dict[str, Any]) -> str:
+    threshold = int(snapshot.get("threshold") or 0)
+    ttl_sec = int(snapshot.get("ttl_sec") or 0)
+    lines = [f"policy: threshold={threshold} ttl_sec={ttl_sec}"]
+    muted_actions = snapshot.get("muted_actions") or []
+    if not muted_actions:
+        lines.append("- 当前无稳定失败静默中的动作")
+        return "\n".join(lines)
+    for item in muted_actions:
+        tool = item.get("tool") or "-"
+        key = item.get("key") or ""
+        reason = item.get("reason") or "stable_failure"
+        count = int(item.get("count") or 0)
+        remaining_sec = int(item.get("remaining_sec") or 0)
+        line = f"- {tool}"
+        if key:
+            line += f" {key}"
+        line += f" reason={reason} failures={count} remaining={remaining_sec}s"
+        lines.append(line)
     return "\n".join(lines)
 
 

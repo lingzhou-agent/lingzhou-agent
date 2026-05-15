@@ -1,10 +1,13 @@
 """快速验证测试，不依赖 LLM。"""
 import asyncio
+import builtins
+import io
 import json
 import logging
 import math
 import os
 import tempfile
+import time
 from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,6 +120,29 @@ def test_judgment_output_parse():
     assert out.chosen_action_id == "shell.run"
     assert out.reflection == "洞察"
     assert out.model_strategy["next_phase_tier"] == "reader"
+
+
+def test_chat_read_line_prefers_text_input(monkeypatch):
+    from cli.chat import _read_line
+
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "你好")
+    assert _read_line() == "你好"
+
+
+def test_chat_read_line_falls_back_to_utf8_buffer(monkeypatch):
+    from cli.chat import _read_line
+
+    def _raise(prompt=""):
+        raise UnicodeDecodeError("utf-8", b"x", 0, 1, "bad")
+
+    monkeypatch.setattr(builtins, "input", _raise)
+    monkeypatch.setattr(
+        "sys.stdin",
+        cast(Any, SimpleNamespace(buffer=SimpleNamespace(readline=lambda: "中文\n".encode("utf-8")))),
+    )
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+
+    assert _read_line() == "中文\n"
 
 
 def test_configure_lingzhou_logging_resets_console_log_each_time():
@@ -2939,6 +2965,82 @@ def test_model_routing_section_uses_effective_thinking():
     ))
 
     assert payload["available_models"][0]["current_thinking"] == "low"
+    assert "tool_tier_mapping" in payload
+    assert "schedule.add" in payload["tool_tier_mapping"]["reasoner"]
+    assert "schedule.list" in payload["tool_tier_mapping"]["reader"]
+
+
+def test_fmt_durable_failures_exposes_policy_and_muted_actions():
+    from core.judgment import _fmt_durable_failures
+
+    text = _fmt_durable_failures({
+        "threshold": 3,
+        "ttl_sec": 7200,
+        "muted_actions": [
+            {
+                "tool": "file.read",
+                "key": "/tmp/missing.txt",
+                "reason": "missing_path",
+                "count": 4,
+                "remaining_sec": 119,
+            }
+        ],
+    })
+
+    assert "policy: threshold=3 ttl_sec=7200" in text
+    assert "file.read /tmp/missing.txt" in text
+    assert "reason=missing_path" in text
+    assert "remaining=119s" in text
+
+
+def test_load_durable_failure_snapshot_reads_policy_and_active_mutes():
+    asyncio.run(_load_durable_failure_snapshot_reads_policy_and_active_mutes())
+
+
+async def _load_durable_failure_snapshot_reads_policy_and_active_mutes():
+    from core.judgment import _load_durable_failure_snapshot
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        try:
+            await store.set_fact(
+                "control:durable_failure_policy",
+                json.dumps({"threshold": 5, "ttl_sec": 1800}, ensure_ascii=False),
+                scope="system",
+            )
+            await store.set_fact(
+                "durable_failure:active",
+                json.dumps({
+                    "tool": "file.read",
+                    "key": "/tmp/missing.txt",
+                    "reason": "missing_path",
+                    "count": 5,
+                    "muted_until": time.time() + 90,
+                }, ensure_ascii=False),
+                scope="system",
+            )
+            await store.set_fact(
+                "durable_failure:expired",
+                json.dumps({
+                    "tool": "file.read",
+                    "key": "/tmp/old.txt",
+                    "reason": "missing_path",
+                    "count": 3,
+                    "muted_until": time.time() - 10,
+                }, ensure_ascii=False),
+                scope="system",
+            )
+
+            snapshot = await _load_durable_failure_snapshot(store)
+            assert snapshot["threshold"] == 5
+            assert snapshot["ttl_sec"] == 1800
+            assert len(snapshot["muted_actions"]) == 1
+            assert snapshot["muted_actions"][0]["tool"] == "file.read"
+            assert snapshot["muted_actions"][0]["key"] == "/tmp/missing.txt"
+        finally:
+            await store.close()
 
 
 def test_decide_continue_uses_passed_thinking_override():

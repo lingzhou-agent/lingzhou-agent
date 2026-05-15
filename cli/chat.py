@@ -22,6 +22,7 @@ from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 
 # 等待回复最长秒数（-a 模式）
 _DEFAULT_TIMEOUT = 300
+_CHAT_INPUT_PROMPT = "you> "
 
 
 def chat(
@@ -176,7 +177,7 @@ async def _interactive(
                         console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}\n")
                         # 回复打印后重补 [你] 提示符，使用户知道可以继续输入
                         import sys as _sys
-                        _sys.stdout.write("[你] ")
+                        _sys.stdout.write(_CHAT_INPUT_PROMPT)
                         _sys.stdout.flush()
         except asyncio.CancelledError:
             pass
@@ -205,10 +206,15 @@ def _read_line() -> str:
     """
     import sys
     try:
-        sys.stdout.write("[你] ")
-        sys.stdout.flush()
-        raw = sys.stdin.buffer.readline()
-        return raw.decode("utf-8", errors="replace")
+        return input(_CHAT_INPUT_PROMPT)
+    except UnicodeDecodeError:
+        try:
+            sys.stdout.write(_CHAT_INPUT_PROMPT)
+            sys.stdout.flush()
+            raw = sys.stdin.buffer.readline()
+            return raw.decode("utf-8", errors="replace")
+        except (EOFError, KeyboardInterrupt, OSError):
+            return ""
     except (EOFError, KeyboardInterrupt, OSError):
         return ""
 
