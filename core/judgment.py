@@ -484,10 +484,18 @@ class JudgmentLayer:
                     )
 
         posture = "respond" if user_message else ("converge" if task_explore_count >= 4 else "conserve")
+        implicit_next_phase_default = None
+        if current_action in _READER_TOOLS:
+            implicit_next_phase_default = {
+                "tier": "reader",
+                "trigger": f"last_action={current_action}",
+                "condition": "仅在本轮未显式设置 next_phase_tier 时生效",
+            }
         payload = {
             "available_models": available_models,
             "active_overrides": routing_overrides or {},
             "tool_tier_mapping": _TOOL_TIER_MAPPING,
+            "implicit_next_phase_default": implicit_next_phase_default,
             "tier_descriptions": {
                 "reader": "轻量感知层：适合常规状态查询、读文件、检查计划、无复杂推理的心跳 tick",
                 "reasoner": "深度推理层：适合用户交互、要求判断、处理复杂状态、制定或调整计划",
@@ -498,6 +506,7 @@ class JudgmentLayer:
                 "• next_phase_tier：分配下轮的推理层级。reader=轻量感知，reasoner=深度推理，repair=修复。"
                 "示例：本轮已完成复杂判断并写入任务，下轮只需追踪状态 → next_phase_tier=reader；\n"
                 "• tool_tier_mapping：runtime 当前对工具族的默认分层真相；若你觉得某次具体动作应临时跨层处理，可通过 next_phase_tier 或 routing_overrides 调整，但不要假装这份映射不存在。\n"
+                "• implicit_next_phase_default：runtime 的隐式下轮 tier 默认行为。若该字段非空，表示你本轮若不显式设置 next_phase_tier，loop 可能按这里的规则自动选择下一轮 tier。\n"
                 "• next_idle_gap_secs：下一轮空闲等待时长（秒，整数，范围 5-600）。默认 60。"
                 "示例：已发起 shell 命令，预计 30s 出结果 → next_idle_gap_secs=35；"
                 "无任务等待用户下一步 → next_idle_gap_secs=120；任务进行中需快速追踪 → next_idle_gap_secs=10；\n"

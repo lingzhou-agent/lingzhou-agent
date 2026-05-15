@@ -2968,6 +2968,45 @@ def test_model_routing_section_uses_effective_thinking():
     assert "tool_tier_mapping" in payload
     assert "schedule.add" in payload["tool_tier_mapping"]["reasoner"]
     assert "schedule.list" in payload["tool_tier_mapping"]["reader"]
+    assert payload["implicit_next_phase_default"] is None
+
+
+def test_model_routing_section_exposes_implicit_reader_default():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="continue",
+        user_message="",
+        current_action="file.read",
+        tool_history=[{"tool": "file.read", "params": {"path": "/tmp/a"}, "result": "ok"}],
+        effective_thinking="low",
+    ))
+
+    assert payload["implicit_next_phase_default"]["tier"] == "reader"
+    assert payload["implicit_next_phase_default"]["trigger"] == "last_action=file.read"
 
 
 def test_fmt_durable_failures_exposes_policy_and_muted_actions():
@@ -3145,6 +3184,7 @@ def test_fallback_reply_for_user_describes_waiting_state():
     task = Task(id=27, title="等待路径", status="in_progress", priority="normal", created_at="2026-05-15T14:00:00+00:00")
 
     reply = _fallback_reply_for_user(action, result, task)
+    assert reply.startswith("状态: waiting")
     assert "waiting" in reply
     assert "external/source-path" in reply
     assert "等用户补充路径后重新验证目录" in reply
@@ -3158,9 +3198,11 @@ def test_fallback_reply_for_user_uses_real_error_instead_of_background_ack():
     result = ToolResult(summary="路径不存在: /root/.openclaw/source", error="FileNotFound")
 
     reply = _fallback_reply_for_user(action, result, None)
-    assert "遇到问题" in reply
+    assert reply.startswith("状态: error")
+    assert "detail:" in reply
     assert "路径不存在" in reply
     assert "后台继续处理" not in reply
+    assert "我这轮" not in reply
 
 
 def test_should_continue_within_tick_for_autonomous_act():
@@ -3247,6 +3289,21 @@ def test_tool_result_log_fields_include_state_delta():
     assert error == ""
     assert '"task_status": "waiting"' in state
     assert '"wait_key": "exec-1"' in state
+
+
+def test_tool_result_log_fields_prefer_log_summary_over_raw_text():
+    from core.execution import _tool_result_log_fields
+    from tools.registry import ToolResult
+
+    summary, error, state = _tool_result_log_fields(ToolResult(
+        summary="---\nlicense: Proprietary\nname: error-handling\n...",
+        error="",
+        metadata={"log_summary": "file.read path=/tmp/skill.md chars=2048 preview='---'"},
+    ))
+
+    assert summary == "file.read path=/tmp/skill.md chars=2048 preview='---'"
+    assert error == ""
+    assert state == ""
 
 
 def test_clip_reply_for_log_strips_memory_context():

@@ -113,38 +113,50 @@ def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_
             return cleaned
         return cleaned[: max(0, limit - 3)] + "..."
 
+    def _fact_line(prefix: str, value: str) -> str:
+        value = value.strip()
+        return f"{prefix}: {value}" if value else ""
+
     next_step = str(action.next_step or (active_task.next_step if active_task else "") or "").strip()
     if result.error:
-        reply = f"我这轮遇到问题：{_brief(result.summary or result.error, 100)}。"
-        if next_step:
-            reply += f" 下一步会先处理：{_brief(next_step, 60)}"
-        return reply
+        lines = [
+            _fact_line("状态", "error"),
+            _fact_line("detail", _brief(result.summary or result.error, 100)),
+            _fact_line("next", _brief(next_step, 60)) if next_step else "",
+        ]
+        return "；".join(line for line in lines if line)
 
     if action.decision in {"wait", "pause"}:
         basis = _brief(action.rationale or result.summary or "需要更多信息后再继续。", 100)
-        if next_step:
-            return f"我先暂停这一步：{basis} 下一步 { _brief(next_step, 60) }"
-        return f"我先暂停这一步：{basis}"
+        lines = [
+            _fact_line("状态", action.decision),
+            _fact_line("basis", basis),
+            _fact_line("next", _brief(next_step, 60)) if next_step else "",
+        ]
+        return "；".join(line for line in lines if line)
 
     task_status = str((result.state_delta or {}).get("task_status") or "").strip()
     if task_status == "waiting":
         wait_kind = str((result.state_delta or {}).get("wait_kind") or "external").strip()
         wait_key = str((result.state_delta or {}).get("wait_key") or "").strip()
         wait_desc = wait_kind + (f"/{wait_key}" if wait_key else "")
-        reply = f"我先把任务切到 waiting，等待 {wait_desc}。"
-        if next_step:
-            reply += f" 条件满足后会继续：{_brief(next_step, 60)}"
-        return reply
+        lines = [
+            _fact_line("状态", "waiting"),
+            _fact_line("wait", wait_desc),
+            _fact_line("next", _brief(next_step, 60)) if next_step else "",
+        ]
+        return "；".join(line for line in lines if line)
 
     if result.summary:
-        reply = f"我刚完成这一步：{_brief(result.summary, 100)}。"
-        if next_step:
-            reply += f" 下一步 { _brief(next_step, 60) }"
-        return reply
+        lines = [
+            _fact_line("结果", _brief(result.summary, 100)),
+            _fact_line("next", _brief(next_step, 60)) if next_step else "",
+        ]
+        return "；".join(line for line in lines if line)
 
     if next_step:
-        return f"我刚推进了一步，下一步 { _brief(next_step, 60) }"
-    return "我这轮已经推进了一步，正在根据当前结果继续判断下一步。"
+        return _fact_line("next", _brief(next_step, 60))
+    return _fact_line("状态", "progressed")
 
 
 def _next_thinking_override(model_strategy: dict[str, Any] | None) -> str | None:

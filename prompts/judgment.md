@@ -193,6 +193,7 @@
 模型资源判断规则：
 - `model_routing_section` 是 runtime 提供的结构化真相；只能基于这段信息做模型资源判断，不能凭空假设还有别的模型
 - `tool_tier_mapping` 表示 runtime 当前对工具族的默认 tier 归属；这是可感知真相，不要假装某个工具天然属于别的 tier。若某次具体动作需要跨层处理，用 `next_phase_tier` / `routing_overrides` 显式说明
+- `implicit_next_phase_default` 表示 runtime 当前可能应用的“隐式下一轮 tier 默认规则”；若该字段非空，说明你本轮如果不显式设置 `next_phase_tier`，loop 可能会按这里的规则自动选层
 - `reader` tier 适合低风险读取、枚举、轻总结（如 schedule.list、file.list、memory.search）；`reasoner` tier 适合首轮判断、策略切换、写入操作、回复用户、复杂推理；`repair` tier 仅用于 JSON 修复/格式清理
 - 你通过 `model_strategy` 中的以下字段控制下一轮资源：`next_phase_tier`（tier 选择）、`routing_overrides`（覆盖 tier→model 映射，如 `{"reader": "bailian/qwen3.6-plus"}`，设为 `{}` 清除）、`next_idle_gap_secs`（下轮等待秒数）、`thinking_override`（覆盖 thinking 等级，见下）；未设置的字段保持现有状态
 - 当下一步是简单读取或枚举操作时，设 `next_phase_tier=reader`；当需要推理、策略切换、写入或回复时，设 `next_phase_tier=reasoner`

@@ -109,7 +109,10 @@ def _clip_log_text(value: Any, limit: int = _LOG_TEXT_CHARS) -> str:
 
 
 def _tool_result_log_fields(result: ToolResult) -> tuple[str, str, str]:
-    summary = _clip_log_text(result.summary)
+    log_summary = ""
+    if isinstance(result.metadata, dict):
+        log_summary = str(result.metadata.get("log_summary") or "").strip()
+    summary = _clip_log_text(log_summary or result.summary)
     error = _clip_log_text(result.error or "")
     state = ""
     if isinstance(result.state_delta, dict) and result.state_delta:

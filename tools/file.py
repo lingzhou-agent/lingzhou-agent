@@ -12,6 +12,14 @@ from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, too
 _log = logging.getLogger("lingzhou.tools.file")
 
 
+def _log_preview_text(text: str, limit: int = 80) -> str:
+    first_line = (text or "").splitlines()[0] if text else ""
+    cleaned = " ".join(first_line.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)] + "..."
+
+
 def _tail_after_anchor(path: Path, anchor: str) -> Path | None:
     parts = path.parts
     if anchor not in parts:
@@ -161,7 +169,16 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             resource_key=str(path),
             fingerprint=f"read:{hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()[:12]}",
             artifact_paths=[str(path)],
-            metadata={"path": str(path), "chars": len(text), "has_range": has_range, "max_chars": max_chars},
+            metadata={
+                "path": str(path),
+                "chars": len(text),
+                "has_range": has_range,
+                "max_chars": max_chars,
+                "log_summary": (
+                    f"file.read path={path} chars={len(text)}"
+                    + (f" preview={_log_preview_text(text)!r}" if text else " preview=''" )
+                ),
+            },
         )
     except Exception as e:
         _log.exception("读取文件失败: %s", path)
