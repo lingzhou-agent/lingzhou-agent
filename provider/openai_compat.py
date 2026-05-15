@@ -51,6 +51,20 @@ def _copilot_reasoning_effort(level: str) -> str:
     return "low" if level == "minimal" else level
 
 
+def _raise_for_status_with_body(resp: httpx.Response) -> None:
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = (resp.text or "").strip().replace("\n", " ")
+        if not body:
+            raise
+        raise httpx.HTTPStatusError(
+            f"{exc} body={body[:400]}",
+            request=exc.request,
+            response=exc.response,
+        ) from exc
+
+
 def _build_copilot_ide_headers(*, include_api_version: bool = False) -> dict[str, str]:
     headers = {
         "Editor-Version": COPILOT_EDITOR_VERSION,
@@ -201,7 +215,7 @@ class OpenAICompatProvider:
                         **_build_copilot_ide_headers(include_api_version=False),
                     },
                 )
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             data = resp.json()
             token = str(data.get("token", "")).strip()
             if not token:
@@ -413,7 +427,7 @@ class OpenAICompatProvider:
                     headers=retry_headers,
                     timeout=_req_timeout,
                 )
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             data = resp.json()
             return self._extract_responses_text(data)
 
@@ -488,7 +502,7 @@ class OpenAICompatProvider:
                         timeout=_req_timeout,
                     )
 
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         data = resp.json()
         msg = data["choices"][0]["message"]
         # Qwen3/DashScope: thinking 有时内嵌在 content 中作为 <think>...</think> 而非分离到 reasoning_content。
@@ -533,5 +547,5 @@ class OpenAICompatProvider:
             }),
             headers=headers,
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()["data"][0]["embedding"]

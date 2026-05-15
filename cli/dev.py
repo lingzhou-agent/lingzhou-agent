@@ -20,6 +20,45 @@ dev_app = typer.Typer(
 )
 
 
+def _sync_routing_models_on_primary_switch(
+    cfg_data: dict,
+    *,
+    old_model: str,
+    new_model: str,
+) -> list[str]:
+    """同步那些原本跟随旧主模型的 routing 项。
+
+    `lingzhou dev model` 的用户心智是“把当前运行模型切过去”。
+    若 routing.reasoner/reader 仍精确指向旧主模型，运行时会继续命中旧路由，
+    造成“顶层 model 已切，但真实判断仍像没切”的错觉。
+    """
+    if not old_model or not new_model or old_model == new_model:
+        return []
+    routing = cfg_data.get("routing")
+    if not isinstance(routing, dict):
+        return []
+    changed: list[str] = []
+    for tier, model_ref in routing.items():
+        if model_ref == old_model:
+            routing[tier] = new_model
+            changed.append(str(tier))
+    return changed
+
+
+def _preferred_model_index(catalog_models: list[dict], current_model_id: str = "") -> int:
+    """优先当前模型；否则优先 reasoning/thinking 模型；都没有再退回列表首项。"""
+    if not catalog_models:
+        return -1
+    if current_model_id:
+        for idx, model in enumerate(catalog_models):
+            if str(model.get("id") or "") == current_model_id:
+                return idx
+    for idx, model in enumerate(catalog_models):
+        if model.get("reasoning") or model.get("thinking"):
+            return idx
+    return 0
+
+
 @dev_app.command("evolve")
 def evolve(
     description: Annotated[str, typer.Argument(help="新工具的自然语言描述")],
@@ -149,6 +188,8 @@ def model(
 
     cfg_data = _json.loads(cfg_path.read_text(encoding="utf-8"))
     current = cfg_data.get("model", "(未设置)")
+    chosen_thinking = cfg_data.get("thinking", "off")
+    current_provider, _, current_model_id = str(current).partition("/")
 
     # ── 交互式选择 ─────────────────────────────────────────────────────────
     if interactive or (not set_model):
@@ -256,6 +297,10 @@ def model(
         catalog_models = list_provider_models(chosen_provider)
         console.print(f"\n[bold]选择模型[/bold]  [dim](provider={chosen_provider})[/dim]")
         if catalog_models:
+            preferred_index = _preferred_model_index(
+                catalog_models,
+                current_model_id=current_model_id if chosen_provider == current_provider else "",
+            )
             for i, m in enumerate(catalog_models, 1):
                 ctx_k = (m.get("context_window") or 0) // 1000
                 tags = []
@@ -265,9 +310,10 @@ def model(
                     tags.append("reasoning")
                 ctx_str = f"  [dim]{ctx_k}K[/dim]" if ctx_k else ""
                 tag_str = f"  [dim][{', '.join(tags)}][/dim]" if tags else ""
-                console.print(f"  {i}. {m['id']}{ctx_str}{tag_str}")
+                mark = " [bold cyan]← 默认[/bold cyan]" if i - 1 == preferred_index else ""
+                console.print(f"  {i}. {m['id']}{ctx_str}{tag_str}{mark}")
             console.print(f"  {len(catalog_models)+1}. 手动输入")
-            raw_m = typer.prompt("  模型编号", default="1")
+            raw_m = typer.prompt("  模型编号", default=str(preferred_index + 1))
             try:
                 midx = int(raw_m.strip()) - 1
             except ValueError:
@@ -305,6 +351,11 @@ def model(
 
     # ── 写入配置 ───────────────────────────────────────────────────────────
     cfg_data["model"] = set_model
+    synced_routing = _sync_routing_models_on_primary_switch(
+        cfg_data,
+        old_model=current,
+        new_model=set_model,
+    )
     if not interactive:
         chosen_thinking = cfg_data.get("thinking", "off")  # 非交互模式保持原值
 
@@ -312,6 +363,10 @@ def model(
     cfg_data["thinking"] = chosen_thinking
     cfg_path.write_text(_json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
     console.print(f"[green]✓ 模型已切换:[/green] {current} → [bold cyan]{set_model}[/bold cyan]")
+    if synced_routing:
+        console.print(
+            f"[green]✓ 已同步 routing:[/green] {', '.join(synced_routing)} → [bold cyan]{set_model}[/bold cyan]"
+        )
     if chosen_thinking != old_thinking:
         console.print(f"[green]✓ 思考等级已更新:[/green] {old_thinking} → [bold cyan]{chosen_thinking}[/bold cyan]")
     console.print("[dim]lingzhou 运行中时将在下一轮自动生效（配置热重载）[/dim]")

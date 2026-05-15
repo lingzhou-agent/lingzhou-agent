@@ -26,6 +26,20 @@ _DEFAULT_TIMEOUT = 300
 _CHAT_INPUT_PROMPT = "you> "
 
 
+def _erase_last_input_echo() -> None:
+    """尽量擦除用户刚提交的输入行，避免 chat 界面残留一行回显。"""
+    import sys
+
+    stdout = sys.stdout
+    if not hasattr(stdout, "isatty") or not stdout.isatty():
+        return
+    try:
+        stdout.write("\x1b[1A\r\x1b[2K\r")
+        stdout.flush()
+    except OSError:
+        pass
+
+
 def chat(
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     ask: Annotated[
@@ -160,6 +174,7 @@ async def _interactive(
                 user_text = line.strip()
                 if user_text:
                     await store.add_chat_message("user", user_text, session_id)
+                    _erase_last_input_echo()
                     # 告知用户消息已入队，loop 在后台处理（异步模式核心体验）
                     console.print("[dim]  ↑ 已发送，等待回复中…（可继续输入下一条）[/dim]")
         except (KeyboardInterrupt, asyncio.CancelledError):

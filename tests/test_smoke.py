@@ -153,6 +153,21 @@ def test_chat_read_line_falls_back_to_utf8_buffer(monkeypatch):
     assert _read_line() == "中文"
 
 
+def test_chat_erase_last_input_echo_when_tty(monkeypatch):
+    from cli.chat import _erase_last_input_echo
+
+    class _FakeStdout(io.StringIO):
+        def isatty(self):
+            return True
+
+    fake_stdout = _FakeStdout()
+    monkeypatch.setattr("sys.stdout", fake_stdout)
+
+    _erase_last_input_echo()
+
+    assert fake_stdout.getvalue() == "\x1b[1A\r\x1b[2K\r"
+
+
 def test_configure_lingzhou_logging_resets_console_log_each_time():
     from cli.gateway import _configure_lingzhou_logging
 
@@ -2492,6 +2507,43 @@ async def _curiosity_signal_does_not_auto_create_task():
             await loop.provider.close()
 
 
+def test_dev_model_switch_syncs_routing_entries_following_primary_model():
+    from cli.dev import _sync_routing_models_on_primary_switch
+
+    cfg_data = {
+        "model": "copilot/gpt-5.4",
+        "routing": {
+            "reader": "bailian/qwen3.6-plus",
+            "reasoner": "copilot/gpt-5.4",
+            "repair": "copilot/gpt-5.4",
+        },
+    }
+
+    changed = _sync_routing_models_on_primary_switch(
+        cfg_data,
+        old_model="copilot/gpt-5.4",
+        new_model="copilot/gpt-5.4-mini",
+    )
+
+    assert changed == ["reasoner", "repair"]
+    assert cfg_data["routing"]["reader"] == "bailian/qwen3.6-plus"
+    assert cfg_data["routing"]["reasoner"] == "copilot/gpt-5.4-mini"
+    assert cfg_data["routing"]["repair"] == "copilot/gpt-5.4-mini"
+
+
+def test_dev_model_prefers_current_or_reasoning_model():
+    from cli.dev import _preferred_model_index
+
+    models = [
+        {"id": "gpt-4.5"},
+        {"id": "gpt-5.4-mini", "thinking": True},
+        {"id": "o3", "reasoning": True},
+    ]
+
+    assert _preferred_model_index(models, current_model_id="o3") == 2
+    assert _preferred_model_index(models, current_model_id="") == 1
+
+
 def test_chat_reply_is_persisted_before_post_tick_cleanup():
     asyncio.run(_chat_reply_is_persisted_before_post_tick_cleanup())
 
@@ -2757,6 +2809,54 @@ def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     assert call["payload"]["input"] == [{"role": "user", "content": "u"}]
     assert call["payload"]["reasoning"] == {"effort": "high"}
     assert "messages" not in call["payload"]
+
+
+def test_copilot_gpt5_responses_400_surfaces_error_body():
+    import httpx
+    from provider.base import Message
+    from provider.openai_compat import OpenAICompatProvider
+
+    class _FakeAsyncClient:
+        def __init__(self) -> None:
+            self.timeout = SimpleNamespace(read=30.0, connect=30.0)
+            self._responses = [
+                httpx.Response(
+                    400,
+                    text='{"error":{"message":"model \\"gpt-5.4-mini\\" is not accessible via the /responses endpoint","code":"unsupported_api_for_model"}}',
+                    request=httpx.Request("POST", "https://api.individual.githubcopilot.com/responses"),
+                ),
+                httpx.Response(
+                    400,
+                    text='{"error":{"message":"model \\"gpt-5.4-mini\\" is not accessible via the /responses endpoint","code":"unsupported_api_for_model"}}',
+                    request=httpx.Request("POST", "https://api.individual.githubcopilot.com/responses"),
+                ),
+            ]
+
+        async def post(self, url, *, content=None, headers=None, timeout=None):
+            return self._responses.pop(0)
+
+    fake_client = _FakeAsyncClient()
+    provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+    provider._provider_mode = "copilot"
+    provider._model = "gpt-5.4-mini"
+    provider._temperature = 0.7
+    provider._thinking_level = "high"
+    provider._extra_body = {}
+    provider._client = cast(Any, fake_client)
+    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"
+
+    async def _ensure_token(*, force_refresh: bool = False) -> str:
+        return "copilot-token-2" if force_refresh else "copilot-token-1"
+
+    provider._ensure_copilot_token = _ensure_token
+    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}
+    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"
+
+    with pytest.raises(httpx.HTTPStatusError, match="unsupported_api_for_model"):
+        asyncio.run(provider.chat(
+            [Message(role="system", content="sys"), Message(role="user", content="u")],
+            temperature=0.0,
+        ))
 
 
 def test_copilot_base_url_derives_from_proxy_ep():
