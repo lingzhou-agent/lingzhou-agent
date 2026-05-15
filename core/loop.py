@@ -504,16 +504,22 @@ class CognitionLoop:
                     if chat_msg:
                         cycle += 1
                         _log.info("[chat] user › %s", chat_msg["content"][:200])
-                        reply = await self._tick(cycle, user_message=chat_msg["content"])
+                        reply = await self._tick(
+                            cycle,
+                            user_message=chat_msg["content"],
+                            chat_session_id=chat_msg["session_id"],
+                        )
                         if reply:
                             reply = _strip_memory_context(reply)
                         _log.info("[chat] assistant › %s", (reply or "")[:200])
-                        # 内层循环已兜底 reply；若 tick 意外返回空串，也写一条 ACK 防超时
-                        await self._task_store.add_chat_message(
-                            "assistant",
-                            reply or "（请求已处理，任务正在后台继续）",
-                            chat_msg["session_id"],
-                        )
+                        # _tick 在拿到最终 reply 后会立即持久化，避免后处理异常导致用户看不到结论。
+                        # 这里只兜底极端情况下的空回复，防止 chat 端永久等待。
+                        if not reply:
+                            await self._task_store.add_chat_message(
+                                "assistant",
+                                "（请求已处理，任务正在后台继续）",
+                                chat_msg["session_id"],
+                            )
                     else:
                         cycle += 1
                         await self._tick(cycle)
@@ -590,7 +596,7 @@ class CognitionLoop:
                     break
             # 事件3：max_wait 超时 → 自主思考节律兜底（60s 默认，非固定 30s）
 
-    async def _tick(self, cycle: int, user_message: str = "") -> str:
+    async def _tick(self, cycle: int, user_message: str = "", chat_session_id: str | None = None) -> str:
         """执行一轮完整认知 tick，返回 reply_to_user（interact 模式时非空）。"""
         cfg = self._cfg
         ctx = self._make_ctx()
@@ -960,16 +966,23 @@ class CognitionLoop:
                 if action.reply_to_user or action.decision != "act":
                     break
 
-            # chat/interact 模式下，内层循环结束仍无回复时给用户兜底真实状态，而非固定 ACK
-            if user_message and not action.reply_to_user:
-                action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
+        # chat/interact 模式下，内层循环结束仍无回复时给用户兜底真实状态，而非固定 ACK
+        if user_message and not action.reply_to_user:
+            action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
 
-            if action.reply_to_user:
-                _log.info(
-                    "[task-reply] task=%s decision=%s reply=%s",
-                    active_task.id if active_task else 0,
-                    action.decision,
-                    _clip_reply_for_log(action.reply_to_user),
+        if action.reply_to_user:
+            action.reply_to_user = _strip_memory_context(action.reply_to_user)
+            _log.info(
+                "[task-reply] task=%s decision=%s reply=%s",
+                active_task.id if active_task else 0,
+                action.decision,
+                _clip_reply_for_log(action.reply_to_user),
+            )
+            if chat_session_id is not None:
+                await self._task_store.add_chat_message(
+                    "assistant",
+                    action.reply_to_user,
+                    chat_session_id,
                 )
 
         # 执行后记忆整合（结晶、WM 注入、情节记录、语义结晶、情绪反写）

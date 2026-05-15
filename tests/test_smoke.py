@@ -2492,6 +2492,78 @@ async def _curiosity_signal_does_not_auto_create_task():
             await loop.provider.close()
 
 
+def test_chat_reply_is_persisted_before_post_tick_cleanup():
+    asyncio.run(_chat_reply_is_persisted_before_post_tick_cleanup())
+
+
+async def _chat_reply_is_persisted_before_post_tick_cleanup():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.loop import CognitionLoop
+
+    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
+    if not cfg_path.exists():
+        cfg_path = _proj_root() / "lingzhou.json.example"
+    cfg = Config.load(cfg_path)
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        await loop.task_store.open()
+        try:
+            async def _sense(*args, **kwargs):
+                return cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
+
+            loop._perception.sense = _sense
+            loop._perception.derive_cognitive_signals = lambda *args, **kwargs: cast(
+                Any,
+                SimpleNamespace(
+                    repeat_action_count=0,
+                    repeat_action_tool="",
+                    repeat_action_key="",
+                    repeat_read_count=0,
+                    repeat_read_path="",
+                    loop_probe_version=0,
+                ),
+            )
+
+            async def _decide(*args, **kwargs):
+                return _judgment_output(
+                    decision="pause",
+                    rationale="已经找到根因",
+                    reply_to_user="最终答复",
+                )
+
+            loop._judgment.decide = _decide
+            loop._judgment._last_call_meta = {
+                "model_ref": cfg.model,
+                "thinking": cfg.thinking,
+                "tier": "reasoner",
+                "phase": "initial",
+            }
+
+            async def _boom(*args, **kwargs):
+                raise RuntimeError("post tick cleanup failed")
+
+            loop._post_tick_memory = _boom
+
+            with pytest.raises(RuntimeError, match="post tick cleanup failed"):
+                await loop._tick(1, user_message="你好", chat_session_id="chat-1")
+
+            msgs = await loop.task_store.get_chat_messages_since(0, "chat-1")
+            assert len(msgs) == 1
+            assert msgs[0]["role"] == "assistant"
+            assert msgs[0]["content"] == "最终答复"
+        finally:
+            await loop.task_store.close()
+            await loop.provider.close()
+
+
 def test_auth_store_profile_roundtrip(tmp_path):
     from auth_store import load_auth_profiles, set_token_profile
 
