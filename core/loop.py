@@ -109,6 +109,15 @@ def _next_thinking_override(model_strategy: dict[str, Any] | None) -> str | None
     return None
 
 
+def _thinking_floor(value: str | None, floor: str | None) -> str | None:
+    order = {"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4}
+    if floor is None:
+        return value
+    if value is None:
+        return floor
+    return value if order.get(value, -1) >= order.get(floor, -1) else floor
+
+
 def _resolve_thinking_override(
     cfg: Config,
     *,
@@ -1371,10 +1380,14 @@ class CognitionLoop:
             #   自主循环   → autonomous_thinking（默认 medium，~10-20s，平衡质量与速度）
             #   两者均与顶层 thinking 相同时不传 override（保持原有行为）
             #   LLM 通过 model_strategy.thinking_override 可在此基础上进一步覆盖
+            _pending_initial_thinking = self._pending_thinking_override
+            if user_message:
+                _chat_floor = cfg.loop.chat_thinking if cfg.loop.chat_thinking != cfg.thinking else None
+                _pending_initial_thinking = _thinking_floor(_pending_initial_thinking, _chat_floor)
             _thinking_override = _resolve_thinking_override(
                 cfg,
                 user_message=user_message,
-                pending_override=self._pending_thinking_override,
+                pending_override=_pending_initial_thinking,
             )
             action = await self._judgment.decide(
                 percept, self._wm, self._task_store, self._episodic, self._semantic, self._emotion,

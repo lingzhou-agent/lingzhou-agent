@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from pathlib import Path
@@ -19,6 +20,30 @@ from typing import Any, Optional
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CHAT_ZERO_WIDTH_CHARS = {"\ufeff", "\u200b", "\u200c", "\u200d", "\u2060"}
+_CJK_NEIGHBOR_RE = re.compile(
+    r"(?<=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef])"
+    r"[ \t\u00a0\u3000]+"
+    r"(?=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3000-\u303f\uff00-\uffef])"
+)
+
+
+def _sanitize_chat_content(content: str) -> str:
+    text = str(content or "")
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned_chars: list[str] = []
+    for ch in text:
+        if ch in _CHAT_ZERO_WIDTH_CHARS or ch == "\ufffd":
+            continue
+        if ord(ch) < 32 and ch not in {"\n", "\t"}:
+            continue
+        cleaned_chars.append(ch)
+    text = "".join(cleaned_chars)
+    text = _CJK_NEIGHBOR_RE.sub("", text)
+    return text.strip()
 
 _TASK_CORE_DATA_KEYS = frozenset({
     "goal",
@@ -1141,9 +1166,10 @@ class TaskStore:
 
     async def add_chat_message(self, role: str, content: str, session_id: str = "") -> int:
         """写入一条对话消息（role='user'|'assistant'）。"""
+        cleaned = _sanitize_chat_content(content)
         async with self._db.execute(
             "INSERT INTO chat_messages(role, content, session_id) VALUES (?,?,?)",
-            (role, content, session_id),
+            (role, cleaned, session_id),
         ) as cur:
             row_id: int = cur.lastrowid or 0
         await self._db.commit()

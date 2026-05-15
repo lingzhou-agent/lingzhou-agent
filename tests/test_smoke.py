@@ -2144,6 +2144,25 @@ async def _task_wait_resume_can_clear_runtime_fields():
         await store.close()
 
 
+def test_chat_messages_are_sanitized_on_write():
+    asyncio.run(_chat_messages_are_sanitized_on_write())
+
+
+async def _chat_messages_are_sanitized_on_write():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "chat.db")
+        await store.open()
+        await store.add_chat_message("user", "\x1b[31mhi\x1b[0m\ufeff\u200b\ufffd\x07there\r\n")
+        await store.add_chat_message("user", "删 掉中文 后 就会 多 出 空格")
+        msgs = await store.get_chat_messages_since(0)
+        assert len(msgs) == 2
+        assert msgs[0]["content"] == "hithere"
+        assert msgs[1]["content"] == "删掉中文后就会多出空格"
+        await store.close()
+
+
 def test_task_store_migration():
     asyncio.run(_task_store_migration())
 
@@ -2667,6 +2686,89 @@ def test_resolve_thinking_override_uses_mode_defaults_and_strategy():
     assert _resolve_thinking_override(cfg, user_message="") == "medium"
     assert _resolve_thinking_override(cfg, user_message="", pending_override="high") == "high"
     assert _resolve_thinking_override(cfg, user_message="", model_strategy={"thinking_override": "minimal"}) == "minimal"
+
+
+def test_thinking_floor_respects_chat_minimum_for_user_message():
+    from core.loop import _thinking_floor
+
+    assert _thinking_floor("off", "low") == "low"
+    assert _thinking_floor("minimal", "low") == "low"
+    assert _thinking_floor("high", "low") == "high"
+    assert _thinking_floor(None, "low") == "low"
+
+
+def test_recent_runs_summary_prefers_output_and_progress():
+    from core.judgment import _fmt_recent_runs
+    from memory.task_store import Run
+
+    runs = [
+        Run(
+            id=12,
+            task_id=7,
+            run_type="tool_chain",
+            worker_type="tool-chain-worker",
+            status="done",
+            created_at="2026-05-15T14:00:00+00:00",
+            tool_name="file.list",
+            model_tier="reader",
+            progress="列出目录，确认技能清单",
+            output_json={"summary": "index.ts\npackage.json\nSKILL.md"},
+        )
+    ]
+
+    text = _fmt_recent_runs(runs)
+    assert "run#12 [done]" in text
+    assert "tool=file.list" in text
+    assert "progress=列出目录，确认技能清单" in text
+    assert "summary=index.ts package.json SKILL.md" in text
+
+
+def test_model_routing_section_uses_effective_thinking():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            },
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "routing": {
+            "reader": "bailian/qwen3.6-plus",
+            "reasoner": "copilot/gpt-5.4",
+        },
+        "thinking": "high",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+    payload = json.loads(layer._build_model_routing_section(
+        phase="initial",
+        user_message="继续",
+        current_action="",
+        tool_history=None,
+        effective_thinking="low",
+    ))
+
+    assert payload["available_models"][0]["current_thinking"] == "low"
 
 
 def test_decide_continue_uses_passed_thinking_override():

@@ -70,7 +70,7 @@ if TYPE_CHECKING:
     )
     from core.skill import Skill
     from memory.working import WorkingMemory
-    from memory.task_store import Task, TaskStore, Failure
+    from memory.task_store import Task, TaskStore, Failure, Run
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
     from tools.registry import ToolRegistry, ToolManifest
@@ -427,6 +427,7 @@ class JudgmentLayer:
         user_message: str,
         current_action: str,
         tool_history: list[dict[str, Any]] | None,
+        effective_thinking: str,
         routing_overrides: dict[str, str] | None = None,
     ) -> str:
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
@@ -453,7 +454,7 @@ class JudgmentLayer:
                 "cost_level": self._cost_level_for_model(model_ref, reasoning),
                 "latency_level": self._latency_level_for_model(model_ref, reasoning),
                 "context_window": spec.get("context_window") or self._cfg.context_window_tokens,
-                "current_thinking": self._cfg.thinking,
+                "current_thinking": effective_thinking or self._cfg.thinking,
                 "last_error": last_error,
                 "last_error_code": health.last_code or None,
                 "cooldown_remaining_sec": max(0, int(health.cooldown_until - time.time())),
@@ -564,6 +565,7 @@ class JudgmentLayer:
             phase=phase,
             current_action="",
             tool_history=None,
+            effective_thinking=thinking_override or self._cfg.thinking,
             routing_overrides=routing_overrides,
         )
         # 缓存给内层工具循环的续判请求用
@@ -858,12 +860,12 @@ class JudgmentLayer:
         phase: str = "initial",
         current_action: str = "",
         tool_history: list[dict[str, Any]] | None = None,
+        effective_thinking: str | None = None,
         routing_overrides: "dict[str, str] | None" = None,
     ) -> str:
         """将运行时状态填入 judgment 模板。"""
         task = await task_store.get_active()
 
-        # 任务边界过滤失败记录（P2-B 原则）
         if task:
             failures = await task_store.list_failures_for_task(
                 str(task.id), self._cfg.memory.failure_limit
@@ -871,21 +873,18 @@ class JudgmentLayer:
         else:
             failures = await task_store.list_failures(self._cfg.memory.failure_limit)
 
-        # 情节记忆（当前任务叙事）
         task_id_str = str(task.id) if task else None
         episodic_text = episodic.load_for_context(task_id_str, self._cfg.memory.episodic_max_chars)
+        recent_runs = await task_store.list_runs(task_id=task.id, limit=6) if task else []
 
-        # 情节搜索（跨任务全文检索，补充当前任务叙事之外的相关经历）
         search_query = (task.goal or task.title) if task else user_message
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
         if episodic_search and episodic_search not in episodic_text:
             episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
 
-        # 实体共指消解（本地候选召回 + LLM 推理判断）
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
         entity_section = self._ref_resolver.format_section(resolved_entities)
 
-        # 语义记忆：多锚点情境召回（goal + user_message + 失败 kind + 情绪）
         anchors: list[str] = []
         if task:
             anchors.append(task.goal or task.title)
@@ -897,12 +896,10 @@ class JudgmentLayer:
         anchors.append(emotion_label)
         memories = semantic.retrieve_multi_anchor(anchors, self._cfg.memory.semantic_top_k)
 
-        # Soul 信息（hard_axioms + ethos_baseline）
         axioms_val, _ = await task_store.get_fact("soul:hard_axioms")
         ethos_val, _ = await task_store.get_fact("soul:ethos_baseline")
         soul_section = _fmt_soul(axioms_val, ethos_val)
 
-        # 按当前情境过滤技能，注入最相关的护栏（阈值及上限从配置传入）
         _wm_items = wm.get_top(15)
         skill_context_text = "\n".join(x for x in [
             task.goal if task else "",
@@ -928,6 +925,7 @@ class JudgmentLayer:
 
         ctx = {
             "task_section": _fmt_task(task),
+            "recent_runs_section": _fmt_recent_runs(recent_runs),
             "emotion_valence": f"{emotion.valence:.2f}",
             "emotion_arousal": f"{emotion.arousal:.2f}",
             "emotion_dominant": emotion.dominant or "（未确定）",
@@ -955,6 +953,7 @@ class JudgmentLayer:
                 user_message=user_message,
                 current_action=current_action,
                 tool_history=tool_history,
+                effective_thinking=effective_thinking or self._cfg.thinking,
                 routing_overrides=routing_overrides,
             ),
             "current_time_section": _fmt_current_time(),
@@ -1007,6 +1006,42 @@ def _fmt_task(task: "Task | None") -> str:
     if last_run_status:
         lines.append(f"最近运行状态: {last_run_status}")
     return "\n".join(lines)
+
+
+def _fmt_recent_runs(runs: list["Run"]) -> str:
+    if not runs:
+        return "（暂无近期运行记录）"
+    lines: list[str] = []
+    for run in runs[:5]:
+        summary = _clip_text(_run_summary(run), 120)
+        tool = run.tool_name or run.run_type or "-"
+        progress = _clip_text(run.progress.strip(), 60) if run.progress else ""
+        line = f"- run#{run.id} [{run.status}] tool={tool} tier={run.model_tier or '-'}"
+        if progress:
+            line += f" progress={progress}"
+        if summary:
+            line += f" summary={summary}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _run_summary(run: "Run") -> str:
+    if run.error_text:
+        return f"error: {run.error_text.strip()}"
+    for key in ("summary", "result", "message", "reply_to_user"):
+        value = run.output_json.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if run.log_text.strip():
+        return run.log_text.strip()
+    return ""
+
+
+def _clip_text(text: str, limit: int) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: max(0, limit - 3)] + "..."
 
 
 def _fmt_current_time() -> str:
