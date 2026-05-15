@@ -93,7 +93,7 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 
 @tool(ToolManifest(
     name="memory.search",
-    description="搜索语义记忆节点。当你需要像 OpenClaw 那样先回忆再行动时使用。",
+    description="搜索语义记忆节点。当你需要先回忆再行动时使用。",
     params=[
         ToolParam("query", "string", "搜索查询", required=True),
         ToolParam("top_k", "number", "返回条数，默认 5", required=False),

@@ -1,4 +1,4 @@
-"""cli/auth.py — auth 命令组（参考 OpenClaw 的 auth profile store）。"""
+"""cli/auth.py — auth 命令组。"""
 from __future__ import annotations
 
 import subprocess
@@ -46,7 +46,7 @@ def _load_copilot_client_id(config: Path) -> str:
 
 
 def _store_copilot_token(token: str) -> None:
-    # Canonical store: OpenClaw 风格 auth profile store
+    # Canonical store: lingzhou auth profile store
     set_token_profile(profile_id=COPILOT_PROFILE_ID, provider="copilot", token=token)
 
     # Legacy compatibility: 保留 credentials.json 回退读取能力

@@ -31,7 +31,7 @@ def _resolve_read_path(path: Path) -> Path:
     home = Path.home()
 
     # lingzhou 本地化：读取路径只在当前工作树、用户目录与 lingzhou 自身目录内解析，
-    # 不再对 OpenClaw 目录做运行时 fallback。
+    # 不再对其他框架目录做运行时 fallback。
     bases: list[Path] = [cwd, *cwd.parents, home, home / ".lingzhou"]
     rels: list[Path] = []
 

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 # embed 输入字符上限（DashScope text-embedding-v3 单次最大约 6000 tokens，保守按字符计）
 _EMBED_MAX_CHARS: int = 6000
 
-# thinking level → budget_max 的比例（与 OpenClaw 对齐）
+# thinking level → budget_max 的比例
 _LEVEL_FRACS: dict[str, float] = {
     "minimal": 0.05,
     "low":     0.15,

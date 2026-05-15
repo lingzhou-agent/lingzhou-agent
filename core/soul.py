@@ -3,7 +3,7 @@
 职责（严格限定于 Soul / 身份层）：
   - workspace_dir 下 SOUL.md / IDENTITY.md / BOOTSTRAP.md 等身份文件的首次写入
   - 每轮 EMA 后将最新 ethos 值同步写回 SOUL.md（人类可读镜像）
-  - bootstrap：将所有身份文件注入 WM（OpenClaw Session Startup 机制）
+  - bootstrap：将所有身份文件注入 WM（启动身份注入机制）
 
 不负责：
   - models.json 生成 → 由 provider.models_gen.ensure_models_json() 在启动时处理
@@ -149,7 +149,7 @@ class SoulManager:
     async def bootstrap(self, judgment: "JudgmentLayer | None" = None) -> None:
         """冷启动：Soul 文件初始化 + WM 身份注入 + system prompt 前缀注入。
 
-        OpenClaw Session Startup 借鉴：
+        启动身份注入规则：
         - BOOTSTRAP.md / IDENTITY.md → judgment.set_identity_prefix()（永久注入 system prompt）
         - 所有身份文件 → WM（in-context 引用，优先级 0.85）
         """

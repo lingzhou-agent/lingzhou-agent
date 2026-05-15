@@ -1,7 +1,6 @@
 """auth_store.py — 认证资料存储与解析。
 
-目标：参考 OpenClaw 的 auth profile store 形状，给 Lingzhou 提供最小但正式的
-Copilot 凭证管理能力。
+目标：给 lingzhou 提供最小但正式的 Copilot 凭证管理能力。
 
 当前范围：
 - 规范化 auth-profiles.json 读写
@@ -138,7 +137,7 @@ def resolve_copilot_token(api_key_env: str = "GITHUB_TOKEN") -> TokenResolution 
             ordered_envs.append(name)
             seen.add(name)
 
-    # 对齐 OpenClaw：显式登录写入的 auth profile 比环境变量优先。
+    # lingzhou 规则：显式登录写入的 auth profile 比环境变量优先。
     profile = get_auth_profile(COPILOT_PROFILE_ID)
     if profile and isinstance(profile, dict):
         token = str(profile.get("token", "")).strip()

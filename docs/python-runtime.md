@@ -153,15 +153,15 @@ if len(failures_same_kind) >= cfg.evolution.failure_threshold:  # 默认 3
 
 ---
 
-## 7. 与其他系统的对比
+## 7. 当前技术选择的含义
 
-| 系统 | 自我修改能力 |
-|---|---|
-| Hermes | ❌ 静态 TypeScript，无运行时代码生成 |
-| OpenClaw | ❌ 静态 TypeScript |
-| **lingzhou** | ✅ **Python 运行时代码生成 + 热替换** |
+**lingzhou** 选择 Python，不是因为“简单”，而是因为：
 
-这是 lingzhou 作为"数字生命种子"的决定性技术选择。
+- 能在运行时生成代码
+- 能在同一进程中热替换模块
+- 能把进化从“下次重启再说”变成“当下即可生效”
+
+这是 lingzhou 作为“数字生命种子”的决定性技术选择。
 
 ---
 

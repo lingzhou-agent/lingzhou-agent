@@ -189,7 +189,7 @@ class SkillRegistry:
 - `skills/*.md`
 - `skills/*/SKILL.md`
 
-其中目录型 `SKILL.md` 兼容 OpenClaw / AgentSkills 风格，适合直接迁移已有 skill 包。
+其中目录型 `SKILL.md` 兼容常见 package-style skill 结构，适合迁移已有 skill 包。
 激活时会结合：
 - 内部状态（失败数、WM 压力、active task）
 - `user_message + task.goal/title + failure.kind` 组成的 `context_text`

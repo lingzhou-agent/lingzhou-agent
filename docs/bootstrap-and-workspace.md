@@ -1,22 +1,20 @@
 # Bootstrap 引导机制与 workspace Markdown 体系
 
-> lingzhou 特有机制，不同于 Hermes / OpenClaw 的 SOUL.md 注入。
+> lingzhou 的 workspace 机制：DB 为真相源，Markdown 为人类可读窗口。
 
 ---
 
-## 1. 核心差异：真相在 DB，Markdown 是窗口
+## 1. 核心原则：真相在 DB，Markdown 是窗口
 
-lingzhou 与 Hermes / OpenClaw 最根本的架构差异：
+在 lingzhou 中：
 
-| 系统 | Soul / Identity 真相来源 | Markdown 的角色 |
-|---|---|---|
-| Hermes | `SOUL.md` 文件本身 | 是真相，每次 session 直接读文件注入 |
-| OpenClaw | `SOUL.md` / `MEMORY.md` 文件本身 | 是真相，每次 session 注入 system prompt |
-| **lingzhou** | `facts["soul:*"]` SQLite DB | Markdown 是**人类可读镜像**，不是运行时真相 |
+- `facts["soul:*"]` 是运行时真相源
+- workspace Markdown 是**人类可读镜像**
+- SOUL/IDENTITY/BOOTSTRAP 等文件服务于认知启动与协作，不替代 DB 真相
 
 为什么？因为 lingzhou 的 Soul 通过 EMA 在 DB 中缓慢**演化**。  
-如果 Soul 是文件，则用户每次编辑都会重置演化基线，破坏身份连续性。  
-DB 是不可绕过的单一真相源；SOUL.md 是快照，不是源。
+如果 Soul 直接由文件驱动，每次手动编辑都会重置演化基线，破坏身份连续性。  
+因此：DB 是单一真相源；SOUL.md 是窗口，不是源。
 
 ---
 
@@ -72,9 +70,7 @@ DB 是不可绕过的单一真相源；SOUL.md 是快照，不是源。
 - 检查 workspace 是否有 MEMORY.md 补充记忆
 ```
 
-**与 Hermes / OpenClaw 的对比**：
-- Hermes 无 BOOTSTRAP.md，冷启动靠 SOUL.md + HERMES.md
-- OpenClaw 用 `AGENTS.md` 的 "Session Startup" H2 节做类似功能，压缩后重注入
+**说明**：BOOTSTRAP.md 的职责是给 lingzhou 明确冷启动协议与恢复顺序。
 
 ---
 
@@ -152,7 +148,7 @@ _初始状态为空，随运行时间增长。_
 ### 2.5 MEMORY.md（人类手写记忆补充）
 
 **定位**：人类可以向 lingzhou 主动输入的长期背景知识。  
-**作用**：每次 session 开始时作为补充记忆注入 context（类比 OpenClaw 的 MEMORY.md）。  
+**作用**：每次 session 开始时作为补充记忆注入 context。  
 **谁写**：默认以人为主维护；agent 可在明确迁移/整理任务中适配写入。  
 **演化**：lingzhou 的 `semantic.py` nodes 是程序侧记忆，MEMORY.md 是人类可读的长期记忆窗口。
 
@@ -217,21 +213,21 @@ if judgment is not None and identity_parts:
 
 > 注：2026-05-14 起，MEMORY.md 已进入 bootstrap 注入链路。
 
-Hermes / OpenClaw / lingzhou 的压缩重点都在“把什么注入上下文”，而不是“限制最终回复长度”。
+lingzhou 的压缩重点在“把什么注入上下文”，而不是“限制最终回复长度”。
 
-- Hermes：以 session 为边界，按启动时读入的 SOUL / HERMES / workspace 约定构造输入上下文
-- OpenClaw：以 AGENTS / MEMORY / session transcript 做分层注入，靠 session startup 压缩与重注入维持局部上下文
-- lingzhou：以 DB facts / task / episodic / semantic 分层注入，靠任务叙事和记忆摘要维持跨 chat 连续性
+lingzhou 采用：
+- DB facts / task / episodic / semantic 分层注入
+- 靠任务叙事和记忆摘要维持跨 chat 连续性
 
 因此，真正的上限机制主要是：
 - 模型输入上下文窗口（context window）
 - 分层注入范围（哪些文件、哪些记忆、哪些技能进入 prompt）
 - 记忆摘要与末尾截取（例如 task 叙事末尾、semantic top_k、events 轮转）
 
-在配置上，OpenClaw / Hermes 这一类系统的重点都不是“统一配置一个 max_tokens”，而是按模型窗口与 session 分层去管理输入：
+在配置上，重点不是“统一配置一个 max_tokens”，而是按模型窗口与 session 分层去管理输入：
 - 窗口大的模型：保留更完整的 memory / transcript / skill 上下文
 - 窗口小的模型：优先保任务主轴、禁忌和最近证据，再压缩次要段落
-- 输出长度只作为可选的请求参数，不作为上下文管理的核心配置；如果要保底，最好交给内部策略，而不是暴露成每模型都要手填的配置
+- 输出长度只作为可选请求参数，不作为上下文管理的核心配置；如果要保底，最好交给内部策略，而不是暴露成每模型都要手填的配置
 
 不是额外再造一个“回复长度上限”字段。
 

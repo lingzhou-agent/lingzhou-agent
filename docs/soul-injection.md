@@ -91,7 +91,7 @@ SoulManager.bootstrap()（loop.open() / loop.run() 时调用一次）
   ├─ 读 BOOTSTRAP.md / IDENTITY.md / SOUL.md / USER.md / TOOLS.md / HEARTBEAT.md
   ├─ 每个文件 → wm.add(WMItem(kind="bootstrap_identity", priority=0.85))
   └─ BOOTSTRAP.md + IDENTITY.md → judgment.set_identity_prefix()
-                                    （永久附在 system prompt 前缀，类 OpenClaw）
+                                    （永久附在 system prompt 前缀）
 ```
 
 ---
@@ -169,16 +169,17 @@ await task_store.set_fact("soul:ethos_baseline", json.dumps(new_baseline))
 
 ---
 
-## 7. 与 Hermes / OpenClaw 的对比
+## 7. 当前方案的特点
 
-| 系统 | Soul 来源 | 注入时机 | 注入目标 |
-|---|---|---|---|
-| Hermes | `SOUL.md` 文件 | 每 session 一次 | system prompt |
-| OpenClaw | `SOUL.md` + `USER.md` + `AGENTS.md` + `TOOLS.md` | 每 session 一次 | system prompt 拼接 |
-| **lingzhou** | DB facts（soul:*）+ workspace 文件 | **双路径** | system prompt prefix（身份）+ 每 tick LLM Bundle（价值/禁忌） |
+| 维度 | lingzhou |
+|---|---|
+| Soul 真相源 | DB facts（soul:*） |
+| 身份注入 | workspace 文件 → system prompt prefix |
+| 价值/禁忌注入 | 每 tick 进入 judgment bundle |
+| 演化方式 | EMA 渐变 + evolution 主动调整 |
 
-lingzhou 是唯一一个**以 DB 为 Soul 真相**的系统，同时兼具 OpenClaw 式文件注入（身份层）和自有 EMA 演化（价值层）。  
-这牺牲了"直接编辑 SOUL.md 就生效"的便利，换来了 EMA 演化的时间连续性。
+lingzhou 选择把 Soul 真相放在 DB 中，同时保留 workspace 文件作为人类可读窗口。  
+这牺牲了“直接编辑 SOUL.md 就立刻生效”的便利，换来了 EMA 演化的时间连续性。
 
 ---
 

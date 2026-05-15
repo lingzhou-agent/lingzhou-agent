@@ -1000,7 +1000,7 @@ def _fmt_task(task: "Task | None") -> str:
 
 
 def _fmt_current_time() -> str:
-    """生成当前时间行，格式与 OpenClaw current-time.ts 对齐。"""
+    """生成当前时间行。"""
     now = datetime.now(timezone.utc)
     # 本地 ISO 字符串（服务器时区）
     local_iso = now.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")

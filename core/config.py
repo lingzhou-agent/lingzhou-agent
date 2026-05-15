@@ -356,7 +356,7 @@ class ThresholdsConfig(BaseModel):
 class Config(BaseModel):
     """所有配置的统一入口。改行为 = 改 lingzhou.json，不改代码。"""
 
-    # ── Provider 层（OpenClaw 风格）─────────────────────────────────────────
+    # ── Provider 层 ─────────────────────────────────────────────────────────
     providers: dict[str, ProviderDefinition]
     model: str = Field(
         description=(
@@ -403,7 +403,7 @@ class Config(BaseModel):
     model_fallbacks: dict[str, list[str]] = Field(
         default_factory=dict,
         description=(
-            "OpenClaw 风格显式模型回退链（按顺序尝试）。key 为 tier（reader/reasoner/repair，"
+            "显式模型回退链（按顺序尝试）。key 为 tier（reader/reasoner/repair，"
             "兼容 simple/complex），value 为 'provider/model-id' 列表。\n"
             "示例: {\"reader\": [\"bailian/qwen-plus\", \"copilot/gpt-5.4\"]}"
         ),
@@ -441,7 +441,7 @@ class Config(BaseModel):
             return p
         return (self._base_dir / p).resolve()
 
-    # ── Provider helpers（OpenClaw 风格）──────────────────────────────────
+    # ── Provider helpers ───────────────────────────────────────────────────
 
     @property
     def active_provider_name(self) -> str:

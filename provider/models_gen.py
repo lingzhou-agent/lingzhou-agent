@@ -1,12 +1,8 @@
 """provider/models_gen.py — 运行时 models.json 生成器。
 
-设计思路（对标 OpenClaw agents/models-config.ts ensureOpenClawModelsJson）：
+设计思路：
 
-  OpenClaw 的做法：
-    - 无内置 models.json 模板，完全由运行时根据 config + auth-profiles + provider
-      discovery 动态生成；用指纹（fingerprint）决定 skip / noop / write 三态。
-
-  lingzhou 的对应实现：
+  当前实现：
     - 内置目录（provider/models.json）存储模型元数据（context_window / max_tokens /
       thinking），随包发布，仅用作种子数据。
     - 运行时目录（workspace_dir/models.json）由本模块在每次启动时生成：
@@ -125,7 +121,7 @@ class EnsureResult:
 async def ensure_models_json(cfg: "Config") -> EnsureResult:
     """确保 workspace_dir/models.json 是基于当前 config 生成的最新版本。
 
-    三态行为（对标 OpenClaw planOpenClawModelsJson 的 skip/noop/write）：
+    三态行为（skip/noop/write）：
       skip  — 指纹命中内存缓存，直接激活 catalog 路径并返回
       noop  — 指纹未缓存，但生成内容与磁盘文件一致，仅更新缓存
       write — 生成内容与磁盘不同（或文件不存在），写入文件

@@ -1,6 +1,6 @@
 """provider/catalog.py — 模型目录查询（运行时路径优先）。
 
-设计思路（对标 OpenClaw agents/models-config.ts）：
+设计思路：
   - 内置模板（provider/models.json）：随源码发布，记录 context_window / max_tokens /
     thinking 等静态参数，作为种子文件。
   - 运行时文件（workspace_dir/models.json）：由 provider.models_gen.ensure_models_json()

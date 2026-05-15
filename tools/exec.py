@@ -5,7 +5,7 @@
 - process：管理已启动的后台进程（list/poll/log/write/kill）
 
 注意：
-- approval / security 语义刻意不对标 OpenClaw；这里只补能力本体
+- 不引入重型审批/安全抽象；这里先补能力本体
 - 进程状态当前为进程内内存态，runtime 重启后不会恢复（后续可持久化）
 """
 from __future__ import annotations

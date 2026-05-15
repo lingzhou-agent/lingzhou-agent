@@ -88,7 +88,7 @@ _effective_activation = effective_activation
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    """余弦相似度（OpenClaw 向量混合检索中的相关性核心）。"""
+    """余弦相似度。"""
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -150,7 +150,7 @@ class SemanticMemory:
         """幂等 schema 迁移（Hermes _reconcile_columns 模式）：只 ADD COLUMN，永不 DROP。
 
         新列清单：
-          embedding TEXT  — JSON float array，向量混合检索用（OpenClaw 借鉴）
+          embedding TEXT  — JSON float array，向量混合检索用
         索引清单：
           idx_nodes_kind — 按 kind 过滤的 O(log n) 扫描（person/event/... 检索用）
         """
@@ -469,7 +469,7 @@ class SemanticMemory:
     ) -> float:
         """Keyword overlap score + Ebbinghaus-decayed activation weighting.
 
-        Hermes/OpenClaw 借鉴：如果 query_vec 可用且节点有 embedding，
+        如果 query_vec 可用且节点有 embedding，
         使用 cosine similarity 混合评分（embedding_weight 加权）。
         """
         eff_act = _effective_activation(node, self._decay_lambda)

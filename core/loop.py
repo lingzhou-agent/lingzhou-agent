@@ -187,7 +187,7 @@ class CognitionLoop:
         self._evolution = EvolutionEngine(cfg, self._provider, self._registry)
         # 分层路由 providers（{"simple": p1, "complex": p2}，由 open() 注入 JudgmentLayer）
         self._routing_providers: dict[str, Any] = {}
-        # Hermes/OpenClaw 借鉴：embedding 混合检索（embed_fn=None 则纯关键词模式）
+        # embedding 混合检索（embed_fn=None 则纯关键词模式）
         _embed_fn = getattr(self._provider, "embed", None) if cfg.memory.embedding_model else None
         self._semantic = SemanticMemory(
             cfg.memory_dir,
@@ -478,7 +478,7 @@ class CognitionLoop:
 
         # 心跳自检：系统级计时（monotonic），独立于用户 cron。
         # HEARTBEAT.md 定义检查清单，LLM 自主决定是否行动（静默回复 HEARTBEAT_OK）。
-        # 参考 OpenClaw HeartbeatRunner：heartbeat 是独立定时机制，不是 DB 任务。
+        # heartbeat 是独立定时机制，不是 DB 任务。
         _now = time.monotonic()
         if _now - self._last_heartbeat_at >= self._cfg.loop.heartbeat_interval:
             _hb_path = self._cfg.workspace_dir / "HEARTBEAT.md"
