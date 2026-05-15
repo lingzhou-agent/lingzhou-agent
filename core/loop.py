@@ -274,9 +274,18 @@ def _action_made_progress(
     return True
 
 
-def _should_continue_within_tick(action: JudgmentOutput) -> bool:
-    """只要本轮仍然是 act，就允许在同一个 tick 里继续续判。"""
-    return action.decision == "act"
+def _should_continue_within_tick(
+    action: JudgmentOutput,
+    *,
+    user_message: str = "",
+    has_active_task: bool = False,
+) -> bool:
+    """有新用户消息且本轮进入前已存在活跃任务时，不让旧任务在同一 tick 里继续插队。"""
+    if action.decision != "act":
+        return False
+    if user_message and has_active_task:
+        return False
+    return True
 
 
 def _task_model_tier(task: Task | None) -> str | None:
@@ -876,7 +885,11 @@ class CognitionLoop:
         # 目标：让 LLM 在单次 tick 内连续调用工具直到本轮无需继续 act，节省 perception 重装 token。
         # 注意：不判断 reply_to_user——首轮 act 可能包含中间 ACK（如"正在扫描..."），
         # 内层循环应继续执行工具调用，最终生成的 reply 会覆盖中间 ACK。
-        if _should_continue_within_tick(action):
+        if _should_continue_within_tick(
+            action,
+            user_message=user_message,
+            has_active_task=active_task is not None,
+        ):
             _tool_history: list[dict] = [{
                 "tool":   action.chosen_action_id or "",
                 "params": action.params or {},
@@ -1005,6 +1018,7 @@ class CognitionLoop:
             previous_next_step=_previous_task_next_step,
             action=action,
             progressful=self._last_act_progressful,
+            state_delta=result.state_delta,
         )
 
         # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好，存储到下轮传入

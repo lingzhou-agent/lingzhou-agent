@@ -121,6 +121,34 @@ class ReferenceResolver:
 
     def __init__(self, provider: "Provider | None" = None) -> None:
         self._provider = provider
+        self._last_llm_error: str = ""
+        self._last_llm_error_code: str = ""
+
+    @property
+    def last_llm_error(self) -> str:
+        return self._last_llm_error
+
+    @property
+    def last_llm_error_code(self) -> str:
+        return self._last_llm_error_code
+
+    @property
+    def llm_available(self) -> bool:
+        return self._provider is not None and not self._last_llm_error
+
+    def _classify_error_code(self, err_text: str) -> str:
+        text = (err_text or "").lower()
+        if " 429 " in f" {text} " or "too many requests" in text:
+            return "429"
+        if " 401 " in f" {text} " or "unauthorized" in text:
+            return "401"
+        if " 403 " in f" {text} " or "forbidden" in text:
+            return "403"
+        if " 400 " in f" {text} " or "bad request" in text:
+            return "400"
+        if "readtimeout" in text or "timeout" in text:
+            return "timeout"
+        return "other"
 
     # ── 阶段一：正则信号提取（< 1ms）────────────────────────────────────────
 
@@ -202,6 +230,8 @@ class ReferenceResolver:
     ) -> list[dict[str, Any]]:
         """让 LLM 从候选集中判断哪些实体真正被引用，以及关联性质。"""
         if self._provider is None:
+            self._last_llm_error = ""
+            self._last_llm_error_code = ""
             return []
         from provider.base import Message as LLMMessage
 
@@ -225,8 +255,13 @@ class ReferenceResolver:
                 temperature=0.0,
             )
         except Exception as exc:
+            err_text = str(exc) or repr(exc)
+            self._last_llm_error = err_text
+            self._last_llm_error_code = self._classify_error_code(err_text)
             _log.warning("[reference] LLM 推理失败，降级为本地评分: %s", exc)
             return []
+        self._last_llm_error = ""
+        self._last_llm_error_code = ""
 
         # 解析 JSON 数组
         raw = raw.strip()

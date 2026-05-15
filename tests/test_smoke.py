@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import aiosqlite
+import pytest
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -129,6 +130,13 @@ def test_chat_read_line_prefers_text_input(monkeypatch):
     assert _read_line() == "你好"
 
 
+def test_chat_read_line_strips_replacement_chars(monkeypatch):
+    from cli.chat import _read_line
+
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "你\ufffd好")
+    assert _read_line() == "你好"
+
+
 def test_chat_read_line_falls_back_to_utf8_buffer(monkeypatch):
     from cli.chat import _read_line
 
@@ -142,7 +150,7 @@ def test_chat_read_line_falls_back_to_utf8_buffer(monkeypatch):
     )
     monkeypatch.setattr("sys.stdout", io.StringIO())
 
-    assert _read_line() == "中文\n"
+    assert _read_line() == "中文"
 
 
 def test_configure_lingzhou_logging_resets_console_log_each_time():
@@ -491,11 +499,7 @@ async def _evolution_regression_triggers_rollback():
         await store.close()
 
 
-def test_refresh_running_runs_updates_finished_exec_runs():
-    asyncio.run(_refresh_running_runs_updates_finished_exec_runs())
-
-
-async def _refresh_running_runs_updates_finished_exec_runs():
+async def test_refresh_running_runs_updates_finished_exec_runs():
     import os
     import time
 
@@ -546,11 +550,7 @@ async def _refresh_running_runs_updates_finished_exec_runs():
         await store.close()
 
 
-def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
-    asyncio.run(_refresh_running_runs_updates_process_monitored_non_exec_runs())
-
-
-async def _refresh_running_runs_updates_process_monitored_non_exec_runs():
+async def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
     import os
     import time
 
@@ -595,11 +595,7 @@ async def _refresh_running_runs_updates_process_monitored_non_exec_runs():
         await store.close()
 
 
-def test_refresh_running_runs_crystallizes_progress():
-    asyncio.run(_refresh_running_runs_crystallizes_progress())
-
-
-async def _refresh_running_runs_crystallizes_progress():
+async def test_refresh_running_runs_crystallizes_progress():
     import os
     import time
 
@@ -653,11 +649,7 @@ async def _refresh_running_runs_crystallizes_progress():
         await store.close()
 
 
-def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
-    asyncio.run(_refresh_running_runs_updates_fact_monitored_non_exec_runs())
-
-
-async def _refresh_running_runs_updates_fact_monitored_non_exec_runs():
+async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
     from core.loop import _refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
@@ -733,11 +725,7 @@ async def _refresh_running_runs_updates_fact_monitored_non_exec_runs():
         await store.close()
 
 
-def test_refresh_running_runs_failed_fact_monitored_run_records_learning():
-    asyncio.run(_refresh_running_runs_failed_fact_monitored_run_records_learning())
-
-
-async def _refresh_running_runs_failed_fact_monitored_run_records_learning():
+async def test_refresh_running_runs_failed_fact_monitored_run_records_learning():
     from core.loop import _refresh_running_runs
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
@@ -798,11 +786,7 @@ async def _refresh_running_runs_failed_fact_monitored_run_records_learning():
         await store.close()
 
 
-def test_refresh_running_runs_failed_exec_run_records_learning():
-    asyncio.run(_refresh_running_runs_failed_exec_run_records_learning())
-
-
-async def _refresh_running_runs_failed_exec_run_records_learning():
+async def test_refresh_running_runs_failed_exec_run_records_learning():
     import time
 
     from core.loop import _refresh_running_runs
@@ -2964,11 +2948,60 @@ def test_model_routing_section_uses_effective_thinking():
         effective_thinking="low",
     ))
 
+    assert payload["primary_provider"]["model"] == "copilot/gpt-5.4"
+    assert payload["primary_provider"]["current_thinking"] == "low"
+    assert payload["reference_resolution"]["uses_primary_provider"] is True
+    assert payload["reference_resolution"]["llm_available"] is True
     assert payload["available_models"][0]["current_thinking"] == "low"
     assert "tool_tier_mapping" in payload
     assert "schedule.add" in payload["tool_tier_mapping"]["reasoner"]
     assert "schedule.list" in payload["tool_tier_mapping"]["reader"]
     assert payload["implicit_next_phase_default"] is None
+
+
+async def test_reference_failure_is_exposed_in_model_routing_section():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _FailingProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            raise RuntimeError("400 Bad Request")
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4-mini",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    layer = JudgmentLayer(_FailingProvider(), ToolRegistry(), cfg)
+    await layer._ref_resolver._llm_reason(
+        "继续上次的话题",
+        {"n1": {"kind": "task", "title": "旧任务", "body": "body"}},
+    )
+    payload = json.loads(layer._build_model_routing_section(
+        phase="initial",
+        user_message="继续上次的话题",
+        current_action="",
+        tool_history=None,
+        effective_thinking="low",
+    ))
+
+    assert payload["primary_provider"]["model"] == "copilot/gpt-5.4-mini"
+    assert payload["reference_resolution"]["llm_available"] is False
+    assert payload["reference_resolution"]["last_error_code"] == "400"
+    assert "400 Bad Request" in payload["reference_resolution"]["last_error"]
 
 
 def test_model_routing_section_exposes_implicit_reader_default():
@@ -3032,11 +3065,7 @@ def test_fmt_durable_failures_exposes_policy_and_muted_actions():
     assert "remaining=119s" in text
 
 
-def test_load_durable_failure_snapshot_reads_policy_and_active_mutes():
-    asyncio.run(_load_durable_failure_snapshot_reads_policy_and_active_mutes())
-
-
-async def _load_durable_failure_snapshot_reads_policy_and_active_mutes():
+async def test_load_durable_failure_snapshot_reads_policy_and_active_mutes():
     from core.judgment import _load_durable_failure_snapshot
     from memory.task_store import TaskStore
 
@@ -3082,11 +3111,7 @@ async def _load_durable_failure_snapshot_reads_policy_and_active_mutes():
             await store.close()
 
 
-def test_decide_continue_uses_passed_thinking_override():
-    asyncio.run(_decide_continue_uses_passed_thinking_override())
-
-
-async def _decide_continue_uses_passed_thinking_override():
+async def test_decide_continue_uses_passed_thinking_override():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from tools.registry import ToolRegistry
@@ -3211,13 +3236,19 @@ def test_should_continue_within_tick_for_autonomous_act():
 
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
     assert _should_continue_within_tick(_judgment_output(decision="wait")) is False
+    assert _should_continue_within_tick(
+        _judgment_output(decision="act", chosen_action_id="file.read"),
+        user_message="帮我看下 mini 为什么 400",
+        has_active_task=True,
+    ) is False
+    assert _should_continue_within_tick(
+        _judgment_output(decision="act", chosen_action_id="file.read"),
+        user_message="帮我看下 mini 为什么 400",
+        has_active_task=False,
+    ) is True
 
 
-def test_sync_task_progress_state_promotes_previous_next_step():
-    asyncio.run(_sync_task_progress_state_promotes_previous_next_step())
-
-
-async def _sync_task_progress_state_promotes_previous_next_step():
+async def test_sync_task_progress_state_promotes_previous_next_step():
     from core.loop import _sync_task_progress_state
     from memory.task_store import TaskStore
 
@@ -3249,6 +3280,33 @@ async def _sync_task_progress_state_promotes_previous_next_step():
         assert updated2 is not None
         assert updated2.current_step == "再总结结论"
         assert updated2.next_step == ""
+        await store.close()
+
+
+async def test_sync_task_progress_state_preserves_explicit_current_step_from_state_delta():
+    from core.loop import _sync_task_progress_state
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime-explicit.db")
+        await store.open()
+        task_id = await store.add_task("迁移任务", goal="验证显式 current_step 优先", next_step="继续旧技能")
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+
+        await store.sync_task_progress(task_id, current_step="收到新迁移指令", next_step="开始盘点 openclaw 记忆")
+        updated = await _sync_task_progress_state(
+            store,
+            task,
+            previous_next_step="继续旧技能",
+            action=_judgment_output(decision="act", chosen_action_id="task.update", next_step="开始盘点 openclaw 记忆"),
+            progressful=True,
+            state_delta={"current_step": "收到新迁移指令", "next_step": "开始盘点 openclaw 记忆"},
+        )
+
+        assert updated is not None
+        assert updated.current_step == "收到新迁移指令"
+        assert updated.next_step == "开始盘点 openclaw 记忆"
         await store.close()
 
 

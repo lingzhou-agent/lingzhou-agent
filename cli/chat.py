@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from memory.task_store import TaskStore
 
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
+from memory.task_store import _sanitize_chat_content
 
 # 等待回复最长秒数（-a 模式）
 _DEFAULT_TIMEOUT = 300
@@ -173,12 +174,10 @@ async def _interactive(
                 for m in new_msgs:
                     cur_last_id = m["id"]
                     if m["role"] == "assistant":
-                        # \n 前缀避免打断用户正在输入的行
+                        # \n 前缀避免把回复直接挤到用户当前输入后面。
+                        # 不再额外手写 prompt；后台 input() 会自己维护当前输入行，
+                        # 否则容易和 IME/多字节编辑状态互相踩坏。
                         console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}\n")
-                        # 回复打印后重补 [你] 提示符，使用户知道可以继续输入
-                        import sys as _sys
-                        _sys.stdout.write(_CHAT_INPUT_PROMPT)
-                        _sys.stdout.flush()
         except asyncio.CancelledError:
             pass
 
@@ -206,13 +205,13 @@ def _read_line() -> str:
     """
     import sys
     try:
-        return input(_CHAT_INPUT_PROMPT)
+        return _sanitize_chat_content(input(_CHAT_INPUT_PROMPT))
     except UnicodeDecodeError:
         try:
             sys.stdout.write(_CHAT_INPUT_PROMPT)
             sys.stdout.flush()
             raw = sys.stdin.buffer.readline()
-            return raw.decode("utf-8", errors="replace")
+            return _sanitize_chat_content(raw.decode("utf-8", errors="replace"))
         except (EOFError, KeyboardInterrupt, OSError):
             return ""
     except (EOFError, KeyboardInterrupt, OSError):

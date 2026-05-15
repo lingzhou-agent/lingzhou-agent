@@ -439,6 +439,7 @@ class JudgmentLayer:
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
         available_models: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
+        primary_health = self._get_health(self._cfg.model)
         for tier in route_tiers:
             _, model_ref = self._resolve_tier_model(tier)
             key = (tier, model_ref)
@@ -492,6 +493,20 @@ class JudgmentLayer:
                 "condition": "仅在本轮未显式设置 next_phase_tier 时生效",
             }
         payload = {
+            "primary_provider": {
+                "model": self._cfg.model,
+                "available": self._is_model_available(self._cfg.model),
+                "current_thinking": effective_thinking or self._cfg.thinking,
+                "last_error": self._provider_errors.get(self._cfg.model),
+                "last_error_code": primary_health.last_code or None,
+                "cooldown_remaining_sec": max(0, int(primary_health.cooldown_until - time.time())),
+            },
+            "reference_resolution": {
+                "uses_primary_provider": True,
+                "llm_available": self._ref_resolver.llm_available,
+                "last_error": self._ref_resolver.last_llm_error or None,
+                "last_error_code": self._ref_resolver.last_llm_error_code or None,
+            },
             "available_models": available_models,
             "active_overrides": routing_overrides or {},
             "tool_tier_mapping": _TOOL_TIER_MAPPING,

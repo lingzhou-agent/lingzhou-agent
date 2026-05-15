@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, UTC
+from typing import Any
 
 from core.judgment import JudgmentOutput
 from memory.task_store import TaskStore, Task
@@ -247,18 +248,26 @@ async def _sync_task_progress_state(
     previous_next_step: str,
     action: JudgmentOutput,
     progressful: bool,
+    state_delta: dict[str, Any] | None = None,
 ) -> Task | None:
     if task is None:
         return None
 
     latest = await task_store.get_task_by_id(task.id) or task
     planned_next = str(action.next_step or "").strip()
+    explicit_current_step = None
+    if state_delta is not None and "current_step" in state_delta:
+        explicit_current_step = str(state_delta.get("current_step") or "").strip()
     current_step = latest.current_step
     next_step = latest.next_step
     updated = False
 
+    if explicit_current_step is not None and current_step != explicit_current_step:
+        current_step = explicit_current_step
+        updated = True
+
     if progressful and previous_next_step:
-        if current_step != previous_next_step:
+        if explicit_current_step is None and current_step != previous_next_step:
             current_step = previous_next_step
             updated = True
         if planned_next:
