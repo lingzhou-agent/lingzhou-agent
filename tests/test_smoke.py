@@ -1,6 +1,7 @@
 """快速验证测试，不依赖 LLM。"""
 import asyncio
 import json
+import logging
 import math
 import os
 import tempfile
@@ -116,6 +117,43 @@ def test_judgment_output_parse():
     assert out.chosen_action_id == "shell.run"
     assert out.reflection == "洞察"
     assert out.model_strategy["next_phase_tier"] == "reader"
+
+
+def test_configure_lingzhou_logging_resets_console_log_each_time():
+    from cli.gateway import _configure_lingzhou_logging
+
+    with tempfile.TemporaryDirectory() as d:
+        log_dir = Path(d)
+        logger_name = "lingzhou.test.logging"
+        logger = logging.getLogger(logger_name)
+        old_handlers = list(logger.handlers)
+        old_level = logger.level
+        old_propagate = logger.propagate
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+
+        try:
+            _, console_log = _configure_lingzhou_logging(log_dir, logging.INFO, logger_name=logger_name)
+            logger.info("first message")
+            for handler in logger.handlers:
+                handler.flush()
+
+            _, console_log = _configure_lingzhou_logging(log_dir, logging.INFO, logger_name=logger_name)
+            logger.info("second message")
+            for handler in logger.handlers:
+                handler.flush()
+
+            text = console_log.read_text(encoding="utf-8")
+            assert "second message" in text
+            assert "first message" not in text
+        finally:
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+                handler.close()
+            logger.handlers = old_handlers
+            logger.setLevel(old_level)
+            logger.propagate = old_propagate
 
 
 def test_judgment_context_budget_trims_low_priority_sections():
@@ -2403,6 +2441,47 @@ def test_cognition_loop_init():
         assert loop.episodic.max_events == cfg.memory.max_events
 
 
+def test_curiosity_signal_does_not_auto_create_task():
+    asyncio.run(_curiosity_signal_does_not_auto_create_task())
+
+
+async def _curiosity_signal_does_not_auto_create_task():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.loop import CognitionLoop
+
+    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
+    if not cfg_path.exists():
+        cfg_path = _proj_root() / "lingzhou.json.example"
+    cfg = Config.load(cfg_path)
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        await loop.task_store.open()
+        try:
+            loop._idle_cycles = cfg.thresholds.curiosity_idle_min_cycles
+            loop._last_curiosity_signal_idle_cycle = 0
+            ethos_state = cast(Any, SimpleNamespace(
+                values=SimpleNamespace(curiosity=cfg.thresholds.curiosity_idle_task + 0.1)
+            ))
+
+            await loop._maybe_curiosity_task(ethos_state)
+
+            tasks = await loop.task_store.list_tasks(limit=20)
+            assert tasks == []
+            wm_top = loop._wm.get_top(10)
+            assert any("好奇心信号" in item["content"] for item in wm_top)
+        finally:
+            await loop.task_store.close()
+            await loop.provider.close()
+
+
 def test_auth_store_profile_roundtrip(tmp_path):
     from auth_store import load_auth_profiles, set_token_profile
 
@@ -2790,6 +2869,30 @@ def test_recent_runs_summary_prefers_output_and_progress():
     assert "summary=index.ts package.json SKILL.md" in text
 
 
+def test_waiting_tasks_section_exposes_wait_reason_and_next_step():
+    from core.judgment import _fmt_waiting_tasks
+    from memory.task_store import Task
+
+    tasks = [
+        Task(
+            id=27,
+            title="等待用户补源路径",
+            status="waiting",
+            priority="normal",
+            created_at="2026-05-15T14:00:00+00:00",
+            goal="等待用户提供源路径后继续",
+            next_step="拿到源路径后恢复任务并重新验证目录结构",
+            wait_kind="external",
+            wait_key="source-path",
+        )
+    ]
+
+    text = _fmt_waiting_tasks(tasks)
+    assert "task#27 [waiting] 等待用户补源路径" in text
+    assert "wait=external/source-path" in text
+    assert "next=拿到源路径后恢复任务并重新验证目录结构" in text
+
+
 def test_model_routing_section_uses_effective_thinking():
     from core.config import Config
     from core.judgment import JudgmentLayer
@@ -2925,6 +3028,37 @@ def test_action_made_progress_result_aware():
 
     unknown_with_delta = ToolResult(summary="", state_delta={"updated": True})
     assert _action_made_progress(unknown_action, unknown_with_delta) is True
+
+
+def test_fallback_reply_for_user_describes_waiting_state():
+    from core.loop import _fallback_reply_for_user
+    from tools.registry import ToolResult
+    from memory.task_store import Task
+
+    action = _judgment_output(decision="act", chosen_action_id="task.wait", next_step="等用户补充路径后重新验证目录")
+    result = ToolResult(
+        summary="任务 [27] 已进入 waiting: external/source-path",
+        state_delta={"task_status": "waiting", "wait_kind": "external", "wait_key": "source-path"},
+    )
+    task = Task(id=27, title="等待路径", status="in_progress", priority="normal", created_at="2026-05-15T14:00:00+00:00")
+
+    reply = _fallback_reply_for_user(action, result, task)
+    assert "waiting" in reply
+    assert "external/source-path" in reply
+    assert "等用户补充路径后重新验证目录" in reply
+
+
+def test_fallback_reply_for_user_uses_real_error_instead_of_background_ack():
+    from core.loop import _fallback_reply_for_user
+    from tools.registry import ToolResult
+
+    action = _judgment_output(decision="pause", rationale="源路径证据不存在，需要用户补充。")
+    result = ToolResult(summary="路径不存在: /root/.openclaw/source", error="FileNotFound")
+
+    reply = _fallback_reply_for_user(action, result, None)
+    assert "遇到问题" in reply
+    assert "路径不存在" in reply
+    assert "后台继续处理" not in reply
 
 
 def test_should_continue_within_tick_for_autonomous_act():

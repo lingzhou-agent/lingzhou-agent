@@ -6,6 +6,9 @@
 ### 活跃任务
 {{task_section}}
 
+### Waiting 任务
+{{waiting_tasks_section}}
+
 ### 近期运行轨迹
 {{recent_runs_section}}
 

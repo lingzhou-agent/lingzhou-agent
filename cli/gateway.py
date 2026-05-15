@@ -20,6 +20,42 @@ from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
 
 
+def _configure_lingzhou_logging(
+    log_dir: Path,
+    log_level: int,
+    *,
+    logger_name: str = "lingzhou",
+) -> tuple[Path, Path]:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"lingzhou-{datetime.now().strftime('%Y-%m-%d')}.log"
+    console_log_file = log_dir / "console.log"
+
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(log_level)
+    logger.propagate = False
+
+    keep_handlers: list[logging.Handler] = []
+    for handler in logger.handlers:
+        base = getattr(handler, "baseFilename", "")
+        if base in {str(log_file), str(console_log_file)}:
+            handler.close()
+            continue
+        keep_handlers.append(handler)
+    logger.handlers = keep_handlers
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S"))
+    file_handler.setLevel(log_level)
+
+    console_handler = logging.FileHandler(console_log_file, mode="w", encoding="utf-8")
+    console_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s [%(name)s] %(message)s", datefmt="%H:%M:%S"))
+    console_handler.setLevel(log_level)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    return log_file, console_log_file
+
+
 def _daemonize(argv: list[str]) -> None:
     """fork 子进程后台运行，父进程立即退出。"""
     # 去掉 --daemon / -d 标志，避免子进程再次 fork
@@ -287,17 +323,9 @@ def gateway_start(
 
     # 日志
     log_dir = Path("~/.lingzhou/logs").expanduser()
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"lingzhou-{datetime.now().strftime('%Y-%m-%d')}.log"
     log_level = logging.DEBUG if (debug or cfg.loop.debug) else logging.INFO
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(message)s", datefmt="%H:%M:%S"))
-    file_handler.setLevel(log_level)
-    lz_logger = logging.getLogger("lingzhou")
-    lz_logger.setLevel(log_level)
-    lz_logger.addHandler(file_handler)
-    lz_logger.propagate = False
-    console.print(f"[dim]渠道: [cyan]{channel}[/cyan]  日志: {log_file}[/dim]")
+    log_file, console_log_file = _configure_lingzhou_logging(log_dir, log_level)
+    console.print(f"[dim]渠道: [cyan]{channel}[/cyan]  日志: {log_file}  console: {console_log_file}[/dim]")
 
     # 启动 channel sidecar（loop 主线程仍是 asyncio）
     if channel == "webhook":

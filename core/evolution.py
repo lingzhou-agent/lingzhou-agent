@@ -451,7 +451,7 @@ class EvolutionEngine:
                 prompt_path.write_text(prompt_path.with_suffix(".md.bak").read_text(encoding="utf-8"), encoding="utf-8")
             return EvolutionResult(success=False, target=f"prompt:{prompt_key}", reason=str(exc))
 
-    async def evolve_tool(self, tool_name: str, tool_path: Path, feedback: str, ctx: "ToolContext" | None = None) -> EvolutionResult:
+    async def evolve_tool(self, tool_name: str, tool_path: Path, feedback: str, ctx: ToolContext | None = None) -> EvolutionResult:
         """根据反馈重写工具，热替换。"""
         current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
         new_src = ""  # 保证在 SyntaxError 重试分支中始终有定义

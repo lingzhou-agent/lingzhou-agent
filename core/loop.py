@@ -106,6 +106,47 @@ def _clip_reply_for_log(text: str, limit: int = _LOG_REPLY_CHARS) -> str:
     return cleaned[:limit] + "..."
 
 
+def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_task: Task | None) -> str:
+    def _brief(text: str, limit: int = 80) -> str:
+        cleaned = " ".join((text or "").split())
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: max(0, limit - 3)] + "..."
+
+    next_step = str(action.next_step or (active_task.next_step if active_task else "") or "").strip()
+    if result.error:
+        reply = f"我这轮遇到问题：{_brief(result.summary or result.error, 100)}。"
+        if next_step:
+            reply += f" 下一步会先处理：{_brief(next_step, 60)}"
+        return reply
+
+    if action.decision in {"wait", "pause"}:
+        basis = _brief(action.rationale or result.summary or "需要更多信息后再继续。", 100)
+        if next_step:
+            return f"我先暂停这一步：{basis} 下一步 { _brief(next_step, 60) }"
+        return f"我先暂停这一步：{basis}"
+
+    task_status = str((result.state_delta or {}).get("task_status") or "").strip()
+    if task_status == "waiting":
+        wait_kind = str((result.state_delta or {}).get("wait_kind") or "external").strip()
+        wait_key = str((result.state_delta or {}).get("wait_key") or "").strip()
+        wait_desc = wait_kind + (f"/{wait_key}" if wait_key else "")
+        reply = f"我先把任务切到 waiting，等待 {wait_desc}。"
+        if next_step:
+            reply += f" 条件满足后会继续：{_brief(next_step, 60)}"
+        return reply
+
+    if result.summary:
+        reply = f"我刚完成这一步：{_brief(result.summary, 100)}。"
+        if next_step:
+            reply += f" 下一步 { _brief(next_step, 60) }"
+        return reply
+
+    if next_step:
+        return f"我刚推进了一步，下一步 { _brief(next_step, 60) }"
+    return "我这轮已经推进了一步，正在根据当前结果继续判断下一步。"
+
+
 def _next_thinking_override(model_strategy: dict[str, Any] | None) -> str | None:
     raw = (model_strategy or {}).get("thinking_override")
     valid = {"off", "minimal", "low", "medium", "high"}
@@ -287,6 +328,7 @@ class CognitionLoop:
         self._last_action_sig: str = ""
         self._last_result_fp: str = ""
         self._idle_cycles: int = 0
+        self._last_curiosity_signal_idle_cycle: int = 0
 
         # 多轮对话历史（最多保留 6 轮 user/assistant 对）
         self._conv_history: deque[tuple[str, str]] = deque(maxlen=6)
@@ -629,6 +671,7 @@ class CognitionLoop:
             self._idle_cycles += 1
         else:
             self._idle_cycles = 0
+            self._last_curiosity_signal_idle_cycle = 0
 
         cognitive_signals = self._perception.derive_cognitive_signals(
             percept, self._wm, self._emotion, cfg,
@@ -888,9 +931,9 @@ class CognitionLoop:
                 if action.reply_to_user or action.decision != "act":
                     break
 
-            # chat/interact 模式下，内层循环结束仍无回复时给用户兜底 ACK
+            # chat/interact 模式下，内层循环结束仍无回复时给用户兜底真实状态，而非固定 ACK
             if user_message and not action.reply_to_user:
-                action.reply_to_user = "（已执行完工具链，任务正在后台继续处理）"
+                action.reply_to_user = _fallback_reply_for_user(action, result, active_task)
 
             if action.reply_to_user:
                 _log.info(
@@ -1245,13 +1288,13 @@ class CognitionLoop:
         }
 
     async def _maybe_curiosity_task(self, ethos_state: Any) -> None:
-        """P1-C: 好奇心阈值驱动的自主探索任务生成（确定性触发，不依赖 LLM 自发）。
+        """P1-C: 好奇心阈值驱动的探索信号注入。
 
         触发条件（全部满足）：
         1. 当前无活跃任务
         2. 空闲周期 >= thresholds.curiosity_idle_min_cycles
         3. ethos.curiosity >= thresholds.curiosity_idle_task
-        4. 最近 10 个任务中无 source=curiosity 且状态未完成的任务（防重复）
+        4. 每个 idle 周期段最多提示一次，由 LLM 决定是否创建任务
         """
         cfg = self._cfg
         if self._idle_cycles < cfg.thresholds.curiosity_idle_min_cycles:
@@ -1259,13 +1302,16 @@ class CognitionLoop:
         curiosity = getattr(ethos_state.values, "curiosity", 0.0) if ethos_state else 0.0
         if curiosity < cfg.thresholds.curiosity_idle_task:
             return
-        # 检查是否已存在未完成的 curiosity 任务，作为信号注入 WM，由 LLM 决定是否需要新任务
+        if self._idle_cycles - self._last_curiosity_signal_idle_cycle < cfg.thresholds.curiosity_idle_min_cycles:
+            return
+
         recent = await self._task_store.list_tasks(limit=10)
         pending_curiosity = [
             t for t in recent
             if getattr(t, "source", None) == "curiosity"
             and getattr(t, "status", "done") not in ("done", "failed")
         ]
+        self._last_curiosity_signal_idle_cycle = self._idle_cycles
         if pending_curiosity:
             t0 = pending_curiosity[0]
             self._wm.add(WMItem(
@@ -1278,14 +1324,17 @@ class CognitionLoop:
                 priority=0.80,
             ))
             return
-        await self._task_store.add_task(
-            title="自主探索：回顾近期经历并整合语义记忆",
-            goal="回顾最近情节记忆和工作记忆中的洞察，提炼新的 reflection 写入语义记忆，更新自我认知",
-            priority="low",
-            source="curiosity",
-        )
+        self._wm.add(WMItem(
+            kind="self_awareness",
+            content=(
+                f"[好奇心信号] 当前空闲 {self._idle_cycles} 轮，curiosity={curiosity:.2f}。"
+                " 最近没有未完成的 curiosity 任务。"
+                " 如果你判断值得探索，可自行创建一个低优先级探索任务；若现有线索不足，也可以继续等待或先整理记忆。"
+            ),
+            priority=0.80,
+        ))
         _log.info(
-            "[curiosity] idle=%d curiosity=%.2f → 自动生成探索任务",
+            "[curiosity] idle=%d curiosity=%.2f → 注入探索信号，由 LLM 决定是否建任务",
             self._idle_cycles, curiosity,
         )
 

@@ -876,6 +876,7 @@ class JudgmentLayer:
         task_id_str = str(task.id) if task else None
         episodic_text = episodic.load_for_context(task_id_str, self._cfg.memory.episodic_max_chars)
         recent_runs = await task_store.list_runs(task_id=task.id, limit=6) if task else []
+        waiting_tasks = await task_store.list_tasks(status="waiting", limit=5)
 
         search_query = (task.goal or task.title) if task else user_message
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
@@ -925,6 +926,7 @@ class JudgmentLayer:
 
         ctx = {
             "task_section": _fmt_task(task),
+            "waiting_tasks_section": _fmt_waiting_tasks(waiting_tasks),
             "recent_runs_section": _fmt_recent_runs(recent_runs),
             "emotion_valence": f"{emotion.valence:.2f}",
             "emotion_arousal": f"{emotion.arousal:.2f}",
@@ -1021,6 +1023,21 @@ def _fmt_recent_runs(runs: list["Run"]) -> str:
             line += f" progress={progress}"
         if summary:
             line += f" summary={summary}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
+    if not tasks:
+        return "（无 waiting 任务）"
+    lines: list[str] = []
+    for task in tasks[:5]:
+        wait_desc = task.wait_kind or "unknown"
+        if task.wait_key:
+            wait_desc += f"/{task.wait_key}"
+        line = f"- task#{task.id} [{task.status}] {task.title} wait={wait_desc}"
+        if task.next_step:
+            line += f" next={_clip_text(task.next_step, 80)}"
         lines.append(line)
     return "\n".join(lines)
 
