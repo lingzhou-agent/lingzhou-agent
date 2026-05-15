@@ -211,6 +211,7 @@ async def _refresh_running_runs(task_store: TaskStore) -> list[dict[str, Any]]:
                     output_json={**run.output_json, "progress_excerpt": crystal_excerpt},
                     log_text=stdout_text[-4000:],
                     session_id=run.session_id,
+                    progress=crystal_excerpt[:2000],
                     extras={"last_crystal_chars": len(stdout_text)},
                 )
                 if run.task_id and crystal_excerpt:
@@ -245,6 +246,7 @@ async def _refresh_running_runs(task_store: TaskStore) -> list[dict[str, Any]]:
             log_text=info.stdout[-4000:],
             error_text=info.error or ("timed_out" if info.timed_out else (f"exit_code={info.return_code}" if status == "failed" else "")),
             session_id=run.session_id,
+            progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
             extras={
                 "return_code": info.return_code,
                 "timed_out": info.timed_out,

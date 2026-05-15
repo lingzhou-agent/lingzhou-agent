@@ -96,6 +96,176 @@ def _run_status_from_result(result: ToolResult) -> str:
     return "succeeded"
 
 
+def _run_progress_text(result: ToolResult) -> str:
+    if isinstance(result.state_delta, dict):
+        progress = str(result.state_delta.get("progress") or "").strip()
+        if progress:
+            return progress[:2000]
+    progress = str(result.metadata.get("progress") or "").strip()
+    if progress:
+        return progress[:2000]
+    return (result.summary or "").strip()[:2000]
+
+
+def _meta_reflection_decision(target_kind: str, loop_level: str, text: str) -> str:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ("rollback", "回滚", "regressed", "regression")):
+        return "rollback"
+    if loop_level == "double" or target_kind in {"threshold", "routing", "task_split"}:
+        return "apply"
+    return "defer"
+
+
+def _record_run_started(
+    ctx: ToolContext,
+    *,
+    run_id: int,
+    task_id: int,
+    tool_name: str,
+    run_type: str,
+    worker_type: str,
+    model_tier: str,
+) -> None:
+    if ctx.episodic is None:
+        return
+    ctx.episodic.record_event(
+        "run_started",
+        {
+            "run_id": run_id,
+            "task_id": task_id,
+            "tool_name": tool_name,
+            "run_type": run_type,
+            "worker_type": worker_type,
+            "model_tier": model_tier,
+        },
+    )
+
+
+def _record_run_outcome(
+    ctx: ToolContext,
+    *,
+    run_id: int,
+    task_id: int,
+    tool_name: str,
+    worker_type: str,
+    status: str,
+    progress: str,
+    result: ToolResult,
+) -> None:
+    is_failure = bool(result.error)
+    if ctx.episodic is not None:
+        event_type = "run_failed" if is_failure or status == "failed" else "run_completed"
+        ctx.episodic.record_event(
+            event_type,
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "worker_type": worker_type,
+                "status": status,
+                "summary": result.summary[:800],
+                "error": (result.error or "")[:400],
+            },
+        )
+    if ctx.semantic is None:
+        return
+    from memory.semantic import MemoryNode
+
+    tags = [status]
+    if tool_name:
+        tags.append(tool_name)
+    if worker_type:
+        tags.append(worker_type)
+    if task_id:
+        tags.append(f"task:{task_id}")
+    if is_failure and "failed" not in tags:
+        tags.append("failed")
+    body_parts = [
+        f"status={status}",
+        f"tool={tool_name or 'unknown'}",
+    ]
+    if progress:
+        body_parts.append(f"progress={progress}")
+    if result.summary:
+        body_parts.append(f"summary={result.summary}")
+    if result.error:
+        body_parts.append(f"error={result.error}")
+    if result.evidence:
+        body_parts.append(f"evidence={result.evidence[:1200]}")
+    ctx.semantic.upsert(MemoryNode(
+        id=f"run-result-{run_id}",
+        kind="run_result",
+        title=f"[run#{run_id}] {tool_name or 'unknown'} {status}",
+        body="\n".join(body_parts)[:4000],
+        activation=0.82 if is_failure or status == "failed" else 0.72,
+        valence=0.35 if is_failure or status == "failed" else 0.65,
+        tags=tags,
+    ))
+
+
+def _record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> None:
+    reflection_id = str(meta.get("reflection_id") or "")
+    target_kind = str(meta.get("target_kind") or "")
+    loop_level = str(meta.get("loop_level") or "")
+    decision = str(meta.get("decision") or "defer")
+    task_id = int(meta.get("task_id") or 0)
+    run_id = int(meta.get("run_id") or 0)
+    tool_name = str(meta.get("tool_name") or "")
+    diagnosis = str(meta.get("diagnosis") or "")
+    proposal = str(meta.get("proposal") or "")
+    verification_plan = str(meta.get("verification_plan") or "")
+
+    if ctx.episodic is not None and loop_level == "double":
+        ctx.episodic.record_event(
+            "double_loop_reflection",
+            {
+                "reflection_id": reflection_id,
+                "run_id": run_id,
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "target_kind": target_kind,
+                "decision": decision,
+            },
+        )
+    if ctx.semantic is None:
+        return
+    from memory.semantic import MemoryNode
+
+    tags = ["meta_reflection", target_kind, loop_level, decision]
+    if tool_name:
+        tags.append(tool_name)
+    if task_id:
+        tags.append(f"task:{task_id}")
+    ctx.semantic.upsert(MemoryNode(
+        id=f"meta-reflection-{reflection_id}",
+        kind="meta_reflection",
+        title=f"[{decision}] {target_kind or 'reflection'} run#{run_id}",
+        body=(
+            f"diagnosis={diagnosis}\n"
+            f"proposal={proposal}\n"
+            f"verification_plan={verification_plan}"
+        )[:4000],
+        activation=0.8 if decision != "defer" else 0.7,
+        valence=0.42 if decision == "rollback" else 0.58,
+        tags=tags,
+    ))
+    if decision in {"apply", "rollback"}:
+        ctx.semantic.upsert(MemoryNode(
+            id=f"rule-revision-{reflection_id}",
+            kind="rule_revision",
+            title=f"[{decision}] {target_kind or 'rule'}",
+            body=(
+                f"target_kind={target_kind}\n"
+                f"tool_name={tool_name}\n"
+                f"proposal={proposal}\n"
+                f"verification_plan={verification_plan}"
+            )[:4000],
+            activation=0.83,
+            valence=0.46 if decision == "rollback" else 0.62,
+            tags=[target_kind, decision, tool_name or ""] if tool_name else [target_kind, decision],
+        ))
+
+
 def _build_meta_reflection(
     *,
     run_id: int,
@@ -130,6 +300,7 @@ def _build_meta_reflection(
         diagnosis = f"动作 {tool_name or 'unknown'} 未注册，说明判断层的动作选择或工具清单存在漂移。"
         proposal = "校正 action 选择规则或工具清单注入，避免继续选择不存在的动作。"
         verification_plan = "重新做一次 judgment，确认 chosen_action_id 落在已注册工具集合内。"
+    decision = _meta_reflection_decision(target_kind, loop_level, text)
 
     return {
         "reflection_id": f"mr-{uuid.uuid4().hex[:12]}",
@@ -139,7 +310,7 @@ def _build_meta_reflection(
         "diagnosis": diagnosis,
         "proposal": proposal,
         "verification_plan": verification_plan,
-        "decision": "defer",
+        "decision": decision,
         "task_id": task_id,
         "run_id": run_id,
         "tool_name": tool_name,
@@ -186,8 +357,10 @@ class ExecutionLayer:
 
     async def _dispatch_act(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
         run_id: int | None = None
+        run_type = "tool_chain"
         worker_type = "tool-chain-worker"
         active_task = await ctx.task_store.get_active() if ctx.task_store is not None else None
+        task_tier = (active_task.model_tier or "").strip() if active_task is not None else ""
         if ctx.task_store is not None:
             run_type, worker_type = _infer_run_profile(action.chosen_action_id or "")
             run_id = await ctx.task_store.add_run(
@@ -201,7 +374,18 @@ class ExecutionLayer:
                     "params": action.params or {},
                 },
                 tool_name=action.chosen_action_id or "",
+                model_tier=task_tier,
             )
+            if run_id is not None:
+                _record_run_started(
+                    ctx,
+                    run_id=run_id,
+                    task_id=active_task.id if active_task else 0,
+                    tool_name=action.chosen_action_id or "",
+                    run_type=run_type,
+                    worker_type=worker_type,
+                    model_tier=task_tier,
+                )
 
         entry = self._registry.get(action.chosen_action_id)
         if not entry:
@@ -320,6 +504,7 @@ class ExecutionLayer:
         if isinstance(result.state_delta, dict):
             result.state_delta.setdefault("run_id", run_id)
         status = _run_status_from_result(result)
+        progress = _run_progress_text(result)
         await ctx.task_store.update_run(
             run_id,
             status=status,
@@ -327,6 +512,17 @@ class ExecutionLayer:
             log_text=result.summary[:4000],
             error_text=result.error or "",
             session_id=str(result.metadata.get("session_id") or ""),
+            progress=progress,
+        )
+        _record_run_outcome(
+            ctx,
+            run_id=run_id,
+            task_id=active_task_id or 0,
+            tool_name=str(result.metadata.get("tool_name") or ""),
+            worker_type=str(result.metadata.get("worker_type") or ""),
+            status=status,
+            progress=progress,
+            result=result,
         )
         if active_task_id:
             await ctx.task_store.update_task_result(
@@ -361,3 +557,4 @@ class ExecutionLayer:
                 run_id=int(meta["run_id"]),
                 tool_name=str(meta["tool_name"]),
             )
+            _record_meta_reflection(ctx, meta)

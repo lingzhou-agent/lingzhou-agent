@@ -272,6 +272,8 @@ class Run:
     error_text: str = ""
     tool_name: str = ""
     session_id: str = ""
+    model_tier: str = ""
+    progress: str = ""
     extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
     @classmethod
@@ -287,6 +289,8 @@ class Run:
         error_text = data.pop("error_text", "")
         tool_name = data.pop("tool_name", "")
         session_id = data.pop("session_id", "")
+        model_tier = data.pop("model_tier", "")
+        progress = data.pop("progress", "")
         return cls(
             id=rid,
             task_id=task_id,
@@ -302,6 +306,8 @@ class Run:
             error_text=error_text,
             tool_name=tool_name,
             session_id=session_id,
+            model_tier=model_tier,
+            progress=progress,
             extras=data,
         )
 
@@ -313,6 +319,8 @@ class Run:
             "error_text": self.error_text,
             "tool_name": self.tool_name,
             "session_id": self.session_id,
+            "model_tier": self.model_tier,
+            "progress": self.progress,
         }
         data.update(self.extras)
         return json.dumps(data, ensure_ascii=False)
@@ -700,6 +708,8 @@ class TaskStore:
         error_text: str = "",
         tool_name: str = "",
         session_id: str = "",
+        model_tier: str = "",
+        progress: str = "",
         extras: dict[str, Any] | None = None,
     ) -> int:
         data = {
@@ -709,6 +719,8 @@ class TaskStore:
             "error_text": error_text,
             "tool_name": tool_name,
             "session_id": session_id,
+            "model_tier": model_tier,
+            "progress": progress,
         }
         if extras:
             data.update(extras)
@@ -762,6 +774,8 @@ class TaskStore:
         log_text: str | None = None,
         error_text: str | None = None,
         session_id: str | None = None,
+        model_tier: str | None = None,
+        progress: str | None = None,
         extras: dict[str, Any] | None = None,
     ) -> None:
         run = await self.get_run_by_id(run_id)
@@ -777,6 +791,10 @@ class TaskStore:
             run.error_text = error_text
         if session_id is not None:
             run.session_id = session_id
+        if model_tier is not None:
+            run.model_tier = model_tier
+        if progress is not None:
+            run.progress = progress
         if extras:
             run.extras.update(extras)
         if run.status in {"succeeded", "failed", "cancelled"} and not run.completed_at:

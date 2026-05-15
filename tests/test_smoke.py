@@ -411,6 +411,7 @@ async def _refresh_running_runs_updates_finished_exec_runs():
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.status == "succeeded"
+        assert run.progress.strip() == "hi"
         assert run.output_json["stdout"].strip() == "hi"
 
         task = await store.get_task_by_id(task_id)
@@ -438,7 +439,7 @@ async def _refresh_running_runs_crystallizes_progress():
         store = TaskStore(Path(d) / "runtime.db")
         await store.open()
         task_id = await store.add_task("长任务", goal="观察中间进度")
-        await store.add_run(
+        run_id = await store.add_run(
             task_id=task_id,
             run_type="exec",
             worker_type="exec-worker",
@@ -466,6 +467,10 @@ async def _refresh_running_runs_crystallizes_progress():
         assert updates
         assert updates[0]["status"] == "running"
         assert updates[0]["crystal"]
+
+        run = await store.get_run_by_id(run_id)
+        assert run is not None
+        assert "phase-05" in run.progress
 
         progress, found = await store.get_fact(f"task:{task_id}:progress")
         assert found
@@ -791,6 +796,8 @@ async def _execution_dispatch_records_run():
     from tempfile import TemporaryDirectory
 
     from core.judgment import JudgmentOutput
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
     from tools.registry import ToolRegistry
 
@@ -799,12 +806,14 @@ async def _execution_dispatch_records_run():
         target = root / "demo.txt"
         target.write_text("hello", encoding="utf-8")
         store = TaskStore(root / "runtime.db")
+        episodic = EpisodicMemory(root)
+        semantic = SemanticMemory(root)
         await store.open()
-        await store.add_task("读取文件", goal="读 demo")
+        await store.add_task("读取文件", goal="读 demo", model_tier="reader")
         reg = ToolRegistry()
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
-        ctx = _tool_ctx(debug=False, task_store=store)
+        ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
         action = JudgmentOutput(
             decision="act",
             chosen_action_id="file.read",
@@ -821,7 +830,19 @@ async def _execution_dispatch_records_run():
         assert runs
         assert runs[0].status == "succeeded"
         assert runs[0].tool_name == "file.read"
+        assert runs[0].model_tier == "reader"
+        assert runs[0].progress == "hello"
         assert runs[0].output_json["summary"] == "hello"
+
+        started = episodic.list_events("run_started", limit=5)
+        completed = episodic.list_events("run_completed", limit=5)
+        assert started and started[-1]["run_id"] == runs[0].id
+        assert completed and completed[-1]["run_id"] == runs[0].id
+
+        node = semantic.get(f"run-result-{runs[0].id}")
+        assert node is not None
+        assert node.kind == "run_result"
+        assert "succeeded" in node.tags
 
         active = await store.get_active()
         assert active is not None
@@ -840,17 +861,22 @@ async def _execution_failure_creates_meta_reflection():
     from tempfile import TemporaryDirectory
 
     from core.judgment import JudgmentOutput
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
     from memory.task_store import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
-        store = TaskStore(Path(d) / "runtime.db")
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        episodic = EpisodicMemory(root)
+        semantic = SemanticMemory(root)
         await store.open()
         await store.add_task("读空路径", goal="制造失败")
         reg = ToolRegistry()
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
-        ctx = _tool_ctx(debug=False, task_store=store)
+        ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
         action = JudgmentOutput(
             decision="act",
             chosen_action_id="file.read",
@@ -866,6 +892,83 @@ async def _execution_failure_creates_meta_reflection():
         assert reflections[0].target_kind == "task_split"
         assert reflections[0].loop_level == "double"
         assert reflections[0].tool_name == "file.read"
+        assert reflections[0].decision == "apply"
+
+        runs = await store.list_runs(limit=5)
+        assert runs and runs[0].status == "cancelled"
+
+        started = episodic.list_events("run_started", limit=5)
+        failed = episodic.list_events("run_failed", limit=5)
+        double_loop = episodic.list_events("double_loop_reflection", limit=5)
+        assert started and started[-1]["run_id"] == runs[0].id
+        assert failed and failed[-1]["run_id"] == runs[0].id
+        assert double_loop and double_loop[-1]["run_id"] == runs[0].id
+
+        node = semantic.get(f"run-result-{runs[0].id}")
+        assert node is not None
+        assert node.kind == "run_result"
+        assert "failed" in node.tags
+
+        meta_node = semantic.get(f"meta-reflection-{reflections[0].id}")
+        assert meta_node is not None
+        assert meta_node.kind == "meta_reflection"
+
+        rule_node = semantic.get(f"rule-revision-{reflections[0].id}")
+        assert rule_node is not None
+        assert rule_node.kind == "rule_revision"
+
+        await store.close()
+
+
+def test_execution_generic_failure_meta_reflection_defers():
+    asyncio.run(_execution_generic_failure_meta_reflection_defers())
+
+
+async def _execution_generic_failure_meta_reflection_defers():
+    from tempfile import TemporaryDirectory
+
+    from core.judgment import JudgmentOutput
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        episodic = EpisodicMemory(root)
+        semantic = SemanticMemory(root)
+        await store.open()
+        await store.add_task("读缺失文件", goal="制造单环失败")
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
+        action = JudgmentOutput(
+            decision="act",
+            chosen_action_id="file.read",
+            params={"path": str(root / "missing.txt")},
+            rationale="trigger generic meta reflection",
+        )
+
+        result = await layer.dispatch(action, ctx)
+        assert result.error == "FileNotFound"
+
+        reflections = await store.list_meta_reflections(limit=5)
+        assert reflections
+        assert reflections[0].target_kind == "tool"
+        assert reflections[0].loop_level == "single"
+        assert reflections[0].decision == "defer"
+
+        double_loop = episodic.list_events("double_loop_reflection", limit=5)
+        assert double_loop == []
+
+        meta_node = semantic.get(f"meta-reflection-{reflections[0].id}")
+        assert meta_node is not None
+        assert meta_node.kind == "meta_reflection"
+
+        rule_node = semantic.get(f"rule-revision-{reflections[0].id}")
+        assert rule_node is None
 
         await store.close()
 
@@ -1125,23 +1228,29 @@ async def _task_store_run_lifecycle():
             worker_type="tool-chain-worker",
             input_json={"tool": "file.read"},
             tool_name="file.read",
+            model_tier="reader",
+            progress="queued",
         )
 
         run = await store.get_run_by_id(run_id)
         assert run is not None
         assert run.status == "running"
         assert run.tool_name == "file.read"
+        assert run.model_tier == "reader"
+        assert run.progress == "queued"
 
         await store.update_run(
             run_id,
             status="succeeded",
             output_json={"summary": "ok"},
             log_text="ok",
+            progress="done",
         )
         finished = await store.get_run_by_id(run_id)
         assert finished is not None
         assert finished.status == "succeeded"
         assert finished.output_json["summary"] == "ok"
+        assert finished.progress == "done"
         assert finished.completed_at
 
         runs = await store.list_runs(task_id=task_id)
