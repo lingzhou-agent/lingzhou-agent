@@ -101,7 +101,7 @@ DASHSCOPE_API_KEY=<key> .venv/bin/python lingzhou.py run
 
 These notes are internal AI context. They inform design decisions but are not part of lingzhou's public docs.
 
-### Hermes (TypeScript agent)
+### Prior Agent A (session-centric TypeScript agent)
 
 - **Memory model**: SQLite with tables `sessions`, `messages`, `state_meta`, FTS5 virtual table (trigram tokenizer) over messages.
 - **Soul injection**: `SOUL.md` file read from `HERMES_HOME` once per session → injected into system prompt as-is.
@@ -111,7 +111,7 @@ These notes are internal AI context. They inform design decisions but are not pa
 - **Session as truth**: Session is the primary persistence unit. All history lives in the `messages` table. FTS5 search is over message content.
 - **Key limitation vs lingzhou**: No task-level persistence across sessions; no EMA-based soul evolution; static TypeScript cannot hot-reload tools.
 
-### OpenClaw (TypeScript agent)
+### Prior Agent B (file-centric TypeScript agent)
 
 - **Workspace files**: `MEMORY.md`, `SOUL.md`, `AGENTS.md`, `USER.md`, `TOOLS.md` — all injected at session start via system prompt concatenation.
 - **Memory search**: FTS5 (weight 0.7) + vector embedding (weight 0.3) hybrid search. Retrieval threshold configurable.
@@ -121,7 +121,7 @@ These notes are internal AI context. They inform design decisions but are not pa
 
 ### Design Differentiators (lingzhou vs prior art)
 
-| Capability | Hermes | OpenClaw | lingzhou |
+| Capability | Agent A | Agent B | lingzhou |
 |---|---|---|---|
 | Soul evolution (EMA) | ❌ Static file | ❌ Static file | ✅ DB + EMA |
 | Runtime tool hot-swap | ❌ | ❌ | ✅ `importlib.reload` |
