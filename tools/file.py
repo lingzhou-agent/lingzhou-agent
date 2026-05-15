@@ -31,16 +31,18 @@ def _tail_after_anchor(path: Path, anchor: str) -> Path | None:
     return Path(*tail)
 
 
-def _resolve_read_path(path: Path) -> Path:
-    if path.exists():
-        return path
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in paths:
+        key = str(p)
+        if key and key not in seen:
+            seen.add(key)
+            uniq.append(p)
+    return uniq
 
-    cwd = Path.cwd()
-    home = Path.home()
 
-    # lingzhou 本地化：读取路径只在当前工作树、用户目录与 lingzhou 自身目录内解析，
-    # 不再对其他框架目录做运行时 fallback。
-    bases: list[Path] = [cwd, *cwd.parents, home, home / ".lingzhou"]
+def _read_rel_candidates(path: Path) -> list[Path]:
     rels: list[Path] = []
 
     if not path.is_absolute():
@@ -53,30 +55,52 @@ def _resolve_read_path(path: Path) -> Path:
             if rel.parts and rel.parts[0] == "workspace" and len(rel.parts) > 1:
                 rels.append(Path(*rel.parts[1:]))
 
-    if path.name:
+    if path.name and path.name not in ("", "."):
         rels.append(Path(path.name))
 
-    seen_rel: set[str] = set()
-    uniq_rels: list[Path] = []
-    for rel in rels:
-        key = str(rel)
-        if key not in seen_rel and key not in ("", "."):
-            seen_rel.add(key)
-            uniq_rels.append(rel)
+    return _unique_paths(rels)
 
-    seen_candidates: set[str] = set()
-    for rel in uniq_rels:
+
+def _candidate_paths(path: Path, bases: list[Path]) -> list[Path]:
+    rels = _read_rel_candidates(path)
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    for rel in rels:
         for base in bases:
-            candidates = [base / rel]
+            candidate = base / rel
+            key = str(candidate)
+            if key not in seen:
+                seen.add(key)
+                candidates.append(candidate)
+
             if rel.parts and rel.parts[0] != "workspace":
-                candidates.append(base / "workspace" / rel)
-            for candidate in candidates:
+                candidate = base / "workspace" / rel
                 key = str(candidate)
-                if key in seen_candidates:
-                    continue
-                seen_candidates.add(key)
-                if candidate.exists():
-                    return candidate
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(candidate)
+
+    return candidates
+
+
+def _resolve_read_path(path: Path, ctx: ToolContext | None = None) -> Path:
+    if path.exists():
+        return path
+
+    workspace = _workspace_dir(ctx) if ctx is not None else None
+    if workspace is not None:
+        for candidate in _candidate_paths(path, _unique_paths([workspace, workspace.parent])):
+            if candidate.exists():
+                return candidate
+
+    cwd = Path.cwd()
+    home = Path.home()
+    bases: list[Path] = [cwd, *cwd.parents, home, home / ".lingzhou"]
+
+    for candidate in _candidate_paths(path, _unique_paths(bases)):
+        if candidate.exists():
+            return candidate
 
     return path
 
@@ -96,28 +120,8 @@ def _workspace_candidate_path(path: Path, ctx: ToolContext) -> Path | None:
     if workspace is None:
         return None
 
-    rels: list[Path] = []
-    if not path.is_absolute():
-        rels.append(path)
-
-    for anchor in ("workspace", "lingzhou", ".lingzhou"):
-        rel = _tail_after_anchor(path, anchor)
-        if rel is None:
-            continue
-        if rel.parts and rel.parts[0] == "workspace" and len(rel.parts) > 1:
-            rel = Path(*rel.parts[1:])
-        rels.append(rel)
-
-    if not rels:
-        return None
-
-    seen: set[str] = set()
-    for rel in rels:
-        key = str(rel)
-        if key in seen or key in ("", "."):
-            continue
-        seen.add(key)
-        candidate = workspace / rel
+    roots = _unique_paths([workspace, workspace.parent])
+    for candidate in _candidate_paths(path, roots):
         if candidate.exists() or candidate.parent.exists():
             return candidate
     return None
@@ -127,7 +131,7 @@ def _resolve_mutation_path(path: Path, ctx: ToolContext) -> Path:
     if path.exists():
         return path
 
-    resolved = _resolve_read_path(path)
+    resolved = _resolve_read_path(path, ctx)
     if resolved.exists():
         return resolved
 
@@ -148,7 +152,7 @@ def _resolve_mutation_path(path: Path, ctx: ToolContext) -> Path:
     ],
 ))
 async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    path = _resolve_read_path(Path(params.get("path") or "").expanduser())
+    path = _resolve_read_path(Path(params.get("path") or "").expanduser(), ctx)
     limit = int(params.get("limit") or 200)
     include_hidden = bool(params.get("include_hidden", False))
 
@@ -198,7 +202,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not raw_path:
         return ToolResult(summary="path 不能为空", error="EmptyPath", skipped=True)
 
-    path = _resolve_read_path(Path(raw_path).expanduser())
+    path = _resolve_read_path(Path(raw_path).expanduser(), ctx)
     max_chars_raw = params.get("max_chars")
     max_chars: int | None = int(max_chars_raw) if max_chars_raw is not None else None
     has_range = ("start" in params) or ("end" in params)

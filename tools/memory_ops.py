@@ -12,6 +12,16 @@ from memory.semantic import MemoryNode
 _PRIORITY_ALIASES = {"high": 0.9, "medium": 0.6, "mid": 0.6, "low": 0.3, "critical": 1.0}
 
 
+def _coerce_optional_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value).strip()
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list, tuple)) else str(value).strip()
+
+
 def _coerce_fact_value(value: Any) -> str:
     if value is None:
         return ""
@@ -116,18 +126,18 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
     ],
 ))
 async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    query = (params.get("query") or "").strip()
+    query = _coerce_optional_text(params.get("query"))
     if not query:
         return ToolResult(summary="query 不能为空", skipped=True)
     top_k = int(params.get("top_k") or 5)
     hits = ctx.semantic.retrieve(
         query,
         top_k=top_k,
-        kind=(params.get("kind") or "").strip() or None,
-        tag=(params.get("tag") or "").strip() or None,
-        task_id=(params.get("task_id") or "").strip() or None,
-        path_prefix=(params.get("path_prefix") or "").strip() or None,
-        id_prefix=(params.get("id_prefix") or "").strip() or None,
+        kind=_coerce_optional_text(params.get("kind")) or None,
+        tag=_coerce_optional_text(params.get("tag")) or None,
+        task_id=_coerce_optional_text(params.get("task_id")) or None,
+        path_prefix=_coerce_optional_text(params.get("path_prefix")) or None,
+        id_prefix=_coerce_optional_text(params.get("id_prefix")) or None,
     )
     if not hits:
         return ToolResult(summary=f"没有找到与 {query!r} 相关的语义记忆", skipped=True)
