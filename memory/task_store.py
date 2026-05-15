@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -77,6 +78,41 @@ CREATE INDEX IF NOT EXISTS idx_chat_pending
     ON chat_messages(status, id) WHERE role='user';
 """
 
+_CREATE_RUNS = """
+CREATE TABLE IF NOT EXISTS runs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id      INTEGER NOT NULL DEFAULT 0,
+    run_type     TEXT    NOT NULL DEFAULT 'tool_chain',
+    worker_type  TEXT    NOT NULL DEFAULT 'tool-chain-worker',
+    status       TEXT    NOT NULL DEFAULT 'pending',
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    started_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT    NOT NULL DEFAULT '',
+    data         TEXT    NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_runs_task_status
+    ON runs(task_id, status, id DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_status
+    ON runs(status, id DESC);
+"""
+
+_CREATE_META_REFLECTIONS = """
+CREATE TABLE IF NOT EXISTS meta_reflections (
+    id                TEXT PRIMARY KEY,
+    target_kind       TEXT NOT NULL,
+    trigger           TEXT NOT NULL,
+    loop_level        TEXT NOT NULL,
+    diagnosis         TEXT NOT NULL,
+    proposal          TEXT NOT NULL,
+    verification_plan TEXT NOT NULL DEFAULT '',
+    decision          TEXT NOT NULL DEFAULT 'defer',
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    data              TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_meta_reflections_loop
+    ON meta_reflections(loop_level, created_at DESC);
+"""
+
 # ── 性能索引（幂等，IF NOT EXISTS，对存量 DB 同样有效）────────────────────────
 # 分析依据：
 #   tasks.get_active()   → 每 tick 执行一次 WHERE status IN (...) ORDER BY priority → 无索引=全表扫
@@ -118,6 +154,7 @@ class Task:
     wait_json: dict[str, Any] = field(default_factory=dict[str, Any])
     result_json: dict[str, Any] = field(default_factory=dict[str, Any])
     async_job_id: str = ""
+    model_tier: str = ""
     # 其余 data 键，动态扩展无需代码变动
     extras: dict[str, Any] = field(default_factory=dict[str, Any])
 
@@ -141,6 +178,7 @@ class Task:
         wait_json = data.pop("wait_json", {}) or {}
         result_json = data.pop("result_json", {}) or {}
         async_job_id = data.pop("async_job_id", "")
+        model_tier = data.pop("model_tier", "")
         return cls(
             id=rid,
             title=title,
@@ -159,6 +197,7 @@ class Task:
             wait_json=wait_json,
             result_json=result_json,
             async_job_id=async_job_id,
+            model_tier=model_tier,
             extras=data,
         )
 
@@ -176,6 +215,7 @@ class Task:
             "wait_json": self.wait_json,
             "result_json": self.result_json,
             "async_job_id": self.async_job_id,
+            "model_tier": self.model_tier,
         }
         d.update(self.extras)
         return json.dumps(d, ensure_ascii=False)
@@ -216,6 +256,120 @@ class Failure:
         )
 
 
+@dataclass
+class Run:
+    id: int
+    task_id: int
+    run_type: str
+    worker_type: str
+    status: str
+    created_at: str
+    started_at: str = ""
+    completed_at: str = ""
+    input_json: dict[str, Any] = field(default_factory=dict[str, Any])
+    output_json: dict[str, Any] = field(default_factory=dict[str, Any])
+    log_text: str = ""
+    error_text: str = ""
+    tool_name: str = ""
+    session_id: str = ""
+    extras: dict[str, Any] = field(default_factory=dict[str, Any])
+
+    @classmethod
+    def from_row(cls, row: Any) -> "Run":
+        rid, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data_raw = row
+        try:
+            data: dict[str, Any] = json.loads(data_raw or "{}")
+        except Exception:
+            data = {}
+        input_json = data.pop("input_json", {}) or {}
+        output_json = data.pop("output_json", {}) or {}
+        log_text = data.pop("log_text", "")
+        error_text = data.pop("error_text", "")
+        tool_name = data.pop("tool_name", "")
+        session_id = data.pop("session_id", "")
+        return cls(
+            id=rid,
+            task_id=task_id,
+            run_type=run_type,
+            worker_type=worker_type,
+            status=status,
+            created_at=created_at,
+            started_at=started_at,
+            completed_at=completed_at,
+            input_json=input_json,
+            output_json=output_json,
+            log_text=log_text,
+            error_text=error_text,
+            tool_name=tool_name,
+            session_id=session_id,
+            extras=data,
+        )
+
+    def to_data_json(self) -> str:
+        data = {
+            "input_json": self.input_json,
+            "output_json": self.output_json,
+            "log_text": self.log_text,
+            "error_text": self.error_text,
+            "tool_name": self.tool_name,
+            "session_id": self.session_id,
+        }
+        data.update(self.extras)
+        return json.dumps(data, ensure_ascii=False)
+
+
+@dataclass
+class MetaReflection:
+    id: str
+    target_kind: str
+    trigger: str
+    loop_level: str
+    diagnosis: str
+    proposal: str
+    verification_plan: str
+    decision: str
+    created_at: str
+    task_id: int = 0
+    run_id: int = 0
+    tool_name: str = ""
+    extras: dict[str, Any] = field(default_factory=dict[str, Any])
+
+    @classmethod
+    def from_row(cls, row: Any) -> "MetaReflection":
+        rid, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data_raw = row
+        try:
+            data: dict[str, Any] = json.loads(data_raw or "{}")
+        except Exception:
+            data = {}
+        task_id = int(data.pop("task_id", 0) or 0)
+        run_id = int(data.pop("run_id", 0) or 0)
+        tool_name = str(data.pop("tool_name", "") or "")
+        return cls(
+            id=str(rid),
+            target_kind=target_kind,
+            trigger=trigger,
+            loop_level=loop_level,
+            diagnosis=diagnosis,
+            proposal=proposal,
+            verification_plan=verification_plan,
+            decision=decision,
+            created_at=created_at,
+            task_id=task_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            extras=data,
+        )
+
+    def to_data_json(self) -> str:
+        data = {
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "tool_name": self.tool_name,
+        }
+        data.update(self.extras)
+        return json.dumps(data, ensure_ascii=False)
+
+
 # ── 存储层 ──────────────────────────────────────────────────────────────────
 
 class TaskStore:
@@ -237,7 +391,7 @@ class TaskStore:
         await self._migrate()
         # 建表（幂等）+ 补充性能索引（IF NOT EXISTS，对存量 DB 同样生效）
         await self._db.executescript(
-            _CREATE_TASKS + _CREATE_FAILURES + _CREATE_FACTS + _CREATE_SIGNALS + _CREATE_CHAT + _CREATE_INDEXES
+            _CREATE_TASKS + _CREATE_FAILURES + _CREATE_FACTS + _CREATE_SIGNALS + _CREATE_CHAT + _CREATE_RUNS + _CREATE_META_REFLECTIONS + _CREATE_INDEXES
         )
         await self._db.commit()
 
@@ -363,6 +517,7 @@ class TaskStore:
         wait_json: dict[str, Any] | None = None,
         result_json: dict[str, Any] | None = None,
         async_job_id: str = "",
+        model_tier: str = "",
         extras: dict[str, Any] | None = None,
     ) -> int:
         data = {
@@ -378,6 +533,7 @@ class TaskStore:
             "wait_json": wait_json or {},
             "result_json": result_json or {},
             "async_job_id": async_job_id,
+            "model_tier": model_tier,
         }
         if extras:
             data.update(extras)
@@ -520,6 +676,171 @@ class TaskStore:
         )
         await self._db.commit()
 
+    async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None:
+        task = await self.get_task_by_id(task_id)
+        if not task:
+            return
+        task.result_json = result_json or {}
+        await self._db.execute(
+            "UPDATE tasks SET data=? WHERE id=?",
+            (task.to_data_json(), task_id),
+        )
+        await self._db.commit()
+
+    async def add_run(
+        self,
+        *,
+        task_id: int = 0,
+        run_type: str = "tool_chain",
+        worker_type: str = "tool-chain-worker",
+        status: str = "running",
+        input_json: dict[str, Any] | None = None,
+        output_json: dict[str, Any] | None = None,
+        log_text: str = "",
+        error_text: str = "",
+        tool_name: str = "",
+        session_id: str = "",
+        extras: dict[str, Any] | None = None,
+    ) -> int:
+        data = {
+            "input_json": input_json or {},
+            "output_json": output_json or {},
+            "log_text": log_text,
+            "error_text": error_text,
+            "tool_name": tool_name,
+            "session_id": session_id,
+        }
+        if extras:
+            data.update(extras)
+        now = datetime.now(UTC).isoformat()
+        async with self._db.execute(
+            "INSERT INTO runs (task_id, run_type, worker_type, status, created_at, started_at, data) VALUES (?,?,?,?,?,?,?)",
+            (task_id, run_type, worker_type, status, now, now, json.dumps(data, ensure_ascii=False)),
+        ) as cur:
+            run_id: int = cur.lastrowid or 0
+        await self._db.commit()
+        return run_id
+
+    async def get_run_by_id(self, run_id: int) -> Optional[Run]:
+        async with self._db.execute(
+            "SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data FROM runs WHERE id=?",
+            (run_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return Run.from_row(row) if row else None
+
+    async def list_runs(
+        self,
+        *,
+        task_id: int | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[Run]:
+        clauses: list[str] = []
+        args: list[Any] = []
+        if task_id is not None:
+            clauses.append("task_id=?")
+            args.append(task_id)
+        if status:
+            clauses.append("status=?")
+            args.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        args.append(limit)
+        async with self._db.execute(
+            f"SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data FROM runs {where} ORDER BY id DESC LIMIT ?",
+            tuple(args),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [Run.from_row(r) for r in rows]
+
+    async def update_run(
+        self,
+        run_id: int,
+        *,
+        status: str | None = None,
+        output_json: dict[str, Any] | None = None,
+        log_text: str | None = None,
+        error_text: str | None = None,
+        session_id: str | None = None,
+        extras: dict[str, Any] | None = None,
+    ) -> None:
+        run = await self.get_run_by_id(run_id)
+        if not run:
+            return
+        if status:
+            run.status = status
+        if output_json is not None:
+            run.output_json = output_json
+        if log_text is not None:
+            run.log_text = log_text
+        if error_text is not None:
+            run.error_text = error_text
+        if session_id is not None:
+            run.session_id = session_id
+        if extras:
+            run.extras.update(extras)
+        if run.status in {"succeeded", "failed", "cancelled"} and not run.completed_at:
+            run.completed_at = datetime.now(UTC).isoformat()
+        await self._db.execute(
+            "UPDATE runs SET status=?, completed_at=?, data=? WHERE id=?",
+            (run.status, run.completed_at, run.to_data_json(), run_id),
+        )
+        await self._db.commit()
+
+    async def add_meta_reflection(
+        self,
+        *,
+        reflection_id: str,
+        target_kind: str,
+        trigger: str,
+        loop_level: str,
+        diagnosis: str,
+        proposal: str,
+        verification_plan: str = "",
+        decision: str = "defer",
+        task_id: int = 0,
+        run_id: int = 0,
+        tool_name: str = "",
+        extras: dict[str, Any] | None = None,
+    ) -> None:
+        data = {
+            "task_id": task_id,
+            "run_id": run_id,
+            "tool_name": tool_name,
+        }
+        if extras:
+            data.update(extras)
+        await self._db.execute(
+            "INSERT OR REPLACE INTO meta_reflections (id, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, data) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                reflection_id,
+                target_kind,
+                trigger,
+                loop_level,
+                diagnosis,
+                proposal,
+                verification_plan,
+                decision,
+                json.dumps(data, ensure_ascii=False),
+            ),
+        )
+        await self._db.commit()
+
+    async def list_meta_reflections(self, limit: int = 20, loop_level: str | None = None) -> list[MetaReflection]:
+        if loop_level:
+            async with self._db.execute(
+                "SELECT id, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data FROM meta_reflections WHERE loop_level=? ORDER BY created_at DESC LIMIT ?",
+                (loop_level, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._db.execute(
+                "SELECT id, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data FROM meta_reflections ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [MetaReflection.from_row(r) for r in rows]
+
     async def enqueue_if_absent(
         self,
         title: str,
@@ -609,6 +930,25 @@ class TaskStore:
         if row:
             return row[0], True
         return "", False
+
+    async def list_facts(self, prefix: str = "", limit: int = 100) -> list[tuple[str, str]]:
+        if prefix:
+            async with self._db.execute(
+                "SELECT key, value FROM facts WHERE key LIKE ? ORDER BY updated_at DESC LIMIT ?",
+                (f"{prefix}%", limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        else:
+            async with self._db.execute(
+                "SELECT key, value FROM facts ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [(str(k), str(v)) for k, v in rows]
+
+    async def delete_fact(self, key: str) -> None:
+        await self._db.execute("DELETE FROM facts WHERE key=?", (key,))
+        await self._db.commit()
 
     # ── 调度信号（cron 机制）──────────────────────────────────────────────
 

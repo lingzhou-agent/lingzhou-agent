@@ -1,10 +1,13 @@
 """快速验证测试，不依赖 LLM。"""
 import asyncio
+import json
 import math
 import os
 import tempfile
 from datetime import datetime, UTC, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import aiosqlite
 
@@ -13,6 +16,66 @@ import aiosqlite
 
 def _proj_root() -> Path:
     return Path(__file__).parent.parent
+
+
+def _test_config(
+    *,
+    act: bool = True,
+    debug: bool = False,
+    workspace_dir: str = "",
+    shell_timeout: int = 5,
+    shell_max_output_chars: int = 200,
+) -> Any:
+    return cast(
+        Any,
+        SimpleNamespace(
+            loop=SimpleNamespace(act=act, debug=debug, workspace_dir=workspace_dir),
+            thresholds=SimpleNamespace(
+                shell_timeout=shell_timeout,
+                shell_max_output_chars=shell_max_output_chars,
+            ),
+        ),
+    )
+
+
+def _tool_ctx(
+    *,
+    act: bool = True,
+    debug: bool = False,
+    workspace_dir: str = "",
+    shell_timeout: int = 5,
+    shell_max_output_chars: int = 200,
+    wm: Any = None,
+    task_store: Any = None,
+    episodic: Any = None,
+    semantic: Any = None,
+    emotion: Any = None,
+):
+    from tools.registry import ToolContext
+
+    return ToolContext(
+        config=cast(
+            Any,
+            _test_config(
+                act=act,
+                debug=debug,
+                workspace_dir=workspace_dir,
+                shell_timeout=shell_timeout,
+                shell_max_output_chars=shell_max_output_chars,
+            ),
+        ),
+        wm=cast(Any, wm),
+        task_store=cast(Any, task_store),
+        episodic=cast(Any, episodic),
+        semantic=cast(Any, semantic),
+        emotion=cast(Any, emotion),
+    )
+
+
+def _execution_layer(reg, *, debug: bool = False):
+    from core.execution import ExecutionLayer
+
+    return ExecutionLayer(reg, cast(Any, SimpleNamespace(loop=SimpleNamespace(debug=debug))))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -119,6 +182,298 @@ def test_judgment_error_classification_and_cooldown():
     assert layer._cooldown_seconds("400", 2) >= 90
 
 
+def test_evolution_verification_outcome():
+    from core.evolution import _verification_outcome
+
+    baseline = {"runs": 4, "failures": 2, "successes": 1}
+    assert _verification_outcome(baseline, {"runs": 1, "failures": 0, "successes": 1}, 3) == "pending"
+    assert _verification_outcome(baseline, {"runs": 3, "failures": 0, "successes": 3}, 3) == "verified"
+    assert _verification_outcome(baseline, {"runs": 3, "failures": 3, "successes": 0}, 3) == "regressed"
+
+
+def test_exec_background_result_stays_running():
+    from core.execution import _run_status_from_result
+    from tools.registry import ToolResult
+
+    result = ToolResult(
+        summary="后台进程已启动",
+        state_delta={"process": "started", "background": True},
+        metadata={"session_id": "exec-1"},
+    )
+    assert _run_status_from_result(result) == "running"
+
+
+def test_task_store_fact_listing_and_delete():
+    asyncio.run(_task_store_fact_listing_and_delete())
+
+
+async def _task_store_fact_listing_and_delete():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "facts.db")
+        await store.open()
+        await store.set_fact("evolution:verify:file.read", json.dumps({"ok": True}), scope="system")
+        await store.set_fact("misc:key", "v", scope="general")
+
+        facts = await store.list_facts(prefix="evolution:verify:")
+        assert len(facts) == 1
+        assert facts[0][0] == "evolution:verify:file.read"
+
+        await store.delete_fact("evolution:verify:file.read")
+        value, found = await store.get_fact("evolution:verify:file.read")
+        assert not found
+        assert value == ""
+        await store.close()
+
+
+def test_evolution_pending_verification_becomes_verified():
+    asyncio.run(_evolution_pending_verification_becomes_verified())
+
+
+async def _evolution_pending_verification_becomes_verified():
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from core.config import Config
+    from core.evolution import EvolutionEngine, _verification_fact_key
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return ""
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "evolution": {
+            "verify_min_runs": 2,
+            "auto_rollback_on_regression": True,
+        },
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        created_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        await store.set_fact(
+            _verification_fact_key("file.read"),
+            json.dumps({
+                "target": "file.read",
+                "tool_path": str(Path(d) / "file.py"),
+                "backup_path": str(Path(d) / "file.py.bak"),
+                "created_at": created_at,
+                "baseline": {"runs": 3, "failures": 2, "successes": 1},
+            }, ensure_ascii=False),
+            scope="system",
+        )
+        await store.add_run(tool_name="file.read", status="succeeded")
+        await store.add_run(tool_name="file.read", status="succeeded")
+
+        engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
+        results = await engine._maybe_evaluate_verifications(cast(Any, SimpleNamespace(task_store=store)))
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].target == "verify:file.read"
+
+        _, found = await store.get_fact(_verification_fact_key("file.read"))
+        assert not found
+        await store.close()
+
+
+def test_evolution_regression_triggers_rollback():
+    asyncio.run(_evolution_regression_triggers_rollback())
+
+
+async def _evolution_regression_triggers_rollback():
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from core.config import Config
+    from core.evolution import EvolutionEngine, _verification_fact_key
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return ""
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+        "evolution": {
+            "verify_min_runs": 2,
+            "auto_rollback_on_regression": True,
+        },
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        tool_path = Path(d) / "demo_tool.py"
+        backup_path = Path(d) / "demo_tool.py.bak"
+        tool_path.write_text("VALUE = 'new'\n", encoding="utf-8")
+        backup_path.write_text("VALUE = 'old'\n", encoding="utf-8")
+        created_at = (datetime.now(UTC) - timedelta(seconds=1)).replace(microsecond=0).isoformat()
+        await store.set_fact(
+            _verification_fact_key("demo.tool"),
+            json.dumps({
+                "target": "demo.tool",
+                "tool_path": str(tool_path),
+                "backup_path": str(backup_path),
+                "created_at": created_at,
+                "baseline": {"runs": 2, "failures": 1, "successes": 1},
+            }, ensure_ascii=False),
+            scope="system",
+        )
+        await store.add_run(tool_name="demo.tool", status="failed")
+        await store.add_run(tool_name="demo.tool", status="failed")
+        await store.record_failure("demo.tool", "still broken")
+        await store.record_failure("demo.tool", "still broken again")
+
+        engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
+        results = await engine._maybe_evaluate_verifications(cast(Any, SimpleNamespace(task_store=store)))
+        assert len(results) == 1
+        assert results[0].success is True
+        assert results[0].target == "rollback:demo.tool"
+        assert tool_path.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+
+        _, found = await store.get_fact(_verification_fact_key("demo.tool"))
+        assert not found
+        await store.close()
+
+
+def test_refresh_running_runs_updates_finished_exec_runs():
+    asyncio.run(_refresh_running_runs_updates_finished_exec_runs())
+
+
+async def _refresh_running_runs_updates_finished_exec_runs():
+    import os
+    import time
+
+    from core.loop import _refresh_running_runs
+    from memory.task_store import TaskStore
+    from tools.exec import ProcessInfo, _MANAGER
+
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["LINGZHOU_PROCESS_STATE_DIR"] = str(Path(d) / "proc-state")
+        _MANAGER.clear()
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("后台任务", goal="等进程结束")
+        run_id = await store.add_run(
+            task_id=task_id,
+            run_type="exec",
+            worker_type="exec-worker",
+            status="running",
+            tool_name="exec",
+            session_id="exec-test-1",
+        )
+        info = ProcessInfo(
+            session_id="exec-test-1",
+            command="echo hi",
+            started_at=time.time(),
+            finished=True,
+            return_code=0,
+            stdout="hi\n",
+            background=True,
+        )
+        _MANAGER.register(info)
+        _MANAGER.mark_finished("exec-test-1", 0)
+
+        updates = await _refresh_running_runs(store)
+        assert updates
+        assert updates[0]["status"] == "succeeded"
+
+        run = await store.get_run_by_id(run_id)
+        assert run is not None
+        assert run.status == "succeeded"
+        assert run.output_json["stdout"].strip() == "hi"
+
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.result_json["last_run_status"] == "succeeded"
+
+        await store.close()
+
+
+def test_refresh_running_runs_crystallizes_progress():
+    asyncio.run(_refresh_running_runs_crystallizes_progress())
+
+
+async def _refresh_running_runs_crystallizes_progress():
+    import os
+    import time
+
+    from core.loop import _refresh_running_runs
+    from memory.task_store import TaskStore
+    from tools.exec import ProcessInfo, _MANAGER
+
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["LINGZHOU_PROCESS_STATE_DIR"] = str(Path(d) / "proc-state")
+        _MANAGER.clear()
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("长任务", goal="观察中间进度")
+        await store.add_run(
+            task_id=task_id,
+            run_type="exec",
+            worker_type="exec-worker",
+            status="running",
+            tool_name="exec",
+            session_id="exec-test-2",
+        )
+        info = ProcessInfo(
+            session_id="exec-test-2",
+            command="echo progress",
+            started_at=time.time(),
+            finished=False,
+            stdout=(
+                "phase-01 downloading artifacts\n"
+                "phase-02 unpacking workspace\n"
+                "phase-03 indexing files\n"
+                "phase-04 building plan\n"
+                "phase-05 verifying progress\n"
+            ),
+            background=True,
+        )
+        _MANAGER.register(info)
+
+        updates = await _refresh_running_runs(store)
+        assert updates
+        assert updates[0]["status"] == "running"
+        assert updates[0]["crystal"]
+
+        progress, found = await store.get_fact(f"task:{task_id}:progress")
+        assert found
+        assert "phase-05" in progress
+
+        await store.close()
+
+
 def test_catalog_resolve_context_window():
     """内置目录能按 model ID 自动查找 context_window，显式 override 优先。"""
     from provider.catalog import resolve_context_window
@@ -197,6 +552,7 @@ def test_tool_registry():
     reg = ToolRegistry()
     reg.discover(_proj_root() / "tools")
     names = [m.name for m in reg.list_manifests()]
+    assert "image.analyze" in names
     assert "shell.run" in names
     assert "shell.capabilities" in names
     assert "task.complete" in names
@@ -214,11 +570,32 @@ def test_file_list_and_memory_search():
     asyncio.run(_file_list_and_memory_search())
 
 
+def test_image_source_helpers():
+    from tools.image import _collect_image_sources, _image_part_from_source
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        local = root / "sample.png"
+        local.write_bytes(b"\x89PNG\r\n\x1a\nsmall-test-image")
+
+        sources = _collect_image_sources({
+            "path": str(local),
+            "paths": json.dumps(["https://example.com/demo.jpg"]),
+        })
+        assert sources == [str(local), "https://example.com/demo.jpg"]
+
+        local_part = _image_part_from_source(str(local), "auto")
+        assert local_part["type"] == "image_url"
+        assert local_part["image_url"]["url"].startswith("data:image/png;base64,")
+
+        remote_part = _image_part_from_source("https://example.com/demo.jpg", "high")
+        assert remote_part["image_url"]["url"] == "https://example.com/demo.jpg"
+        assert remote_part["image_url"]["detail"] == "high"
+
+
 async def _file_list_and_memory_search():
-    from types import SimpleNamespace
     from tools.file import file_list, file_read
     from tools.memory_ops import memory_search, memory_add_semantic
-    from tools.registry import ToolContext
     from memory.semantic import SemanticMemory
     from pathlib import Path
 
@@ -227,10 +604,7 @@ async def _file_list_and_memory_search():
         (root / 'a.txt').write_text('hello', encoding='utf-8')
         (root / 'sub').mkdir()
         semantic = SemanticMemory(root)
-        ctx = ToolContext(
-            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=str(root))),
-            wm=None, task_store=None, episodic=None, semantic=semantic, emotion=None,
-        )
+        ctx = _tool_ctx(workspace_dir=str(root), semantic=semantic)
         listed = await file_list({'path': str(root)}, ctx)
         assert 'a.txt' in listed.summary
         assert 'sub/' in listed.summary
@@ -256,15 +630,10 @@ def test_exec_process_write_pipe_roundtrip():
 
 async def _exec_process_write_pipe_roundtrip():
     import json
-    from types import SimpleNamespace
     from tools.exec import exec_run, process_write, process_poll, process_log, _MANAGER
-    from tools.registry import ToolContext
 
     _MANAGER.clear()
-    ctx = ToolContext(
-        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx()
 
     res = await exec_run({
         "command": "python3 -c \"import sys; print(sys.stdin.readline().strip())\"",
@@ -291,15 +660,10 @@ def test_exec_process_timeout_background():
 
 async def _exec_process_timeout_background():
     import json
-    from types import SimpleNamespace
     from tools.exec import exec_run, process_poll, _MANAGER
-    from tools.registry import ToolContext
 
     _MANAGER.clear()
-    ctx = ToolContext(
-        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx()
 
     res = await exec_run({
         "command": "python3 -c \"import time; time.sleep(5)\"",
@@ -325,18 +689,10 @@ def test_exec_and_shell_explicit_no_output():
 
 
 async def _exec_and_shell_explicit_no_output():
-    from types import SimpleNamespace
     from tools.exec import exec_run
     from tools.shell import shell_run
-    from tools.registry import ToolContext
 
-    ctx = ToolContext(
-        config=SimpleNamespace(
-            loop=SimpleNamespace(act=True),
-            thresholds=SimpleNamespace(shell_timeout=5, shell_max_output_chars=200),
-        ),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx()
 
     exec_res = await exec_run({"command": "python3 -c \"pass\""}, ctx)
     assert exec_res.error is None
@@ -354,30 +710,18 @@ def test_execution_durable_failure_sensing():
 async def _execution_durable_failure_sensing():
     from pathlib import Path
     from tempfile import TemporaryDirectory
-    from types import SimpleNamespace
 
-    from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from memory.task_store import TaskStore
-    from tools.registry import ToolContext, ToolRegistry
+    from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
         await store.open()
         reg = ToolRegistry()
         reg.discover(_proj_root() / "tools")
-        layer = ExecutionLayer(reg, SimpleNamespace(loop=SimpleNamespace(debug=False)))
-        ctx = ToolContext(
-            config=SimpleNamespace(
-                loop=SimpleNamespace(act=True, debug=False),
-                thresholds=SimpleNamespace(shell_timeout=5, shell_max_output_chars=200),
-            ),
-            wm=None,
-            task_store=store,
-            episodic=None,
-            semantic=None,
-            emotion=None,
-        )
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
         action = JudgmentOutput(
             decision="act",
             chosen_action_id="exec",
@@ -409,30 +753,18 @@ def test_execution_durable_failure_sensing_for_file_tool():
 async def _execution_durable_failure_sensing_for_file_tool():
     from pathlib import Path
     from tempfile import TemporaryDirectory
-    from types import SimpleNamespace
 
-    from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from memory.task_store import TaskStore
-    from tools.registry import ToolContext, ToolRegistry
+    from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
         await store.open()
         reg = ToolRegistry()
         reg.discover(_proj_root() / "tools")
-        layer = ExecutionLayer(reg, SimpleNamespace(loop=SimpleNamespace(debug=False)))
-        ctx = ToolContext(
-            config=SimpleNamespace(
-                loop=SimpleNamespace(act=True, debug=False),
-                thresholds=SimpleNamespace(shell_timeout=5, shell_max_output_chars=200),
-            ),
-            wm=None,
-            task_store=store,
-            episodic=None,
-            semantic=None,
-            emotion=None,
-        )
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
         action = JudgmentOutput(
             decision="act",
             chosen_action_id="file.read",
@@ -446,6 +778,94 @@ async def _execution_durable_failure_sensing_for_file_tool():
         fourth = await layer.dispatch(action, ctx)
         assert fourth.skipped is True
         assert fourth.error == "KnownStableFailure"
+
+        await store.close()
+
+
+def test_execution_dispatch_records_run():
+    asyncio.run(_execution_dispatch_records_run())
+
+
+async def _execution_dispatch_records_run():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    from core.judgment import JudgmentOutput
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        root = Path(d)
+        target = root / "demo.txt"
+        target.write_text("hello", encoding="utf-8")
+        store = TaskStore(root / "runtime.db")
+        await store.open()
+        await store.add_task("读取文件", goal="读 demo")
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+        action = JudgmentOutput(
+            decision="act",
+            chosen_action_id="file.read",
+            params={"path": str(target)},
+            rationale="record run",
+        )
+
+        result = await layer.dispatch(action, ctx)
+        assert result.error is None
+        assert result.metadata.get("run_id")
+        assert result.metadata.get("worker_type") == "tool-chain-worker"
+
+        runs = await store.list_runs(limit=5)
+        assert runs
+        assert runs[0].status == "succeeded"
+        assert runs[0].tool_name == "file.read"
+        assert runs[0].output_json["summary"] == "hello"
+
+        active = await store.get_active()
+        assert active is not None
+        assert active.result_json["last_run_id"] == runs[0].id
+        assert active.result_json["last_run_status"] == "succeeded"
+        assert active.result_json["worker_type"] == "tool-chain-worker"
+
+        await store.close()
+
+
+def test_execution_failure_creates_meta_reflection():
+    asyncio.run(_execution_failure_creates_meta_reflection())
+
+
+async def _execution_failure_creates_meta_reflection():
+    from tempfile import TemporaryDirectory
+
+    from core.judgment import JudgmentOutput
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        await store.add_task("读空路径", goal="制造失败")
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+        action = JudgmentOutput(
+            decision="act",
+            chosen_action_id="file.read",
+            params={"path": ""},
+            rationale="trigger meta reflection",
+        )
+
+        result = await layer.dispatch(action, ctx)
+        assert result.error == "EmptyPath"
+
+        reflections = await store.list_meta_reflections(limit=5)
+        assert reflections
+        assert reflections[0].target_kind == "task_split"
+        assert reflections[0].loop_level == "double"
+        assert reflections[0].tool_name == "file.read"
 
         await store.close()
 
@@ -657,10 +1077,11 @@ async def _task_store_basic():
         assert t2.next_step == "步骤1"
 
         # 扩展字段（无需 ALTER TABLE）
-        await store.update_task_data(tid, {"tags": ["ai"], "score": 99})
+        await store.update_task_data(tid, {"tags": ["ai"], "score": 99, "model_tier": "reader"})
         t3 = await store.get_task_by_id(tid)
         assert t3 is not None
         assert t3.extras["score"] == 99
+        assert t3.model_tier == "reader"
         assert t3.next_step == "步骤1"  # 原有字段未被覆盖
 
         # 失败记录
@@ -683,6 +1104,48 @@ async def _task_store_basic():
         a1 = await store.enqueue_if_absent("dup task")
         a2 = await store.enqueue_if_absent("dup task")
         assert a1 and not a2
+
+        await store.close()
+
+
+def test_task_store_run_lifecycle():
+    asyncio.run(_task_store_run_lifecycle())
+
+
+async def _task_store_run_lifecycle():
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runs.db")
+        await store.open()
+        task_id = await store.add_task("任务A", goal="目标")
+        run_id = await store.add_run(
+            task_id=task_id,
+            run_type="tool_chain",
+            worker_type="tool-chain-worker",
+            input_json={"tool": "file.read"},
+            tool_name="file.read",
+        )
+
+        run = await store.get_run_by_id(run_id)
+        assert run is not None
+        assert run.status == "running"
+        assert run.tool_name == "file.read"
+
+        await store.update_run(
+            run_id,
+            status="succeeded",
+            output_json={"summary": "ok"},
+            log_text="ok",
+        )
+        finished = await store.get_run_by_id(run_id)
+        assert finished is not None
+        assert finished.status == "succeeded"
+        assert finished.output_json["summary"] == "ok"
+        assert finished.completed_at
+
+        runs = await store.list_runs(task_id=task_id)
+        assert len(runs) == 1
 
         await store.close()
 
@@ -1088,6 +1551,26 @@ def test_select_tier_logic():
     assert tier2 == "reasoner"
 
 
+def test_prefer_tier_for_task_uses_pending_then_task_default():
+    from core.loop import _prefer_tier_for_task
+    from memory.task_store import Task
+
+    task = Task(
+        id=1,
+        title="任务",
+        status="pending",
+        priority="normal",
+        created_at="2026-05-15T00:00:00Z",
+        model_tier="reader",
+    )
+
+    assert _prefer_tier_for_task(None, task) == "reader"
+    assert _prefer_tier_for_task("repair", task) == "repair"
+
+    task.model_tier = "invalid"
+    assert _prefer_tier_for_task(None, task) is None
+
+
 def test_behavior_gate_passthrough():
     """apply_execution_gate 为纯透传：决策权归 LLM，不做硬拦截。
 
@@ -1182,6 +1665,14 @@ def test_action_made_progress_result_aware():
     assert _action_made_progress(fail_action, fail_res) is False
 
 
+def test_should_continue_within_tick_for_autonomous_act():
+    from core.judgment import JudgmentOutput
+    from core.loop import _should_continue_within_tick
+
+    assert _should_continue_within_tick(JudgmentOutput(decision="act", chosen_action_id="file.read")) is True
+    assert _should_continue_within_tick(JudgmentOutput(decision="wait")) is False
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 新增工具测试（file.edit / skill_ops / exec 覆盖）
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1191,16 +1682,11 @@ def test_file_edit_single_replace():
     asyncio.run(_file_edit_single_replace())
 
 async def _file_edit_single_replace():
-    from types import SimpleNamespace
     from tools.file import file_write, file_read, file_edit
-    from tools.registry import ToolContext
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        ctx = ToolContext(
-            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
-            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-        )
+        ctx = _tool_ctx(workspace_dir=d)
         fpath = root / "test.py"
         await file_write({"path": str(fpath), "content": "x = 1\ny = 2\nz = 3\n"}, ctx)
 
@@ -1219,16 +1705,11 @@ def test_file_edit_multiple_replace():
     asyncio.run(_file_edit_multiple_replace())
 
 async def _file_edit_multiple_replace():
-    from types import SimpleNamespace
     from tools.file import file_write, file_read, file_edit
-    from tools.registry import ToolContext
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        ctx = ToolContext(
-            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
-            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-        )
+        ctx = _tool_ctx(workspace_dir=d)
         fpath = root / "multi.py"
         await file_write({"path": str(fpath), "content": "a = 1\nb = 2\nc = 3\n"}, ctx)
 
@@ -1249,16 +1730,11 @@ def test_file_edit_errors():
     asyncio.run(_file_edit_errors())
 
 async def _file_edit_errors():
-    from types import SimpleNamespace
     from tools.file import file_write, file_edit
-    from tools.registry import ToolContext
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        ctx = ToolContext(
-            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
-            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-        )
+        ctx = _tool_ctx(workspace_dir=d)
         fpath = root / "err.py"
         await file_write({"path": str(fpath), "content": "x = 1\nx = 1\ny = 2\n"}, ctx)
 
@@ -1287,15 +1763,10 @@ def test_skill_list_and_search():
     asyncio.run(_skill_list_and_search())
 
 async def _skill_list_and_search():
-    from types import SimpleNamespace
     from tools.skill_ops import skill_list, skill_search
-    from tools.registry import ToolContext
 
     ws = _proj_root() / "workspace"
-    ctx = ToolContext(
-        config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=str(ws))),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx(workspace_dir=str(ws))
 
     r = await skill_list({}, ctx)
     assert r.error is None
@@ -1318,14 +1789,9 @@ def test_exec_empty_command():
     asyncio.run(_exec_empty_command())
 
 async def _exec_empty_command():
-    from types import SimpleNamespace
     from tools.exec import exec_run
-    from tools.registry import ToolContext
 
-    ctx = ToolContext(
-        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx()
     res = await exec_run({"command": ""}, ctx)
     assert res.skipped is True
     assert res.error == "EmptyCommand"
@@ -1337,15 +1803,10 @@ def test_process_kill():
 
 async def _process_kill():
     import json
-    from types import SimpleNamespace
     from tools.exec import exec_run, process_kill, process_poll, process_list, _MANAGER
-    from tools.registry import ToolContext
 
     _MANAGER.clear()
-    ctx = ToolContext(
-        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx()
 
     res = await exec_run({"command": "sleep 60", "background": True, "timeout": 60}, ctx)
     sid = json.loads(res.evidence)["session_id"]
@@ -1372,15 +1833,10 @@ def test_process_list():
 
 async def _process_list():
     import json
-    from types import SimpleNamespace
     from tools.exec import exec_run, process_list, _MANAGER
-    from tools.registry import ToolContext
 
     _MANAGER.clear()
-    ctx = ToolContext(
-        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx()
 
     # 空列表
     r = await process_list({"state": "all"}, ctx)
@@ -1400,15 +1856,10 @@ def test_process_write_to_finished():
 
 async def _process_write_to_finished():
     import json
-    from types import SimpleNamespace
     from tools.exec import exec_run, process_write, _MANAGER
-    from tools.registry import ToolContext
 
     _MANAGER.clear()
-    ctx = ToolContext(
-        config=SimpleNamespace(loop=SimpleNamespace(act=True)),
-        wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-    )
+    ctx = _tool_ctx()
 
     res = await exec_run({"command": "echo done"}, ctx)  # 前台，立即结束
     assert res.error is None
@@ -1430,16 +1881,11 @@ def test_file_edit_json_string_edits():
 
 async def _file_edit_json_string_edits():
     import json as _json
-    from types import SimpleNamespace
     from tools.file import file_write, file_read, file_edit
-    from tools.registry import ToolContext
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        ctx = ToolContext(
-            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
-            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-        )
+        ctx = _tool_ctx(workspace_dir=d)
         fpath = root / "jsontest.py"
         await file_write({"path": str(fpath), "content": "v = 1\n"}, ctx)
 
@@ -1456,16 +1902,11 @@ def test_file_read_max_chars():
     asyncio.run(_file_read_max_chars())
 
 async def _file_read_max_chars():
-    from types import SimpleNamespace
     from tools.file import file_write, file_read
-    from tools.registry import ToolContext
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        ctx = ToolContext(
-            config=SimpleNamespace(loop=SimpleNamespace(act=True, workspace_dir=d)),
-            wm=None, task_store=None, episodic=None, semantic=None, emotion=None,
-        )
+        ctx = _tool_ctx(workspace_dir=d)
         fpath = root / "big.txt"
         await file_write({"path": str(fpath), "content": "abcdefghij" * 100}, ctx)  # 1000 chars
 

@@ -10,6 +10,7 @@ build/
 *.egg-info/
 .DS_Store
 *.bak
+.github/
 
 # 运行时工作区文件（由 lingzhou init 生成到 ~/.lingzhou/workspace/，不属于代码库）
 SOUL.md

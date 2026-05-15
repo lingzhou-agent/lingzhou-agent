@@ -39,7 +39,7 @@ from memory.semantic import SemanticMemory, MemoryNode
 from memory.task_store import TaskStore, Task
 from provider import create_provider, create_provider_with_model
 from provider.models_gen import ensure_models_json
-from tools.registry import ToolRegistry, ToolContext
+from tools.registry import ToolRegistry, ToolContext, ToolResult
 from core.behavior_tracker import BehaviorTracker
 from core.soul import SoulManager
 
@@ -121,6 +121,9 @@ _PROGRESS_INFO_TOOLS = frozenset({
     "shell.capabilities",
 })
 
+_VALID_MODEL_TIERS = frozenset({"reader", "reasoner", "repair"})
+_RUN_PROGRESS_CRYSTAL_CHARS = 120
+
 
 def _result_fingerprint(summary: str) -> str:
     text = (summary or "").strip()
@@ -160,6 +163,109 @@ def _action_made_progress(
 
     # 未知工具保守处理：成功视为推进，但后续可按工具类型细化
     return True
+
+
+def _should_continue_within_tick(action: JudgmentOutput) -> bool:
+    """只要本轮仍然是 act，就允许在同一个 tick 里继续续判。"""
+    return action.decision == "act"
+
+
+def _task_model_tier(task: Task | None) -> str | None:
+    if not task:
+        return None
+    tier = (task.model_tier or "").strip()
+    return tier if tier in _VALID_MODEL_TIERS else None
+
+
+def _prefer_tier_for_task(pending_tier: str | None, task: Task | None) -> str | None:
+    if pending_tier in _VALID_MODEL_TIERS:
+        return pending_tier
+    return _task_model_tier(task)
+
+
+async def _refresh_running_runs(task_store: TaskStore) -> list[dict[str, Any]]:
+    """刷新所有 running runs，当前先覆盖 exec-worker 的后台进程生命周期。"""
+    try:
+        from tools.exec import _MANAGER
+    except Exception:
+        return []
+
+    updates: list[dict[str, Any]] = []
+    for run in await task_store.list_runs(status="running", limit=20):
+        if run.worker_type != "exec-worker" or not run.session_id:
+            updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
+            continue
+        info = _MANAGER.get(run.session_id)
+        if info is None:
+            updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
+            continue
+        if not info.finished:
+            stdout_text = info.stdout or ""
+            last_crystal_chars = int(run.extras.get("last_crystal_chars", 0) or 0)
+            crystal_excerpt = ""
+            if len(stdout_text) - last_crystal_chars >= _RUN_PROGRESS_CRYSTAL_CHARS:
+                crystal_excerpt = stdout_text[last_crystal_chars:][-400:].strip()
+                await task_store.update_run(
+                    run.id,
+                    status="running",
+                    output_json={**run.output_json, "progress_excerpt": crystal_excerpt},
+                    log_text=stdout_text[-4000:],
+                    session_id=run.session_id,
+                    extras={"last_crystal_chars": len(stdout_text)},
+                )
+                if run.task_id and crystal_excerpt:
+                    await task_store.set_fact(
+                        f"task:{run.task_id}:progress",
+                        crystal_excerpt[:800],
+                        scope="task",
+                    )
+            updates.append({
+                "run_id": run.id,
+                "task_id": run.task_id,
+                "status": "running",
+                "session_id": run.session_id,
+                "crystal": crystal_excerpt,
+            })
+            continue
+
+        status = "succeeded" if (info.return_code in (0, None) and not info.timed_out and not info.error) else "failed"
+        output_json = dict(run.output_json)
+        output_json.update({
+            "session_id": run.session_id,
+            "return_code": info.return_code,
+            "timed_out": info.timed_out,
+            "stdout": info.stdout[-4000:],
+            "stderr": info.stderr[-2000:],
+            "error": info.error,
+        })
+        await task_store.update_run(
+            run.id,
+            status=status,
+            output_json=output_json,
+            log_text=info.stdout[-4000:],
+            error_text=info.error or ("timed_out" if info.timed_out else (f"exit_code={info.return_code}" if status == "failed" else "")),
+            session_id=run.session_id,
+            extras={
+                "return_code": info.return_code,
+                "timed_out": info.timed_out,
+                "background": info.background,
+            },
+        )
+        if run.task_id:
+            await task_store.update_task_result(
+                run.task_id,
+                {
+                    "last_run_id": run.id,
+                    "last_run_status": status,
+                    "worker_type": run.worker_type,
+                    "tool_name": run.tool_name,
+                    "session_id": run.session_id,
+                    "summary": output_json.get("stdout", "")[:200] or f"process {status}",
+                    "error": output_json.get("error"),
+                },
+            )
+        updates.append({"run_id": run.id, "task_id": run.task_id, "status": status, "session_id": run.session_id})
+    return updates
 
 
 class CognitionLoop:
@@ -456,7 +562,30 @@ class CognitionLoop:
         ctx = self._make_ctx()
 
         # 1. 感知
+        running_updates = await _refresh_running_runs(self._task_store)
         active_task = await self._task_store.get_active()
+        if running_updates:
+            running_count = sum(1 for item in running_updates if item.get("status") == "running")
+            finished_count = sum(1 for item in running_updates if item.get("status") in {"succeeded", "failed", "cancelled"})
+            self._wm.add(WMItem(
+                kind="run_monitor",
+                content=f"[Run 监控] running={running_count} finished={finished_count}",
+                priority=0.58,
+            ))
+            for item in running_updates:
+                crystal = str(item.get("crystal") or "").strip()
+                if crystal:
+                    self._wm.add(WMItem(
+                        kind="progress_crystal",
+                        content=f"[运行中结晶 run#{item.get('run_id')}] {crystal[:280]}",
+                        priority=0.72,
+                    ))
+                    self._episodic.record_event("run_progress", {
+                        "run_id": item.get("run_id"),
+                        "task_id": item.get("task_id"),
+                        "session_id": item.get("session_id"),
+                        "excerpt": crystal[:800],
+                    })
 
         # 调度器：检查到期用户 cron 信号 → 注入 WM（心跳不走此路径）
         for sig in await self._task_store.due_signals():
@@ -651,7 +780,7 @@ class CognitionLoop:
                 cognitive_signals=cognitive_signals,
                 thinking_override=_thinking_override,
                 phase="initial",
-                prefer_tier=self._pending_tier,
+                prefer_tier=_prefer_tier_for_task(self._pending_tier, active_task),
                 routing_overrides=self._pending_routing_overrides,
             )
             # 消费上一轮 LLM 表达的 tier 偏好和 thinking 覆盖（用完即清）
@@ -712,11 +841,11 @@ class CognitionLoop:
                 for _item in self._behavior.on_list(_path, result.summary):
                     self._wm.add(_item)
 
-        # 5b. 内层工具循环（仅 chat/interact 模式：有 user_message 且首轮决策是 act）
-        # 目标：让 LLM 在单次 tick 内连续调用工具直到生成回复，节省 perception 重装 token。
+        # 5b. 内层工具循环（chat + autonomous 共用）
+        # 目标：让 LLM 在单次 tick 内连续调用工具直到本轮无需继续 act，节省 perception 重装 token。
         # 注意：不判断 reply_to_user——首轮 act 可能包含中间 ACK（如"正在扫描..."），
         # 内层循环应继续执行工具调用，最终生成的 reply 会覆盖中间 ACK。
-        if user_message and action.decision == "act":
+        if _should_continue_within_tick(action):
             _tool_history: list[dict] = [{
                 "tool":   action.chosen_action_id or "",
                 "params": action.params or {},
@@ -781,8 +910,8 @@ class CognitionLoop:
                 if action.reply_to_user or action.decision != "act":
                     break
 
-            # 内层循环结束仍无回复时给用户兜底 ACK
-            if not action.reply_to_user:
+            # chat/interact 模式下，内层循环结束仍无回复时给用户兜底 ACK
+            if user_message and not action.reply_to_user:
                 action.reply_to_user = "（已执行完工具链，任务正在后台继续处理）"
 
         # 执行后记忆整合（结晶、WM 注入、情节记录、语义结晶、情绪反写）
@@ -827,6 +956,11 @@ class CognitionLoop:
 
         # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好，存储到下轮传入
         _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+        _task_tier = _task_model_tier(active_task)
+        _persist_tier = _next_tier if _next_tier in _VALID_MODEL_TIERS else (_task_tier or (_actual_tier if _actual_tier in _VALID_MODEL_TIERS else ""))
+        if active_task and _persist_tier and _persist_tier != _task_tier:
+            await self._task_store.update_task_data(active_task.id, {"model_tier": _persist_tier})
+            active_task.model_tier = _persist_tier
         if _next_tier in {"reader", "reasoner", "repair"}:
             self._pending_tier = _next_tier
         else:
@@ -1100,6 +1234,7 @@ class CognitionLoop:
         P2-A: 扩展字段，包含行为循环探针、空闲计数、WM 压力等诊断信息。
         """
         active_task = await self._task_store.get_active()
+        running_runs = await self._task_store.list_runs(status="running", limit=5)
         wm_items = self._wm.get_top(3)
         _bt = self._behavior.snapshot()
         return {
@@ -1114,6 +1249,16 @@ class CognitionLoop:
             "wm_pressure": round(self._wm.pressure, 4),
             "wm_top": [i.get("content", "")[:60] for i in wm_items],
             "idle_cycles": self._idle_cycles,
+            "running_runs": [
+                {
+                    "id": r.id,
+                    "task_id": r.task_id,
+                    "tool": r.tool_name,
+                    "worker": r.worker_type,
+                    "session_id": r.session_id,
+                }
+                for r in running_runs
+            ],
             "action_streak": _bt["action_streak"],
             "read_streak": _bt["read_streak"],
             "loop_probe_version": _bt["loop_probe_version"],

@@ -183,9 +183,9 @@ class LoopConfig(BaseModel):
     max_tool_rounds: int = Field(
         default=8, ge=1,
         description=(
-            "chat/interact 模式（有用户消息）时，单次 tick 内允许的最大工具调用轮次。"
+            "单次 tick 内允许的最大工具调用轮次（chat + autonomous 共用）。"
             "首轮走完整 perception，后续轮追加工具历史直接续判，不重跑感知链路。"
-            "达到上限后自动注入兜底回复，保证 chat 客户端不超时。"
+            "有用户消息时达到上限会注入兜底回复；自主模式则在上限处结束本轮并等待下一 tick。"
         ),
     )
     wait_streak_notify: list[int] = Field(
@@ -256,6 +256,8 @@ class EvolutionConfig(BaseModel):
     sandbox_timeout: float = Field(default=10.0, gt=0, description="沙箱执行超时（秒）")
     max_attempts: int = Field(default=3, ge=1, description="单次进化最多重试次数")
     backup: bool = Field(default=True, description="进化前是否备份原始文件")
+    verify_min_runs: int = Field(default=3, ge=1, description="进化后最少观察多少次同工具 run，再判定效果是否稳定")
+    auto_rollback_on_regression: bool = Field(default=True, description="进化后若观测到同工具明显退化，是否自动回滚到 .bak 版本")
     trigger_min_failures: int = Field(default=3, ge=1, description="时间窗内触发进化所需最小失败次数")
     trigger_window_minutes: float = Field(default=60.0, gt=0, description="进化触发时间窗口（分钟）；窗口内失败密度决定是否进化")
     error_streak_evolve: int = Field(

@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import sys
 import traceback
 from dataclasses import dataclass
+from datetime import datetime, UTC, timedelta
 from pathlib import Path
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 _log = logging.getLogger("lingzhou.evolution")
 
@@ -30,6 +32,41 @@ class EvolutionResult:
     target: str = ""       # 工具名或模块名
     reason: str = ""
     new_code: str = ""
+
+
+def _verification_fact_key(target: str) -> str:
+    return f"evolution:verify:{target}"
+
+
+def _parse_ts(raw: str) -> datetime:
+    text = (raw or "").strip()
+    if not text:
+        return datetime.fromtimestamp(0, UTC)
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except Exception:
+        return datetime.fromtimestamp(0, UTC)
+
+
+def _verification_outcome(baseline: dict[str, int], observed: dict[str, int], min_runs: int) -> str:
+    observed_runs = int(observed.get("runs", 0) or 0)
+    observed_failures = int(observed.get("failures", 0) or 0)
+    observed_successes = int(observed.get("successes", 0) or 0)
+    baseline_failures = int(baseline.get("failures", 0) or 0)
+    baseline_runs = max(int(baseline.get("runs", 0) or 0), 1)
+    baseline_failure_rate = baseline_failures / baseline_runs
+    observed_failure_rate = observed_failures / max(observed_runs, 1)
+
+    if observed_runs < min_runs:
+        return "pending"
+    if observed_failures > 0 and observed_successes == 0 and observed_failure_rate >= baseline_failure_rate:
+        return "regressed"
+    return "verified"
 
 
 class EvolutionEngine:
@@ -66,6 +103,108 @@ class EvolutionEngine:
         entry = self._registry.get(tool_name)
         return entry is not None and entry.manifest.name == tool_name
 
+    async def _capture_validation_metrics(
+        self,
+        ctx: "ToolContext",
+        *,
+        target: str,
+        since: datetime | None = None,
+    ) -> dict[str, int]:
+        failures = await ctx.task_store.list_failures(limit=200)
+        runs = await ctx.task_store.list_runs(limit=200)
+        failure_count = 0
+        run_count = 0
+        success_count = 0
+
+        for failure in failures:
+            if failure.kind != target:
+                continue
+            if since and _parse_ts(failure.created_at) < since:
+                continue
+            failure_count += 1
+
+        for run in runs:
+            if run.tool_name != target:
+                continue
+            if since and _parse_ts(run.created_at) < since:
+                continue
+            run_count += 1
+            if run.status == "succeeded":
+                success_count += 1
+
+        return {
+            "failures": failure_count,
+            "runs": run_count,
+            "successes": success_count,
+        }
+
+    async def _record_pending_verification(
+        self,
+        ctx: "ToolContext",
+        *,
+        target: str,
+        tool_path: Path,
+        backup_path: Path,
+    ) -> None:
+        baseline = await self._capture_validation_metrics(ctx, target=target)
+        payload = {
+            "target": target,
+            "tool_path": str(tool_path),
+            "backup_path": str(backup_path),
+            "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+            "baseline": baseline,
+        }
+        await ctx.task_store.set_fact(
+            _verification_fact_key(target),
+            json.dumps(payload, ensure_ascii=False),
+            scope="system",
+        )
+
+    async def _maybe_evaluate_verifications(self, ctx: "ToolContext") -> list[EvolutionResult]:
+        facts = await ctx.task_store.list_facts(prefix="evolution:verify:", limit=50)
+        results: list[EvolutionResult] = []
+        for key, raw in facts:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                await ctx.task_store.delete_fact(key)
+                continue
+            target = str(payload.get("target") or "")
+            if not target:
+                await ctx.task_store.delete_fact(key)
+                continue
+            since = _parse_ts(str(payload.get("created_at") or ""))
+            observed = await self._capture_validation_metrics(ctx, target=target, since=since)
+            outcome = _verification_outcome(
+                payload.get("baseline") or {},
+                observed,
+                self._cfg.evolution.verify_min_runs,
+            )
+            if outcome == "pending":
+                continue
+            if outcome == "verified":
+                await ctx.task_store.delete_fact(key)
+                results.append(EvolutionResult(success=True, target=f"verify:{target}", reason=f"observed={observed}"))
+                continue
+
+            backup_path = Path(str(payload.get("backup_path") or ""))
+            tool_path = Path(str(payload.get("tool_path") or ""))
+            rolled_back = False
+            if self._cfg.evolution.auto_rollback_on_regression and backup_path.exists() and tool_path.exists():
+                previous_src = backup_path.read_text(encoding="utf-8")
+                self._restore_text(tool_path, previous_src)
+                self._reload_module_from_path(f"tools.{tool_path.stem}", tool_path)
+                rolled_back = True
+            await ctx.task_store.delete_fact(key)
+            results.append(
+                EvolutionResult(
+                    success=rolled_back,
+                    target=f"rollback:{target}" if rolled_back else f"verify:{target}",
+                    reason=f"observed={observed}",
+                )
+            )
+        return results
+
     async def run(self, ctx: "ToolContext") -> list[EvolutionResult]:
         """主入口：分析近期失败，决定是否进化某个工具。
 
@@ -76,9 +215,11 @@ class EvolutionEngine:
         if not self._cfg.evolution.enabled:
             return []
 
+        results = await self._maybe_evaluate_verifications(ctx)
+
         failures = await ctx.task_store.list_failures(limit=20)
         if not failures:
-            return []
+            return results
 
         # ── 时间窗过滤：只看最近 trigger_window_minutes 内的失败 ────────────────
         from datetime import datetime, timezone, timedelta
@@ -98,10 +239,9 @@ class EvolutionEngine:
 
         recent = [f for f in failures if _in_window(f)]
         if not recent:
-            return []
+            return results
 
         trigger_min = self._cfg.evolution.trigger_min_failures
-        results: list[EvolutionResult] = []
 
         # ── 判断模板进化：时间窗内解析失败 >= trigger_min ──────────────────────
         counts = Counter(f.kind for f in recent if f.kind)
@@ -142,7 +282,7 @@ class EvolutionEngine:
             return results
 
         feedback = "\n".join(f"- {f.summary}" for f in recent if f.kind == most_common_tool)
-        result = await self.evolve_tool(most_common_tool, tool_path, feedback)
+        result = await self.evolve_tool(most_common_tool, tool_path, feedback, ctx=ctx)
         results.append(result)
 
         # ── Ethos 基线进化：尾部追加，不与工具/提示词进化互斥 ────────────────
@@ -311,7 +451,7 @@ class EvolutionEngine:
                 prompt_path.write_text(prompt_path.with_suffix(".md.bak").read_text(encoding="utf-8"), encoding="utf-8")
             return EvolutionResult(success=False, target=f"prompt:{prompt_key}", reason=str(exc))
 
-    async def evolve_tool(self, tool_name: str, tool_path: Path, feedback: str) -> EvolutionResult:
+    async def evolve_tool(self, tool_name: str, tool_path: Path, feedback: str, ctx: "ToolContext" | None = None) -> EvolutionResult:
         """根据反馈重写工具，热替换。"""
         current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
         new_src = ""  # 保证在 SyntaxError 重试分支中始终有定义
@@ -338,8 +478,9 @@ class EvolutionEngine:
                 previous_src = current_src
 
                 # 备份
+                backup_path = tool_path.with_suffix(".py.bak")
                 if self._cfg.evolution.backup and tool_path.exists():
-                    tool_path.with_suffix(".py.bak").write_text(
+                    backup_path.write_text(
                         previous_src, encoding="utf-8"
                     )
 
@@ -358,6 +499,13 @@ class EvolutionEngine:
                     raise
 
                 _log.info("[evolution] 工具 %r 已进化并热加载（尝试 %d）", tool_name, attempt + 1)
+                if ctx is not None and self._cfg.evolution.backup and backup_path.exists():
+                    await self._record_pending_verification(
+                        ctx,
+                        target=tool_name,
+                        tool_path=tool_path,
+                        backup_path=backup_path,
+                    )
                 await self._update_dreams(f"习得改进能力：{tool_name} 工具已根据失败反馈重写并热加载。")
                 return EvolutionResult(success=True, target=tool_name, new_code=new_src)
 

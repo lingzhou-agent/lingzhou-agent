@@ -49,6 +49,7 @@ async def task_advance(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         ToolParam("title", "string", "任务标题（简洁）", required=True),
         ToolParam("goal", "string", "任务目标（详细）", required=False),
         ToolParam("priority", "string", "优先级: low/normal/high/critical", required=False),
+        ToolParam("model_tier", "string", "可选：任务默认模型层级 reader/reasoner/repair", required=False),
         ToolParam("chain_id", "string", "可选：任务链 id；不传则自动继承或创建", required=False),
         ToolParam("parent_task_id", "number", "可选：父任务 id，用于形成任务链", required=False),
         ToolParam("current_step", "string", "可选：当前步骤名", required=False),
@@ -66,6 +67,7 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     chain_id = (params.get("chain_id") or (parent.chain_id if parent and parent.chain_id else f"chain-{uuid.uuid4().hex[:8]}"))
     current_step = (params.get("current_step") or "").strip()
     next_step = (params.get("next_step") or "").strip()
+    model_tier = (params.get("model_tier") or "").strip()
     task_id = await ctx.task_store.add_task(
         title,
         goal,
@@ -75,6 +77,7 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         parent_task_id=str(parent.id) if parent else (str(parent_task_id or "") if parent_task_id else ""),
         current_step=current_step,
         next_step=next_step,
+        model_tier=model_tier,
     )
     return ToolResult(
         summary=f"任务已创建: [{task_id}] {title}",
@@ -162,6 +165,7 @@ async def task_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         ToolParam("next_step", "string", "下一步计划", required=False),
         ToolParam("status", "string", "新状态: pending/ready/in_progress/resumed/waiting/blocked/failed", required=False),
         ToolParam("current_step", "string", "当前步骤名", required=False),
+        ToolParam("model_tier", "string", "可选：任务默认模型层级 reader/reasoner/repair", required=False),
     ],
 ))
 async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -171,14 +175,17 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     status = params.get("status") or task.status
     next_step = params.get("next_step") or task.next_step
     current_step = (params.get("current_step") or "").strip()
+    model_tier = (params.get("model_tier") or "").strip()
     if current_step:
         await ctx.task_store.update_task_data(task.id, {"current_step": current_step})
+    if model_tier:
+        await ctx.task_store.update_task_data(task.id, {"model_tier": model_tier})
     await ctx.task_store.update_status(task.id, status, next_step)
     return ToolResult(
         summary=f"任务 [{task.id}] 已更新: status={status}",
         evidence=f"task_id={task.id} next_step={next_step[:80]}",
         resource_key=str(task.id),
-        state_delta={"task_status": status, "next_step": next_step, "current_step": current_step or task.current_step},
+        state_delta={"task_status": status, "next_step": next_step, "current_step": current_step or task.current_step, "model_tier": model_tier or task.model_tier},
         metadata={"task_id": task.id, "chain_id": task.chain_id},
     )
 

@@ -13,8 +13,10 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
+from core.worker import WorkerLayer
 from tools.registry import ToolResult, ToolContext
 
 _log = logging.getLogger("lingzhou.execution")
@@ -29,6 +31,9 @@ if TYPE_CHECKING:
 
 _DURABLE_FAILURE_TTL_SEC = 7200
 _DURABLE_FAILURE_THRESHOLD = 3
+
+_EXEC_RUN_TOOLS = frozenset({"exec", "process.write", "process.poll", "process.log", "process.kill", "process.list"})
+_MULTIMODAL_RUN_TOOLS = frozenset({"image.analyze"})
 
 
 def _action_key_param(params: dict[str, Any] | None) -> str:
@@ -68,10 +73,84 @@ def _classify_durable_failure(result: ToolResult) -> str | None:
     return None
 
 
+def _infer_run_profile(tool_name: str) -> tuple[str, str]:
+    if tool_name in _EXEC_RUN_TOOLS:
+        return "exec", "exec-worker"
+    if tool_name in _MULTIMODAL_RUN_TOOLS:
+        return "multimodal", "multimodal-worker"
+    return "tool_chain", "tool-chain-worker"
+
+
+def _run_status_from_result(result: ToolResult) -> str:
+    if (
+        isinstance(result.state_delta, dict)
+        and result.state_delta.get("process") == "started"
+        and result.state_delta.get("background")
+        and result.metadata.get("session_id")
+    ):
+        return "running"
+    if result.error and not result.skipped:
+        return "failed"
+    if result.skipped:
+        return "cancelled"
+    return "succeeded"
+
+
+def _build_meta_reflection(
+    *,
+    run_id: int,
+    task_id: int,
+    tool_name: str,
+    result: ToolResult,
+) -> dict[str, str | int] | None:
+    if not (result.error or result.skipped):
+        return None
+    text = "\n".join(x for x in [tool_name, result.error or "", result.summary, result.evidence] if x).lower()
+    target_kind = "tool"
+    trigger = "failure_pattern"
+    loop_level = "single"
+    diagnosis = f"动作 {tool_name or 'unknown'} 在 run#{run_id} 结束为 {_run_status_from_result(result)}，需要复盘失败来源。"
+    proposal = "优先检查工具实现、输入参数或外部资源，然后重试同一动作。"
+    verification_plan = "在相同 task 上用同一输入重跑一次，确认错误消失或 summary 改善。"
+
+    if "knownstablefailure" in text:
+        target_kind = "threshold"
+        diagnosis = f"动作 {tool_name or 'unknown'} 被稳定失败降噪机制拦截，说明当前静默阈值或外部状态需要复查。"
+        proposal = "确认外部状态是否恢复；若频繁误杀，则调整 durable failure 阈值或静默策略。"
+        verification_plan = "等待静默窗口结束后重跑，并比较是否仍被直接跳过。"
+    elif "emptypath" in text or "path 不能为空" in text:
+        target_kind = "task_split"
+        loop_level = "double"
+        diagnosis = f"动作 {tool_name or 'unknown'} 缺少必要资源定位，问题更像任务拆分不完整，而不只是工具报错。"
+        proposal = "在创建读取/写入类 run 之前，先增加资源发现或路径确认步骤，再执行目标动作。"
+        verification_plan = "先补一条定位资源的子步骤，再重跑原动作，确认不再出现空路径错误。"
+    elif "toolnotfound" in text or "工具不存在" in text:
+        target_kind = "routing"
+        loop_level = "double"
+        diagnosis = f"动作 {tool_name or 'unknown'} 未注册，说明判断层的动作选择或工具清单存在漂移。"
+        proposal = "校正 action 选择规则或工具清单注入，避免继续选择不存在的动作。"
+        verification_plan = "重新做一次 judgment，确认 chosen_action_id 落在已注册工具集合内。"
+
+    return {
+        "reflection_id": f"mr-{uuid.uuid4().hex[:12]}",
+        "target_kind": target_kind,
+        "trigger": trigger,
+        "loop_level": loop_level,
+        "diagnosis": diagnosis,
+        "proposal": proposal,
+        "verification_plan": verification_plan,
+        "decision": "defer",
+        "task_id": task_id,
+        "run_id": run_id,
+        "tool_name": tool_name,
+    }
+
+
 class ExecutionLayer:
     def __init__(self, registry: "ToolRegistry", cfg: "Config") -> None:
         self._registry = registry
         self._cfg = cfg
+        self._workers = WorkerLayer()
 
     async def dispatch(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
         """根据 decision 类型分发执行。"""
@@ -106,14 +185,34 @@ class ExecutionLayer:
                 )
 
     async def _dispatch_act(self, action: "JudgmentOutput", ctx: ToolContext) -> ToolResult:
+        run_id: int | None = None
+        worker_type = "tool-chain-worker"
+        active_task = await ctx.task_store.get_active() if ctx.task_store is not None else None
+        if ctx.task_store is not None:
+            run_type, worker_type = _infer_run_profile(action.chosen_action_id or "")
+            run_id = await ctx.task_store.add_run(
+                task_id=active_task.id if active_task else 0,
+                run_type=run_type,
+                worker_type=worker_type,
+                status="running",
+                input_json={
+                    "decision": action.decision,
+                    "tool": action.chosen_action_id or "",
+                    "params": action.params or {},
+                },
+                tool_name=action.chosen_action_id or "",
+            )
+
         entry = self._registry.get(action.chosen_action_id)
         if not entry:
-            return ToolResult(
+            result = ToolResult(
                 summary=f"工具不存在: {action.chosen_action_id!r}",
                 error="ToolNotFound",
                 skipped=True,
                 kind="error",
             )
+            await self._finalize_run(run_id, result, ctx)
+            return result
 
         if self._cfg.loop.debug:
             _log.debug("[exec] %s params=%s", action.chosen_action_id, action.params)
@@ -132,7 +231,7 @@ class ExecutionLayer:
                 count = int(info.get("count") or 0)
                 reason = str(info.get("reason") or "stable_failure")
                 if count >= _DURABLE_FAILURE_THRESHOLD and muted_until > time.time():
-                    return ToolResult(
+                    result = ToolResult(
                         summary=(
                             f"跳过已知稳定失败动作：{action.chosen_action_id} {_action_key_param(action.params)}\n"
                             f"原因: {reason}；最近已连续失败 {count} 次。"
@@ -144,9 +243,11 @@ class ExecutionLayer:
                         kind="execute_result",
                         priority=0.4,
                     )
+                    await self._finalize_run(run_id, result, ctx)
+                    return result
 
         try:
-            result = await entry.handler(action.params, ctx)
+            result = await self._workers.dispatch(worker_type, entry, action, ctx)
         except Exception as exc:
             result = ToolResult(
                 summary=f"工具执行异常: {exc}",
@@ -157,8 +258,7 @@ class ExecutionLayer:
 
         # 失败时写入 failures 表，绑定当前任务（P2-B 任务边界原则）
         if result.error and not result.skipped and ctx.task_store is not None:
-            task = await ctx.task_store.get_active()
-            task_id = str(task.id) if task else ""
+            task_id = str(active_task.id) if active_task else ""
             await ctx.task_store.record_failure(
                 kind=action.chosen_action_id,
                 summary=result.summary[:300],
@@ -203,4 +303,61 @@ class ExecutionLayer:
                     scope="system",
                 )
 
+        await self._finalize_run(run_id, result, ctx, active_task_id=active_task.id if active_task else None)
         return result
+
+    async def _finalize_run(
+        self,
+        run_id: int | None,
+        result: ToolResult,
+        ctx: ToolContext,
+        *,
+        active_task_id: int | None = None,
+    ) -> None:
+        if run_id is None or ctx.task_store is None:
+            return
+        result.metadata.setdefault("run_id", run_id)
+        if isinstance(result.state_delta, dict):
+            result.state_delta.setdefault("run_id", run_id)
+        status = _run_status_from_result(result)
+        await ctx.task_store.update_run(
+            run_id,
+            status=status,
+            output_json=result.to_dict(),
+            log_text=result.summary[:4000],
+            error_text=result.error or "",
+            session_id=str(result.metadata.get("session_id") or ""),
+        )
+        if active_task_id:
+            await ctx.task_store.update_task_result(
+                active_task_id,
+                {
+                    "last_run_id": run_id,
+                    "last_run_status": status,
+                    "worker_type": str(result.metadata.get("worker_type") or ""),
+                    "tool_name": str(result.metadata.get("tool_name") or ""),
+                    "session_id": str(result.metadata.get("session_id") or ""),
+                    "summary": result.summary,
+                    "error": result.error,
+                },
+            )
+        meta = _build_meta_reflection(
+            run_id=run_id,
+            task_id=active_task_id or 0,
+            tool_name=str(result.metadata.get("tool_name") or ""),
+            result=result,
+        )
+        if meta:
+            await ctx.task_store.add_meta_reflection(
+                reflection_id=str(meta["reflection_id"]),
+                target_kind=str(meta["target_kind"]),
+                trigger=str(meta["trigger"]),
+                loop_level=str(meta["loop_level"]),
+                diagnosis=str(meta["diagnosis"]),
+                proposal=str(meta["proposal"]),
+                verification_plan=str(meta["verification_plan"]),
+                decision=str(meta["decision"]),
+                task_id=int(meta["task_id"]),
+                run_id=int(meta["run_id"]),
+                tool_name=str(meta["tool_name"]),
+            )

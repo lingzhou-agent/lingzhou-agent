@@ -5,14 +5,18 @@
 """
 from __future__ import annotations
 
+from typing import Any
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+
+MessageContent = str | list[dict[str, Any]]
 
 
 @dataclass
 class Message:
     role: str   # "system" | "user" | "assistant"
-    content: str
+    content: MessageContent
 
 
 @runtime_checkable
