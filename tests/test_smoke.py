@@ -78,6 +78,12 @@ def _execution_layer(reg, *, debug: bool = False):
     return ExecutionLayer(reg, cast(Any, SimpleNamespace(loop=SimpleNamespace(debug=debug))))
 
 
+def _judgment_output(**kwargs: Any) -> Any:
+    from core.judgment import JudgmentOutput
+
+    return cast(Any, JudgmentOutput)(**kwargs)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 基础模块
 # ══════════════════════════════════════════════════════════════════════════════
@@ -201,6 +207,61 @@ def test_exec_background_result_stays_running():
         metadata={"session_id": "exec-1"},
     )
     assert _run_status_from_result(result) == "running"
+
+
+def test_worker_layer_dispatches_specialized_handlers():
+    asyncio.run(_worker_layer_dispatches_specialized_handlers())
+
+
+async def _worker_layer_dispatches_specialized_handlers():
+    from core.judgment import JudgmentOutput
+    from core.worker import WorkerLayer
+    from tools.registry import ToolEntry, ToolManifest, ToolResult
+
+    async def _handler(params, ctx):
+        return ToolResult(
+            summary="ok",
+            resource_key=str(params.get("resource_key") or ""),
+            state_delta=dict(params.get("state_delta") or {}),
+            metadata=dict(params.get("metadata") or {}),
+        )
+
+    entry = ToolEntry(manifest=ToolManifest(name="demo", description="demo"), handler=_handler)
+    layer = WorkerLayer()
+    ctx = _tool_ctx()
+
+    exec_result = await layer.dispatch(
+        "exec-worker",
+        entry,
+        _judgment_output(decision="act", chosen_action_id="exec", params={
+            "resource_key": "exec-1",
+            "state_delta": {"process": "started", "background": True},
+        }),
+        ctx,
+    )
+    assert exec_result.metadata["worker_path"] == "exec"
+    assert exec_result.metadata["execution_mode"] == "background"
+    assert exec_result.metadata["session_id"] == "exec-1"
+
+    multimodal_result = await layer.dispatch(
+        "multimodal-worker",
+        entry,
+        _judgment_output(decision="act", chosen_action_id="image.analyze", params={"paths": ["a.png", "b.png"]}),
+        ctx,
+    )
+    assert multimodal_result.metadata["worker_path"] == "multimodal"
+    assert multimodal_result.metadata["modality"] == "image"
+    assert multimodal_result.metadata["input_count"] == 2
+
+    llm_result = await layer.dispatch(
+        "llm-worker",
+        entry,
+        _judgment_output(decision="act", chosen_action_id="llm.simulated", params={"monitor_fact_key": "run:llm-1"}),
+        ctx,
+    )
+    assert llm_result.metadata["worker_path"] == "llm"
+    assert llm_result.metadata["reasoning_mode"] == "tool-mediated-llm"
+    assert llm_result.metadata["run_monitor"]["key"] == "run:llm-1"
 
 
 def test_task_store_fact_listing_and_delete():
@@ -807,7 +868,7 @@ async def _execution_durable_failure_sensing():
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
         ctx = _tool_ctx(debug=False, task_store=store)
-        action = JudgmentOutput(
+        action = _judgment_output(
             decision="act",
             chosen_action_id="exec",
             params={"command": "bash /definitely/missing-lingzhou-script.sh"},
@@ -850,7 +911,7 @@ async def _execution_durable_failure_sensing_for_file_tool():
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
         ctx = _tool_ctx(debug=False, task_store=store)
-        action = JudgmentOutput(
+        action = _judgment_output(
             decision="act",
             chosen_action_id="file.read",
             params={"path": ""},
@@ -894,7 +955,7 @@ async def _execution_dispatch_records_run():
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
         ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
-        action = JudgmentOutput(
+        action = _judgment_output(
             decision="act",
             chosen_action_id="file.read",
             params={"path": str(target)},
@@ -957,7 +1018,7 @@ async def _execution_failure_creates_meta_reflection():
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
         ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
-        action = JudgmentOutput(
+        action = _judgment_output(
             decision="act",
             chosen_action_id="file.read",
             params={"path": ""},
@@ -1024,7 +1085,7 @@ async def _execution_generic_failure_meta_reflection_defers():
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
         ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
-        action = JudgmentOutput(
+        action = _judgment_output(
             decision="act",
             chosen_action_id="file.read",
             params={"path": str(root / "missing.txt")},
@@ -1111,13 +1172,81 @@ async def _ingest_actionable_meta_reflections_dedupes():
 
         top = wm.get_top()
         assert len([item for item in top if item["kind"] == "meta_reflection"]) == 2
+        assert any("set routing guard" in item["content"] for item in top)
+        assert any("reset durable failure policy" in item["content"] for item in top)
 
         task_fact, found = await store.get_fact("task:7:meta_reflection")
         assert found
         assert json.loads(task_fact)["decision"] == "apply"
 
+        routing_guard, found = await store.get_fact("task:7:routing_guard")
+        assert found
+        assert json.loads(routing_guard)["tool_name"] == "file.read"
+
+        policy_raw, found = await store.get_fact("control:durable_failure_policy")
+        assert found
+        assert json.loads(policy_raw) == {"threshold": 3, "ttl_sec": 7200}
+
         again = await _ingest_actionable_meta_reflections(store, wm)
         assert again == []
+        await store.close()
+
+
+def test_meta_reflection_threshold_apply_changes_runtime_policy():
+    asyncio.run(_meta_reflection_threshold_apply_changes_runtime_policy())
+
+
+async def _meta_reflection_threshold_apply_changes_runtime_policy():
+    from core.judgment import JudgmentOutput
+    from core.loop import _ingest_actionable_meta_reflections
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        await store.add_meta_reflection(
+            reflection_id="mr-threshold-apply",
+            target_kind="threshold",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="稳定失败阈值过紧",
+            proposal="放宽 durable failure 阈值",
+            verification_plan="第四次失败前不应静默",
+            decision="apply",
+            tool_name="file.read",
+        )
+        wm = WorkingMemory(capacity=10)
+        injected = await _ingest_actionable_meta_reflections(store, wm)
+        assert injected == ["mr-threshold-apply"]
+
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+        action = _judgment_output(
+            decision="act",
+            chosen_action_id="file.read",
+            params={"path": ""},
+            rationale="test threshold policy apply",
+        )
+
+        first = await layer.dispatch(action, ctx)
+        second = await layer.dispatch(action, ctx)
+        third = await layer.dispatch(action, ctx)
+        fourth = await layer.dispatch(action, ctx)
+        fifth = await layer.dispatch(action, ctx)
+
+        assert first.error == "EmptyPath"
+        assert second.error == "EmptyPath"
+        assert third.error == "EmptyPath"
+        assert fourth.error == "EmptyPath"
+        assert fifth.error == "KnownStableFailure"
+
+        policy_raw, found = await store.get_fact("control:durable_failure_policy")
+        assert found
+        assert json.loads(policy_raw) == {"threshold": 4, "ttl_sec": 3600}
         await store.close()
 
 
@@ -1148,7 +1277,7 @@ async def _execution_background_run_does_not_record_completion_early():
         reg.discover(_proj_root() / "tools")
         layer = _execution_layer(reg)
         ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
-        action = JudgmentOutput(
+        action = _judgment_output(
             decision="act",
             chosen_action_id="exec",
             params={"command": 'python3 -c "import time; time.sleep(5)"', "background": True, "timeout": 5},
@@ -1901,7 +2030,7 @@ def test_behavior_gate_passthrough():
         repeat_read_path = ""
         loop_probe_version = 5
 
-    action = JudgmentOutput(
+    action = _judgment_output(
         decision="act",
         chosen_action_id="shell.run",
         params={"command": "ls"},
@@ -1957,7 +2086,7 @@ def test_action_made_progress_result_aware():
     from core.loop import _action_made_progress, _result_fingerprint
     from tools.registry import ToolResult
 
-    list_action = JudgmentOutput(decision="act", chosen_action_id="file.list", params={"path": "/tmp"})
+    list_action = _judgment_output(decision="act", chosen_action_id="file.list", params={"path": "/tmp"})
     list_res = ToolResult(summary="a.txt\nb.txt\n")
     assert _action_made_progress(list_action, list_res, prev_sig="", prev_fp="") is True
     assert _action_made_progress(
@@ -1967,11 +2096,11 @@ def test_action_made_progress_result_aware():
         prev_fp=_result_fingerprint(list_res.summary),
     ) is False
 
-    write_action = JudgmentOutput(decision="act", chosen_action_id="file.write", params={"path": "/tmp/x"})
+    write_action = _judgment_output(decision="act", chosen_action_id="file.write", params={"path": "/tmp/x"})
     write_res = ToolResult(summary="写入成功: /tmp/x")
     assert _action_made_progress(write_action, write_res) is True
 
-    fail_action = JudgmentOutput(decision="act", chosen_action_id="file.read", params={"path": "/tmp/missing"})
+    fail_action = _judgment_output(decision="act", chosen_action_id="file.read", params={"path": "/tmp/missing"})
     fail_res = ToolResult(summary="文件不存在: /tmp/missing", error="FileNotFound")
     assert _action_made_progress(fail_action, fail_res) is False
 
@@ -1980,8 +2109,8 @@ def test_should_continue_within_tick_for_autonomous_act():
     from core.judgment import JudgmentOutput
     from core.loop import _should_continue_within_tick
 
-    assert _should_continue_within_tick(JudgmentOutput(decision="act", chosen_action_id="file.read")) is True
-    assert _should_continue_within_tick(JudgmentOutput(decision="wait")) is False
+    assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
+    assert _should_continue_within_tick(_judgment_output(decision="wait")) is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════

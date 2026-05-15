@@ -284,10 +284,66 @@ async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: Working
         _, found = await task_store.get_fact(fact_key)
         if found:
             continue
+        applied_change = "recorded"
+        if reflection.target_kind == "threshold":
+            raw_policy, policy_found = await task_store.get_fact("control:durable_failure_policy")
+            policy = {"threshold": 3, "ttl_sec": 7200}
+            if policy_found and raw_policy.strip():
+                try:
+                    loaded = json.loads(raw_policy)
+                    if isinstance(loaded, dict):
+                        policy["threshold"] = int(loaded.get("threshold") or policy["threshold"])
+                        policy["ttl_sec"] = int(loaded.get("ttl_sec") or policy["ttl_sec"])
+                except Exception:
+                    pass
+            if reflection.decision == "rollback":
+                policy = {"threshold": 3, "ttl_sec": 7200}
+                applied_change = "reset durable failure policy"
+            else:
+                policy["threshold"] = max(1, policy["threshold"] + 1)
+                policy["ttl_sec"] = max(900, policy["ttl_sec"] // 2)
+                applied_change = f"set durable failure threshold={policy['threshold']} ttl={policy['ttl_sec']}"
+            await task_store.set_fact("control:durable_failure_policy", json.dumps(policy, ensure_ascii=False), scope="system")
+        elif reflection.target_kind == "task_split" and reflection.task_id:
+            await task_store.set_fact(
+                f"task:{reflection.task_id}:needs_replan",
+                json.dumps(
+                    {
+                        "reflection_id": reflection.id,
+                        "decision": reflection.decision,
+                        "proposal": reflection.proposal,
+                        "verification_plan": reflection.verification_plan,
+                    },
+                    ensure_ascii=False,
+                ),
+                scope="task",
+            )
+            applied_change = "set task replan hint"
+        elif reflection.target_kind == "routing":
+            if reflection.task_id:
+                await task_store.set_fact(
+                    f"task:{reflection.task_id}:routing_guard",
+                    json.dumps(
+                        {
+                            "reflection_id": reflection.id,
+                            "decision": reflection.decision,
+                            "tool_name": reflection.tool_name,
+                            "proposal": reflection.proposal,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    scope="task",
+                )
+            if reflection.decision == "rollback":
+                await task_store.set_fact("pref:routing_overrides", "", scope="system")
+                applied_change = "cleared routing overrides"
+            else:
+                applied_change = "set routing guard"
         wm.add(WMItem(
             kind="meta_reflection",
             content=(
                 f"[双环反思 {reflection.decision}] target={reflection.target_kind} tool={reflection.tool_name or 'unknown'}\n"
+                f"执行：{applied_change}\n"
                 f"诊断：{reflection.diagnosis}\n"
                 f"建议：{reflection.proposal}\n"
                 f"验证：{reflection.verification_plan}"

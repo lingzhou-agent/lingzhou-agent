@@ -36,6 +36,33 @@ _EXEC_RUN_TOOLS = frozenset({"exec", "process.write", "process.poll", "process.l
 _MULTIMODAL_RUN_TOOLS = frozenset({"image.analyze"})
 
 
+def _default_durable_failure_policy() -> dict[str, int]:
+    return {
+        "threshold": _DURABLE_FAILURE_THRESHOLD,
+        "ttl_sec": _DURABLE_FAILURE_TTL_SEC,
+    }
+
+
+async def _load_durable_failure_policy(task_store: "TaskStore | None") -> dict[str, int]:
+    policy = _default_durable_failure_policy()
+    if task_store is None:
+        return policy
+    raw, found = await task_store.get_fact("control:durable_failure_policy")
+    if not found or not raw.strip():
+        return policy
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return policy
+    threshold = int(data.get("threshold") or policy["threshold"])
+    ttl_sec = int(data.get("ttl_sec") or policy["ttl_sec"])
+    if threshold > 0:
+        policy["threshold"] = threshold
+    if ttl_sec > 0:
+        policy["ttl_sec"] = ttl_sec
+    return policy
+
+
 def _action_key_param(params: dict[str, Any] | None) -> str:
     p = params or {}
     return (
@@ -365,6 +392,9 @@ class ExecutionLayer:
         worker_type = "tool-chain-worker"
         active_task = await ctx.task_store.get_active() if ctx.task_store is not None else None
         task_tier = (active_task.model_tier or "").strip() if active_task is not None else ""
+        durable_policy = await _load_durable_failure_policy(ctx.task_store)
+        durable_threshold = int(durable_policy.get("threshold") or _DURABLE_FAILURE_THRESHOLD)
+        durable_ttl_sec = int(durable_policy.get("ttl_sec") or _DURABLE_FAILURE_TTL_SEC)
         if ctx.task_store is not None:
             run_type, worker_type = _infer_run_profile(action.chosen_action_id or "")
             run_id = await ctx.task_store.add_run(
@@ -418,7 +448,7 @@ class ExecutionLayer:
                 muted_until = float(info.get("muted_until") or 0)
                 count = int(info.get("count") or 0)
                 reason = str(info.get("reason") or "stable_failure")
-                if count >= _DURABLE_FAILURE_THRESHOLD and muted_until > time.time():
+                if count >= durable_threshold and muted_until > time.time():
                     result = ToolResult(
                         summary=(
                             f"跳过已知稳定失败动作：{action.chosen_action_id} {_action_key_param(action.params)}\n"
@@ -473,7 +503,9 @@ class ExecutionLayer:
                     "count": count,
                     "last_summary": result.summary[:200],
                     "last_seen": time.time(),
-                    "muted_until": time.time() + _DURABLE_FAILURE_TTL_SEC if count >= _DURABLE_FAILURE_THRESHOLD else 0,
+                    "muted_until": time.time() + durable_ttl_sec if count >= durable_threshold else 0,
+                    "policy_threshold": durable_threshold,
+                    "policy_ttl_sec": durable_ttl_sec,
                 }
                 await ctx.task_store.set_fact(failure_key, json.dumps(payload, ensure_ascii=False), scope="system")
             elif not result.error:
