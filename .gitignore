@@ -19,3 +19,16 @@ DREAMS.md
 USER.md
 TOOLS.md
 HEARTBEAT.md
+MEMORY.md
+
+# 运行时状态 / 迁移产物 / 本地导入物（不应进入 Git）
+_migration_out/
+.lingzhou/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.wal
+*.shm
+*.tmp-*
+*.trajectory.jsonl

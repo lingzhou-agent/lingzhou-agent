@@ -177,6 +177,8 @@ Copy `lingzhou.json.example` to `lingzhou.json` and edit:
 | [blueprint.md](docs/blueprint.md) | System architecture | 系统架构蓝图 |
 | [chat-and-task.md](docs/chat-and-task.md) | Chat vs Task design | Chat 与 Task 的职责 |
 | [memory-architecture.md](docs/memory-architecture.md) | Four memory layers | 四层记忆架构 |
+| [blueprint.md](docs/blueprint.md) | System blueprint | 最新系统蓝图 |
+| [ROADMAP-2026.5.15.md](docs/ROADMAP-2026.5.15.md) | Active roadmap | 当前活跃路线图 |
 | [bootstrap-and-workspace.md](docs/bootstrap-and-workspace.md) | Workspace Markdown system | Workspace Markdown 体系 |
 | [soul-injection.md](docs/soul-injection.md) | Soul and EMA evolution | Soul 注入与 EMA 演化 |
 | [skill-system.md](docs/skill-system.md) | Cognitive guard rails | 技能防线系统 |
@@ -201,10 +203,10 @@ This is an experimental project in active development. The cognitive loop is fun
 | Ethos + JudgmentSignals | ✅ Working | 可运行 |
 | SQLite task store | ✅ Working | 可运行 |
 | Tool evolution (hot-swap) | ✅ Working | 可运行 |
-| Skill system | 🔧 In progress | 进行中 |
-| Workspace Markdown injection | 🔧 Planned | 规划中 |
-| Activation decay | 🔧 Planned | 规划中 |
-| EMA soul write-back | 🔧 Planned | 规划中 |
+| Skill system | ✅ Working | 可运行 |
+| Workspace Markdown injection | ✅ Working | 可运行 |
+| Activation decay | ✅ Working | 可运行 |
+| EMA soul write-back | ✅ Working | 可运行 |
 
 ---
 

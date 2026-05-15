@@ -20,7 +20,32 @@ DB 是不可绕过的单一真相源；SOUL.md 是快照，不是源。
 
 ---
 
-## 2. 七个 workspace Markdown 文件
+## 2. workspace 的边界
+
+`~/.lingzhou/workspace/` 的定位应当非常明确：
+
+> **它只放“人类可读、可编辑、帮助认知启动与协作”的工作区镜像。**
+
+适合放入 workspace 的：
+- BOOTSTRAP / IDENTITY / SOUL / USER / TOOLS / HEARTBEAT / MEMORY
+- skills/
+- 迁移说明、人工维护的计划文档
+
+**不适合放入 workspace 的：**
+- SQLite 数据库（`*.sqlite`, `*.db`, `*.wal`, `*.shm`）
+- 迁移过程输出（如 `_migration_out/`）
+- 大型会话轨迹 / 机器生成日志
+- 进程状态 / 临时文件 / 缓存
+
+这些内容应该进入：
+- `~/.lingzhou/state/`（运行时真相、数据库、process state）
+- `~/.lingzhou/logs/`（日志）
+- `~/.lingzhou/cache/`（缓存）
+- `~/.lingzhou/migration/` 或 `~/.lingzhou/imports/`（迁移/导入产物）
+
+原因很简单：workspace 是**认知窗口**，不是**运行时垃圾场**。
+
+## 3. 七个 workspace Markdown 文件
 
 ### 2.1 BOOTSTRAP.md（生命内核引导文件）
 
@@ -157,7 +182,7 @@ _初始状态为空，随运行时间增长。_
 
 ---
 
-## 3. 注入策略（哪些文件进入 system prompt）
+## 4. 注入策略（哪些文件进入 system prompt）
 
 实际注入逻辑在 `core/soul.py` 的 `SoulManager.bootstrap()` 中，已完整实现：
 
@@ -212,7 +237,7 @@ Hermes / OpenClaw / lingzhou 的压缩重点都在“把什么注入上下文”
 
 ---
 
-## 4. SQLite schema 乏力的应对
+## 5. SQLite schema 乏力的应对
 
 对于结构不固定的字段，lingzhou 采用两种策略：
 
