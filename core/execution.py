@@ -266,6 +266,10 @@ def _record_meta_reflection(ctx: ToolContext, meta: dict[str, str | int]) -> Non
         ))
 
 
+def _should_record_run_outcome(status: str) -> bool:
+    return status in {"succeeded", "failed", "cancelled"}
+
+
 def _build_meta_reflection(
     *,
     run_id: int,
@@ -514,16 +518,17 @@ class ExecutionLayer:
             session_id=str(result.metadata.get("session_id") or ""),
             progress=progress,
         )
-        _record_run_outcome(
-            ctx,
-            run_id=run_id,
-            task_id=active_task_id or 0,
-            tool_name=str(result.metadata.get("tool_name") or ""),
-            worker_type=str(result.metadata.get("worker_type") or ""),
-            status=status,
-            progress=progress,
-            result=result,
-        )
+        if _should_record_run_outcome(status):
+            _record_run_outcome(
+                ctx,
+                run_id=run_id,
+                task_id=active_task_id or 0,
+                tool_name=str(result.metadata.get("tool_name") or ""),
+                worker_type=str(result.metadata.get("worker_type") or ""),
+                status=status,
+                progress=progress,
+                result=result,
+            )
         if active_task_id:
             await ctx.task_store.update_task_result(
                 active_task_id,

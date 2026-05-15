@@ -36,7 +36,7 @@ from core.evolution import EvolutionEngine
 from memory.working import WorkingMemory, WMItem
 from memory.episodic import EpisodicMemory
 from memory.semantic import SemanticMemory, MemoryNode
-from memory.task_store import TaskStore, Task
+from memory.task_store import TaskStore, Task, Run
 from provider import create_provider, create_provider_with_model
 from provider.models_gen import ensure_models_json
 from tools.registry import ToolRegistry, ToolContext, ToolResult
@@ -125,6 +125,195 @@ _VALID_MODEL_TIERS = frozenset({"reader", "reasoner", "repair"})
 _RUN_PROGRESS_CRYSTAL_CHARS = 120
 
 
+def _run_monitor_config(run: Run) -> dict[str, Any] | None:
+    candidates = [
+        run.extras.get("run_monitor"),
+        (run.output_json.get("state_delta") or {}).get("run_monitor") if isinstance(run.output_json, dict) else None,
+        (run.output_json.get("metadata") or {}).get("run_monitor") if isinstance(run.output_json, dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict) and str(candidate.get("kind") or "").strip() == "fact" and str(candidate.get("key") or "").strip():
+            return candidate
+    return None
+
+
+def _parse_run_monitor_snapshot(raw: str, monitor: dict[str, Any]) -> tuple[str, str, Any]:
+    payload: Any = raw
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            payload = parsed
+    except Exception:
+        payload = raw
+
+    status_field = str(monitor.get("status_field") or "status")
+    progress_field = str(monitor.get("progress_field") or "progress")
+    success_values = {str(v).strip().lower() for v in (monitor.get("success_values") or ["succeeded", "success", "done", "completed"])}
+    failed_values = {str(v).strip().lower() for v in (monitor.get("failed_values") or ["failed", "error"])}
+    cancelled_values = {str(v).strip().lower() for v in (monitor.get("cancelled_values") or ["cancelled", "canceled"])}
+
+    status_value: Any = raw
+    progress_value: Any = ""
+    if isinstance(payload, dict):
+        status_value = payload.get(status_field, payload.get("status", raw))
+        progress_value = payload.get(progress_field, payload.get("progress", ""))
+
+    normalized = str(status_value or "").strip().lower()
+    if normalized in success_values:
+        status = "succeeded"
+    elif normalized in failed_values:
+        status = "failed"
+    elif normalized in cancelled_values:
+        status = "cancelled"
+    else:
+        status = "running"
+    progress = str(progress_value or "").strip()[:2000]
+    return status, progress, payload
+
+
+def _record_refreshed_run_outcome(
+    episodic: EpisodicMemory | None,
+    semantic: SemanticMemory | None,
+    *,
+    run: Run,
+    status: str,
+    progress: str,
+    summary: str,
+    error: str,
+) -> None:
+    if episodic is not None:
+        episodic.record_event(
+            "run_failed" if status == "failed" or error else "run_completed",
+            {
+                "run_id": run.id,
+                "task_id": run.task_id,
+                "tool_name": run.tool_name,
+                "worker_type": run.worker_type,
+                "status": status,
+                "summary": summary[:800],
+                "error": error[:400],
+            },
+        )
+    if semantic is None:
+        return
+    semantic.upsert(MemoryNode(
+        id=f"run-result-{run.id}",
+        kind="run_result",
+        title=f"[run#{run.id}] {run.tool_name or 'unknown'} {status}",
+        body=(
+            f"status={status}\n"
+            f"tool={run.tool_name or 'unknown'}\n"
+            f"progress={progress}\n"
+            f"summary={summary}\n"
+            f"error={error}"
+        )[:4000],
+        activation=0.82 if status == "failed" or error else 0.72,
+        valence=0.35 if status == "failed" or error else 0.65,
+        tags=[x for x in [status, run.tool_name, run.worker_type, f"task:{run.task_id}" if run.task_id else ""] if x],
+    ))
+
+
+async def _refresh_run_via_fact_monitor(
+    task_store: TaskStore,
+    run: Run,
+    monitor: dict[str, Any],
+    *,
+    episodic: EpisodicMemory | None = None,
+    semantic: SemanticMemory | None = None,
+) -> dict[str, Any]:
+    key = str(monitor.get("key") or "").strip()
+    raw, found = await task_store.get_fact(key)
+    if not found:
+        return {"run_id": run.id, "task_id": run.task_id, "status": run.status}
+
+    status, progress, payload = _parse_run_monitor_snapshot(raw, monitor)
+    crystal = progress if progress and progress != run.progress else ""
+    output_json = dict(run.output_json)
+    output_json["monitor_snapshot"] = payload
+    output_json["monitor_key"] = key
+    await task_store.update_run(
+        run.id,
+        status=status,
+        output_json=output_json,
+        log_text=(progress or str(payload or raw))[:4000],
+        error_text=(str(payload.get("error") or "") if isinstance(payload, dict) else (raw[:400] if status == "failed" else "")),
+        progress=progress,
+    )
+    if run.task_id and crystal:
+        await task_store.set_fact(f"task:{run.task_id}:progress", crystal[:800], scope="task")
+    if status in {"succeeded", "failed", "cancelled"}:
+        summary = progress or (str(payload.get("summary") or "") if isinstance(payload, dict) else raw) or f"run {status}"
+        error = str(payload.get("error") or "") if isinstance(payload, dict) else (raw if status == "failed" else "")
+        if run.task_id:
+            await task_store.update_task_result(
+                run.task_id,
+                {
+                    "last_run_id": run.id,
+                    "last_run_status": status,
+                    "worker_type": run.worker_type,
+                    "tool_name": run.tool_name,
+                    "session_id": run.session_id,
+                    "summary": summary,
+                    "error": error or None,
+                },
+            )
+        _record_refreshed_run_outcome(
+            episodic,
+            semantic,
+            run=run,
+            status=status,
+            progress=progress,
+            summary=summary,
+            error=error,
+        )
+    return {
+        "run_id": run.id,
+        "task_id": run.task_id,
+        "status": status,
+        "session_id": run.session_id,
+        "crystal": crystal[:400],
+    }
+
+
+async def _ingest_actionable_meta_reflections(task_store: TaskStore, wm: WorkingMemory) -> list[str]:
+    injected: list[str] = []
+    for reflection in await task_store.list_meta_reflections(limit=10):
+        if reflection.decision not in {"apply", "rollback"}:
+            continue
+        fact_key = f"meta_reflection:ingested:{reflection.id}"
+        _, found = await task_store.get_fact(fact_key)
+        if found:
+            continue
+        wm.add(WMItem(
+            kind="meta_reflection",
+            content=(
+                f"[双环反思 {reflection.decision}] target={reflection.target_kind} tool={reflection.tool_name or 'unknown'}\n"
+                f"诊断：{reflection.diagnosis}\n"
+                f"建议：{reflection.proposal}\n"
+                f"验证：{reflection.verification_plan}"
+            )[:1200],
+            priority=0.76 if reflection.decision == "rollback" else 0.72,
+        ))
+        if reflection.task_id:
+            await task_store.set_fact(
+                f"task:{reflection.task_id}:meta_reflection",
+                json.dumps(
+                    {
+                        "reflection_id": reflection.id,
+                        "decision": reflection.decision,
+                        "target_kind": reflection.target_kind,
+                        "proposal": reflection.proposal,
+                        "verification_plan": reflection.verification_plan,
+                    },
+                    ensure_ascii=False,
+                ),
+                scope="task",
+            )
+        await task_store.set_fact(fact_key, datetime.now(UTC).isoformat(), scope="system")
+        injected.append(reflection.id)
+    return injected
+
+
 def _result_fingerprint(summary: str) -> str:
     text = (summary or "").strip()
     if not text:
@@ -183,16 +372,25 @@ def _prefer_tier_for_task(pending_tier: str | None, task: Task | None) -> str | 
     return _task_model_tier(task)
 
 
-async def _refresh_running_runs(task_store: TaskStore) -> list[dict[str, Any]]:
-    """刷新所有 running runs，当前先覆盖 exec-worker 的后台进程生命周期。"""
+async def _refresh_running_runs(
+    task_store: TaskStore,
+    *,
+    episodic: EpisodicMemory | None = None,
+    semantic: SemanticMemory | None = None,
+) -> list[dict[str, Any]]:
+    """刷新所有 running runs，优先走内建 exec 监控，其次走通用 fact-backed run_monitor 协议。"""
     try:
         from tools.exec import _MANAGER
     except Exception:
-        return []
+        _MANAGER = None
 
     updates: list[dict[str, Any]] = []
     for run in await task_store.list_runs(status="running", limit=20):
-        if run.worker_type != "exec-worker" or not run.session_id:
+        monitor = _run_monitor_config(run)
+        if monitor is not None:
+            updates.append(await _refresh_run_via_fact_monitor(task_store, run, monitor, episodic=episodic, semantic=semantic))
+            continue
+        if run.worker_type != "exec-worker" or not run.session_id or _MANAGER is None:
             updates.append({"run_id": run.id, "task_id": run.task_id, "status": run.status})
             continue
         info = _MANAGER.get(run.session_id)
@@ -265,6 +463,16 @@ async def _refresh_running_runs(task_store: TaskStore) -> list[dict[str, Any]]:
                     "summary": output_json.get("stdout", "")[:200] or f"process {status}",
                     "error": output_json.get("error"),
                 },
+            )
+        if status in {"succeeded", "failed", "cancelled"}:
+            _record_refreshed_run_outcome(
+                episodic,
+                semantic,
+                run=run,
+                status=status,
+                progress=(info.stdout or info.stderr or info.error or status)[-800:].strip(),
+                summary=output_json.get("stdout", "")[:200] or f"process {status}",
+                error=str(output_json.get("error") or ""),
             )
         updates.append({"run_id": run.id, "task_id": run.task_id, "status": status, "session_id": run.session_id})
     return updates
@@ -564,8 +772,9 @@ class CognitionLoop:
         ctx = self._make_ctx()
 
         # 1. 感知
-        running_updates = await _refresh_running_runs(self._task_store)
+        running_updates = await _refresh_running_runs(self._task_store, episodic=self._episodic, semantic=self._semantic)
         active_task = await self._task_store.get_active()
+        await _ingest_actionable_meta_reflections(self._task_store, self._wm)
         if running_updates:
             running_count = sum(1 for item in running_updates if item.get("status") == "running")
             finished_count = sum(1 for item in running_updates if item.get("status") in {"succeeded", "failed", "cancelled"})

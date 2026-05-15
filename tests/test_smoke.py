@@ -479,6 +479,86 @@ async def _refresh_running_runs_crystallizes_progress():
         await store.close()
 
 
+def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
+    asyncio.run(_refresh_running_runs_updates_fact_monitored_non_exec_runs())
+
+
+async def _refresh_running_runs_updates_fact_monitored_non_exec_runs():
+    from core.loop import _refresh_running_runs
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        store = TaskStore(root / "runtime.db")
+        episodic = EpisodicMemory(root)
+        semantic = SemanticMemory(root)
+        await store.open()
+        task_id = await store.add_task("推理任务", goal="等待外部状态")
+        await store.set_fact(
+            "run:llm-1",
+            json.dumps({"status": "running", "progress": "phase-1 reasoning"}, ensure_ascii=False),
+            scope="task",
+        )
+        run_id = await store.add_run(
+            task_id=task_id,
+            run_type="llm",
+            worker_type="llm-worker",
+            status="running",
+            tool_name="llm.simulated",
+            output_json={
+                "state_delta": {
+                    "run_monitor": {
+                        "kind": "fact",
+                        "key": "run:llm-1",
+                        "status_field": "status",
+                        "progress_field": "progress",
+                        "success_values": ["succeeded"],
+                        "failed_values": ["failed"],
+                    }
+                }
+            },
+        )
+
+        first = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        assert first
+        assert first[0]["status"] == "running"
+        assert "phase-1" in first[0]["crystal"]
+
+        run = await store.get_run_by_id(run_id)
+        assert run is not None
+        assert run.status == "running"
+        assert "phase-1" in run.progress
+
+        await store.set_fact(
+            "run:llm-1",
+            json.dumps({"status": "succeeded", "progress": "final answer ready", "summary": "done"}, ensure_ascii=False),
+            scope="task",
+        )
+        second = await _refresh_running_runs(store, episodic=episodic, semantic=semantic)
+        assert second
+        assert second[0]["status"] == "succeeded"
+
+        finished = await store.get_run_by_id(run_id)
+        assert finished is not None
+        assert finished.status == "succeeded"
+        assert finished.progress == "final answer ready"
+
+        task = await store.get_task_by_id(task_id)
+        assert task is not None
+        assert task.result_json["last_run_status"] == "succeeded"
+
+        completed = episodic.list_events("run_completed", limit=5)
+        assert completed and completed[-1]["run_id"] == run_id
+
+        node = semantic.get(f"run-result-{run_id}")
+        assert node is not None
+        assert node.kind == "run_result"
+
+        await store.close()
+
+
 def test_catalog_resolve_context_window():
     """内置目录能按 model ID 自动查找 context_window，显式 override 优先。"""
     from provider.catalog import resolve_context_window
@@ -970,6 +1050,128 @@ async def _execution_generic_failure_meta_reflection_defers():
         rule_node = semantic.get(f"rule-revision-{reflections[0].id}")
         assert rule_node is None
 
+        await store.close()
+
+
+def test_ingest_actionable_meta_reflections_dedupes():
+    asyncio.run(_ingest_actionable_meta_reflections_dedupes())
+
+
+async def _ingest_actionable_meta_reflections_dedupes():
+    from core.loop import _ingest_actionable_meta_reflections
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        await store.add_meta_reflection(
+            reflection_id="mr-apply",
+            target_kind="routing",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="动作选择漂移",
+            proposal="修正路由",
+            verification_plan="重跑 judgment",
+            decision="apply",
+            task_id=7,
+            run_id=3,
+            tool_name="file.read",
+        )
+        await store.add_meta_reflection(
+            reflection_id="mr-rollback",
+            target_kind="threshold",
+            trigger="failure_pattern",
+            loop_level="double",
+            diagnosis="阈值退化",
+            proposal="回滚阈值",
+            verification_plan="等待窗口结束",
+            decision="rollback",
+            task_id=8,
+            run_id=4,
+            tool_name="exec",
+        )
+        await store.add_meta_reflection(
+            reflection_id="mr-defer",
+            target_kind="tool",
+            trigger="failure_pattern",
+            loop_level="single",
+            diagnosis="普通失败",
+            proposal="稍后再看",
+            verification_plan="重试",
+            decision="defer",
+            task_id=9,
+            run_id=5,
+            tool_name="file.read",
+        )
+
+        wm = WorkingMemory(capacity=10)
+        injected = await _ingest_actionable_meta_reflections(store, wm)
+        assert injected == ["mr-apply", "mr-rollback"]
+
+        top = wm.get_top()
+        assert len([item for item in top if item["kind"] == "meta_reflection"]) == 2
+
+        task_fact, found = await store.get_fact("task:7:meta_reflection")
+        assert found
+        assert json.loads(task_fact)["decision"] == "apply"
+
+        again = await _ingest_actionable_meta_reflections(store, wm)
+        assert again == []
+        await store.close()
+
+
+def test_execution_background_run_does_not_record_completion_early():
+    asyncio.run(_execution_background_run_does_not_record_completion_early())
+
+
+async def _execution_background_run_does_not_record_completion_early():
+    import os
+
+    from core.judgment import JudgmentOutput
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from tools.exec import ProcessManager, process_kill
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        os.environ["LINGZHOU_PROCESS_STATE_DIR"] = str(root / "proc-state")
+        ProcessManager.clear()
+        store = TaskStore(root / "runtime.db")
+        episodic = EpisodicMemory(root)
+        semantic = SemanticMemory(root)
+        await store.open()
+        await store.add_task("后台执行", goal="启动后保持 running")
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store, episodic=episodic, semantic=semantic)
+        action = JudgmentOutput(
+            decision="act",
+            chosen_action_id="exec",
+            params={"command": 'python3 -c "import time; time.sleep(5)"', "background": True, "timeout": 5},
+            rationale="launch background exec",
+        )
+
+        result = await layer.dispatch(action, ctx)
+        assert result.error is None
+
+        run_id = int(result.metadata["run_id"])
+        run = await store.get_run_by_id(run_id)
+        assert run is not None
+        assert run.status == "running"
+
+        completed = episodic.list_events("run_completed", limit=5)
+        failed = episodic.list_events("run_failed", limit=5)
+        assert completed == []
+        assert failed == []
+
+        node = semantic.get(f"run-result-{run_id}")
+        assert node is None
+
+        await process_kill({"session_id": str(result.metadata["session_id"] or "")}, _tool_ctx())
         await store.close()
 
 
