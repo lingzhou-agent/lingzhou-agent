@@ -1,0 +1,48 @@
+# OpenClaw → Lingzhou 技能迁移缺口清单
+
+> 生成时间: 2026-05-15
+> 状态: 初稿
+
+## 1. OpenClaw 侧资产盘点
+
+| 技能名 | 类型 | 核心能力 | 定义格式 | 依赖 |
+|---|---|---|---|---|
+| `hello-world` | 演示 | `hello.say` (简单问候) | XML (`SKILL.md`) + TS (`index.ts`) | `@mariozechner/pi-coding-agent` |
+| `tieba-claw` | 业务集成 | 贴吧 API 交互 (发帖/回复/查询) | XML (`SKILL.md`) + Markdown (`api-reference.md`) | 贴吧开放平台 API |
+
+**架构特征**:
+- 使用 XML 标签定义 `<skill>`, `<tool>`, `<params>`。
+- 通过 `index.ts` 进行代码级注册与工具实现。
+- 技能目录结构扁平，根目录可能包含默认/演示技能。
+
+## 2. Lingzhou 侧资产盘点
+
+- **已激活技能**: `active-learning`, `effective-learning`, `error-handling`, `interaction`, `karpathy-coding-base`, `learning-mastery`, `openclaw-internalization-bridge`, `philosophy-awakening`, `practice-learning`, `proactive-mastery`, `proactive-work`, `problem-mastery`, `problem-solving`, `self-assessment`, `self-evaluation`, `self-mastery`, `self-monitoring`, `soul-evolution`, `soul-mastery`。
+- **架构特征**: 
+  - 纯 Markdown 定义 (`SKILL.md`)，包含 Triggers 与行为描述。
+  - 工具调用通过运行时内置机制处理，无需显式 `index.ts` 注册。
+  - 强调方法论与认知框架，而非单一 API 封装。
+
+## 3. 迁移缺口分析
+
+| 缺口维度 | 现状 | 风险/影响 |
+|---|---|---|
+| **格式不兼容** | OC 使用 XML+TS，LZ 使用 Markdown | 无法直接复制文件，需重写定义或开发转换器 |
+| **能力缺失** | `tieba-claw` 的完整 API 能力未在 LZ 技能目录中显式映射 | 贴吧交互能力可能丢失，需评估是否整合进 `openclaw-internalization-bridge` 或新建独立技能 |
+| **运行时差异** | OC 依赖 TS 运行时与特定 Agent 框架，LZ 为自研运行时 | `index.ts` 中的工具逻辑需移植或重写为 LZ 可执行脚本/工具 |
+| **演示技能冗余** | `hello-world` 仅为演示 | LZ 已有 `interaction` 技能，无需迁移 |
+
+## 4. 迁移执行计划
+
+1. **格式适配**: 编写 `OC_XML → LZ_MD` 转换模板，提取 `<tool>` 定义转为 LZ 的 `SKILL.md` 格式。
+2. **核心能力迁移**: 
+   - 将 `tieba-claw` 的 API 接口封装为 LZ 工具（如 `tieba.post`, `tieba.reply`）。
+   - 评估是否作为独立技能 `tieba-claw` 加入 LZ，或合并至现有集成技能。
+3. **逻辑重写**: 剥离 OC 的 `index.ts` 依赖，用 Python/Bash 或 LZ 内置工具重写业务逻辑。
+4. **验证测试**: 迁移后通过 `skill.list` 确认加载，并执行最小用例验证。
+
+## 5. 结论
+
+- **高优先级**: `tieba-claw` 能力迁移与 API 适配。
+- **低优先级**: `hello-world` 废弃，无需迁移。
+- **阻塞项**: 无。LZ 运行时已具备承载新技能的结构，仅需补充定义与逻辑。

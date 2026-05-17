@@ -115,6 +115,13 @@ def extract_text(items: list[dict]) -> str:
             x = it.get("voice_item", {}).get("text", "")
             if x:
                 parts.append(f'[语音消息: "{x}"]')
+        elif tp == 2:  # 图片
+            img = it.get("image_item", {})
+            url = img.get("url", img.get("cdn_url", ""))
+            if url:
+                parts.append(f"[图片消息] {url}")
+            else:
+                parts.append("[图片消息]（无 URL）")
     return "\n".join(parts).strip()
 
 
