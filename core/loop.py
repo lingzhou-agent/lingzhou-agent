@@ -805,16 +805,7 @@ class CognitionLoop:
         # 预算感知：token 消耗超阈值时注入 WM 提醒
         self._maybe_inject_budget_warning()
 
-        # 5. 执行（运行监控 + 调度器 + 心跳自检）
-        await self._prepare_loop_context()
-
-    async def _prepare_loop_context(self):
-        """Prepare loop context: refresh runs, check schedules, heartbeat injection.
-        
-        Extracted from _tick for modularity (P2). Future refactor: further split
-        into _refresh_runs / _check_schedules / _inject_heartbeat sub-methods.
-        """
-        nonlocal active_task, running_updates
+        # 5. 执行
         running_updates = await _refresh_running_runs(self._task_store, episodic=self._episodic, semantic=self._semantic)
         active_task = await self._task_store.get_active()
         await _ingest_actionable_meta_reflections(self._task_store, self._wm)
