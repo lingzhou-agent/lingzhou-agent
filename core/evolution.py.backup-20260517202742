@@ -442,12 +442,6 @@ class EvolutionEngine:
                     prompt_path.read_text(encoding="utf-8"), encoding="utf-8"
                 )
 
-            # Compile-time syntax check
-            try:
-                ast.parse(new_src)
-            except SyntaxError as e:
-                raise ValueError(f"Generated code contains syntax error: {e}") from e
-            
             prompt_path.write_text(new_src, encoding="utf-8")
             _log.info("[evolution] 提示词 %r 已进化", prompt_key)
             await self._update_dreams(f"调整判断模式：{prompt_key} 提示词已根据解析失败反馈重写，输出格式更稳定。")
