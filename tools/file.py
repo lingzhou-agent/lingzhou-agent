@@ -487,10 +487,20 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             # 对齐 OpenClaw：所有 edit 都基于原始文件匹配，而不是增量匹配修改后的内容。
             first_idx = original.find(old_text)
             if first_idx == -1:
+                # 查找 partial match 帮助 LLM 定位
+                first_line = old_text.split("\n")[0][:60]
+                partial_idx = original.find(first_line) if len(first_line) > 10 else -1
+                context = ""
+                if partial_idx != -1:
+                    # 显示实际内容供 LLM 校正
+                    ctx_start = max(0, partial_idx - 20)
+                    ctx_end = min(len(original), partial_idx + len(first_line) + 60)
+                    context = f"\n实际内容（大约该位置）:\n{original[ctx_start:ctx_end]}"
                 return ToolResult(
-                    summary=f"edits[{i}]: oldText 在文件中未找到。请先用 file.read 确认当前内容。",
+                    summary=f"edits[{i}]: oldText 在文件中未找到。{context}\n请用 file.read 确认完整的当前内容后重试。",
                     error="OldTextNotFound",
                     skipped=True,
+                    metadata={"old_preview": old_text[:80], "partial_match": partial_idx != -1},
                 )
 
             second_idx = original.find(old_text, first_idx + 1)
