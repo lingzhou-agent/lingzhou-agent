@@ -287,17 +287,20 @@ async def file_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="file.read",
     description=(
-        "读取文件内容。支持区间读取。\n"
-        "⚠️ 区间太小时会浪费轮次：建议至少读 200-500 字符以获得足够上下文。\n"
-        "只有需要精确匹配 file.edit 的 oldText 时才用小区间。\n"
-        "不确定内容时先用大区间（如 start=0, end=2000）通读。"
+        "读取文件内容。支持三种方式：\n"
+        "1. 不传参数 → 读全文\n"
+        "2. offset + limit → 从第 offset 行开始读 limit 行（推荐，直觉友好）\n"
+        "3. start + end → 按字符下标区间读（精确控制）\n"
+        "⚠️ 修改文件前先用 offset/limit 读完整函数（≥20行），避免碎片化。"
     ),
     progress_category="info",
     params=[
         ToolParam("path", "string", "文件路径", required=True),
-        ToolParam("start", "number", "起始字符下标（含），默认 0；不是行号", required=False),
-        ToolParam("end", "number", "结束字符下标（不含），默认到文件末尾；不是行号", required=False),
-        ToolParam("max_chars", "number", "最大字符数；不传则读取全部内容", required=False),
+        ToolParam("offset", "number", "起始行号（1-indexed），配合 limit 使用", required=False),
+        ToolParam("limit", "number", "读取行数", required=False),
+        ToolParam("start", "number", "起始字符下标（含），默认 0", required=False),
+        ToolParam("end", "number", "结束字符下标（不含），默认到末尾", required=False),
+        ToolParam("max_chars", "number", "最大字符数", required=False),
     ],
 ))
 async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -309,6 +312,7 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     max_chars_raw = params.get("max_chars")
     max_chars: int | None = int(max_chars_raw) if max_chars_raw is not None else None
     has_range = ("start" in params) or ("end" in params)
+    has_line_range = ("offset" in params) or ("limit" in params)
 
     if not path.exists():
         return ToolResult(summary=f"文件不存在: {path}", error="FileNotFound")
@@ -321,7 +325,16 @@ async def file_read(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
         start = 0
         end = total
-        if has_range:
+
+        if has_line_range:
+            lines = text.split("\n")
+            line_offset = max(0, int(params.get("offset", 1)) - 1)  # 1-indexed → 0-indexed
+            line_limit = int(params.get("limit", 50)) if "limit" in params else 50
+            selected = lines[line_offset:line_offset + line_limit]
+            text = "\n".join(selected)
+            if line_offset > 0 or line_offset + line_limit < len(lines):
+                text = f"[行 {line_offset + 1}-{min(line_offset + line_limit, len(lines))} / 共 {len(lines)} 行]\n{text}"
+        elif has_range:
             start = int(params.get("start") or 0)
             end_raw = params.get("end")
             end = int(end_raw) if end_raw is not None else total
