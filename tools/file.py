@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from core.paths import project_root, data_dir
 from typing import Any
 
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
@@ -27,8 +28,8 @@ MAX_WRITE_CHARS = 200_000
 # 空集合 = 允许所有路径；设为具体路径则只允许写入这些目录内的文件。
 # 系统级操作（如 /etc/systemd）请通过 shell.run 执行。
 _WRITE_ALLOW_ROOTS: frozenset[str] = frozenset({
-    "/root/lingzhou",
-    "/root/.lingzhou",
+    str(project_root()),
+    str(data_dir()),
 })
 
 

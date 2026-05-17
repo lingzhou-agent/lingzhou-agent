@@ -13,6 +13,7 @@ import json
 import os
 import time
 from pathlib import Path
+from core.paths import generated_dir
 from typing import Any
 
 import httpx
@@ -141,7 +142,7 @@ async def image_generate(params: dict[str, Any], ctx: ToolContext) -> ToolResult
         return ToolResult(summary=f"生成失败: {error}", error="GenerateError")
 
     # 保存到本地
-    out_dir = Path("/root/lingzhou/generated")
+    out_dir = generated_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         async with httpx.AsyncClient(timeout=30) as client:

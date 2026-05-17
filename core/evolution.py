@@ -69,6 +69,22 @@ def _verification_outcome(baseline: dict[str, int], observed: dict[str, int], mi
     return "verified"
 
 
+def _clean_old_backups(tool_path: Path, keep: int = 3) -> None:
+    """清理旧备份文件，保留最新 keep 个。"""
+    parent = tool_path.parent
+    stem = tool_path.stem
+    backups = sorted(
+        parent.glob(f"{stem}.backup-*")
+        + parent.glob(f"{stem}.lingzhou-backup"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+    )
+    for old in backups[:-keep] if len(backups) > keep else []:
+        try:
+            old.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 class EvolutionEngine:
     """运行时自修改引擎。
 
@@ -494,6 +510,8 @@ class EvolutionEngine:
                     backup_path.write_text(
                         previous_src, encoding="utf-8"
                     )
+                    # 自动清理旧备份（保留最新 3 个）
+                    _clean_old_backups(tool_path)
 
                 # 写回
                 # 语法检查

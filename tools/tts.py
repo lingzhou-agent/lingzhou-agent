@@ -11,11 +11,12 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from core.paths import generated_dir
 from typing import Any
 
 from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
 
-OUT_DIR = Path("/root/lingzhou/generated")
+OUT_DIR = generated_dir()
 
 
 @tool(ToolManifest(
