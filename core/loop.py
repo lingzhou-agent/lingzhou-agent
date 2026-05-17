@@ -599,8 +599,14 @@ class CognitionLoop:
             console.print("[green]✓ 检测到 token 更新,provider 已重建[/green]")
             return
         if old_model == new_model:
-            # 其他配置变更;静默更新 cfg 引用
+            # 其他配置变更 — 全组件刷新（阈值/tick 间隔/evolution 等）
             self._cfg = new_cfg
+            self._judgment = JudgmentLayer(self._provider, self._registry, new_cfg)
+            self._evolution = EvolutionEngine(new_cfg, self._provider, self._registry)
+            self._routing_providers = _build_routing_providers(new_cfg)
+            self._judgment.set_routing_providers(self._routing_providers)
+            self._perception = PerceptionLayer(new_cfg)
+            _log.info("[hot-reload] 非模型配置已热加载")
             return
         _log.info("[hot-reload] 检测到模型变更: %s → %s,开始热换 provider", old_model, new_model)
         try:
