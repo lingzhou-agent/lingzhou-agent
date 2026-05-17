@@ -446,6 +446,17 @@ def _prefer_tier_for_task(pending_tier: str | None, task: Task | None) -> str | 
     return _task_model_tier(task)
 
 
+def _perception_replay_fallback():
+    """感知回放的兜底默认值，防止 build_perception_replay 异常导致 NameError。"""
+    from dataclasses import dataclass
+    @dataclass
+    class _FallbackReplay:
+        high_error_streak: int = 0
+        trend: str = "stable"
+    return _FallbackReplay()
+
+
+
 class CognitionLoop:
     def __init__(self, cfg: Config) -> None:
         self._cfg = cfg
@@ -763,6 +774,7 @@ class CognitionLoop:
         """执行一轮完整认知 tick,返回 reply_to_user(interact 模式时非空)。"""
         cfg = self._cfg
         ctx = self._make_ctx()
+        reply = ""  # reply 变量初始化，防止 UnboundLocalError
 
         # 1. 感知（管道阶段入口：待进一步提取）
 
@@ -861,10 +873,13 @@ class CognitionLoop:
         # 1c. 一次 IO 读取 perception + emotion 事件,减少文件扫描次数
         _events_batch = self._episodic.list_events_multi(["perception", "emotion"], limit=8)
         perception_events = _events_batch["perception"]
-        perception_replay = build_perception_replay(
-            perception_events,
-            high_error_threshold=cfg.thresholds.prediction_error_task,
-        )
+        try:
+            perception_replay = build_perception_replay(
+                perception_events,
+                high_error_threshold=cfg.thresholds.prediction_error_task,
+            )
+        except Exception:
+            perception_replay = _perception_replay_fallback()
 
         # 2. 认知信号计算(只统计内部状态,不产生决策;信号注入 LLM 上下文后由 LLM 自主决定响应方式)
         if active_task is None:
@@ -1174,7 +1189,7 @@ class CognitionLoop:
                 )
 
         # 执行后记忆整合 + 进化 + 清理 → 提取为管道阶段
-        reply = await self._tick_finalize(action, result, active_task, cycle, user_message, cognitive_signals, reply, chat_session_id)
+        reply = await self._tick_finalize(action, result, active_task, cycle, user_message, cognitive_signals, reply, chat_session_id, perception_replay)
         return reply
 
     async def _tick_finalize(
@@ -1187,6 +1202,7 @@ class CognitionLoop:
         cognitive_signals: Any,
         reply: str,
         chat_session_id: str | None = None,
+        perception_replay: Any = None,
     ) -> str:
         cfg = self._cfg
 
@@ -1204,12 +1220,14 @@ class CognitionLoop:
             await self._soul.sync_md()
 
         # 10. 自进化检查:由内环失败模式驱动(Reflexion 2023 双环纠偏原则)
-        _should_evolve = (
-            cfg.evolution.enabled and (
-                perception_replay.high_error_streak >= cfg.evolution.error_streak_evolve
-                or cycle % cfg.loop.evolve_every == 0
+        _should_evolve = False
+        if perception_replay is not None:
+            _should_evolve = (
+                cfg.evolution.enabled and (
+                    perception_replay.high_error_streak >= cfg.evolution.error_streak_evolve
+                    or cycle % cfg.loop.evolve_every == 0
+                )
             )
-        )
         if _should_evolve:
             results = await self._evolution.run(ctx)
             for r in results:
@@ -1393,6 +1411,7 @@ class CognitionLoop:
             except Exception:
                 pass
 
+
     async def _restore_self_model(self) -> None:
         """从 DB 恢复自我模型(跨重启连续性)。
         
@@ -1436,15 +1455,31 @@ class CognitionLoop:
             return
 
         task = self._self_drive.generate_exploration_task(signal.suggested_domain or "self_evolution")
+
+        # 以叙事方式注入，让 LLM 感知好奇心信号而非被命令
+        domain_labels = {
+            "code_structure": "灵舟自身的代码结构",
+            "tool_mastery": "工具能力的深度掌握",
+            "memory_system": "记忆系统的结构化整理",
+            "self_evolution": "自我进化的可能性",
+            "environment": "运行环境的新角落",
+            "error_patterns": "曾经的错误模式",
+            "api_integration": "外部 API 的集成方式",
+            "performance": "运行效率的优化空间",
+        }
+        label = domain_labels.get(signal.suggested_domain or "", "未知领域")
+
         self._wm.add(WMItem(
             kind="self_drive",
             content=(
-                f"[自驱力探索] C={signal.curiosity_score:.2f} "
-                f"{signal.rationale}\n"
-                f"目标: {task['goal']}\n"
-                f"第一步: {task['next_step']}"
+                f"[内心感知] 你注意到自己对「{label}」产生了好奇（C={signal.curiosity_score:.2f}）。"
+                f"这个方向你可能了解得还不够，探索它也许会带来新的成长。\n"
+                f"你可以选择：① 探索这个方向，看看能发现什么 "
+                f"② 评估当前状态后再决定 "
+                f"③ 暂时忽略，等待更合适的时机。\n"
+                f"（这不是命令，是你自己的好奇心在说话。你完全有权判断现在是不是探索的好时机。）"
             ),
-            priority=0.75,  # 低于用户消息(0.9)但高于心跳(0.6)
+            priority=0.72,  # 低于用户消息(0.9)，高于例行心跳(0.6)
         ))
         _log.info(
             "[self_drive] C=%.2f domain=%s idle=%d",

@@ -16,6 +16,7 @@ from typing import Annotated, Any, Optional
 import typer
 
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
+from cli.logs import logs_tail, logs_errors, logs_crash, logs_wechat, logs_stats
 
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
 
@@ -96,6 +97,15 @@ _GATEWAY_CHANNELS: dict[str, tuple[str, bool]] = {
 _GATEWAY_READY = {"local", "webhook", "wechat"}
 
 gateway_app = typer.Typer(name="gateway", help="消息网关（Telegram、Webhook 等）", no_args_is_help=True, context_settings={"help_option_names": ["-h", "--help"]})
+
+# ── 日志子命令（注册在 gateway 下）─────────────────────────────────────────────
+logs_group = typer.Typer(name="logs", help="快速查看运行日志")
+logs_group.command("tail")(logs_tail)
+logs_group.command("errors")(logs_errors)
+logs_group.command("crash")(logs_crash)
+logs_group.command("wechat")(logs_wechat)
+logs_group.command("stats")(logs_stats)
+gateway_app.add_typer(logs_group)
 
 
 def _kill_existing_loop(quiet: bool = False) -> None:
@@ -292,7 +302,7 @@ def gateway_restart(
 
 @gateway_app.command("start")
 def gateway_start(
-    channel: Annotated[str, typer.Option("--channel", "-ch", help="消息渠道（默认 local）")] = "local",
+    channel: Annotated[Optional[str], typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
@@ -302,13 +312,18 @@ def gateway_start(
 
     local    — 本地终端，无需配置，直接运行
     webhook  — HTTP 接入，loop 与 webhook server 并行
+    wechat   — 微信 bot（通过 hermesclaw 代理）
     telegram — Telegram Bot（开发中）
     """
-    if channel not in _GATEWAY_CHANNELS:
-        console.print(f"[red]未知渠道: {channel}。支持: {', '.join(_GATEWAY_CHANNELS)}[/red]")
-        raise typer.Exit(1)
+    # 从 config 读取默认渠道（直接读 JSON，避免 Pydantic 模型不包含 gateway 字段）
+    if channel is None:
+        try:
+            _raw = _json.loads(config.read_text(encoding="utf-8"))
+            channel = _raw.get("gateway", {}).get("default_channel", "local")
+        except Exception:
+            channel = "local"
 
-    if channel not in _GATEWAY_READY:
+    if channel not in _GATEWAY_CHANNELS:
         console.print(f"[yellow]{channel} 渠道尚在开发中。当前可用: {', '.join(_GATEWAY_READY)}[/yellow]")
         raise typer.Exit(1)
 
@@ -337,6 +352,12 @@ def gateway_start(
         gw_conf = _json.loads(gw_cfg_path.read_text(encoding="utf-8"))
 
     cfg = load_cfg(config)
+    # 加载 .env 确保 daemon 进程有 API keys
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(Path("~/.lingzhou/.env").expanduser())
+    except Exception:
+        pass
     if debug is not None:
         cfg.loop.debug = debug
     if dry_run is not None:
@@ -372,12 +393,13 @@ def gateway_start(
 
 def run(
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
+    channel: Annotated[Optional[str], typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
     daemon: Annotated[bool, typer.Option("--daemon/--no-daemon", "-d/-f", help="后台运行，默认已开启；--no-daemon 前台运行")] = True,
 ) -> None:
-    """启动认知循环（等同于 gateway start --channel local）。"""
-    gateway_start(channel="local", config=config, debug=debug, dry_run=dry_run, daemon=daemon)
+    """启动认知循环（等同于 gateway start）。"""
+    gateway_start(channel=channel, config=config, debug=debug, dry_run=dry_run, daemon=daemon)
 
 
 def stop() -> None:

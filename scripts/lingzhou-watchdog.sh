@@ -29,7 +29,7 @@ while true; do
     fi
 
     echo "[$(date -Is)] 🔄 检测到 lingzhou 已停止，自动重启..." >> "$RESTART_LOG"
-    /usr/local/bin/lingzhou run -d 2>&1 >> "$RESTART_LOG"
+    /usr/local/bin/lingzhou gateway restart 2>&1 >> "$RESTART_LOG"
     RESTART_COUNT=$((RESTART_COUNT + 1))
     echo "[$(date -Is)]   restart_count=$RESTART_COUNT" >> "$RESTART_LOG"
 done
