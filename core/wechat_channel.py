@@ -326,7 +326,8 @@ class WechatChannel:
                 cipher = Cipher(algorithms.AES(aes_key[:16]), cipher_modes.ECB())
                 decryptor = cipher.decryptor()
                 if encrypt_param:
-                    cdn_url = f"https://ilinkai.weixin.qq.com/cdn/download?{encrypt_param}"
+                    from urllib.parse import quote
+                    cdn_url = f"https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param={quote(encrypt_param, safe='')}"
                 else:
                     cdn_url = full_url
                 resp = requests.get(cdn_url, timeout=30)
