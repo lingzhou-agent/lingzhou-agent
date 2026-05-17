@@ -794,6 +794,14 @@ class CognitionLoop:
 
         # 1. 感知（管道阶段入口：待进一步提取）
 
+        # 用户消息优先：注入高优先级 WM 提醒 LLM 先回复用户
+        if user_message:
+            self._wm.add(WMItem(
+                kind="user_message",
+                content=f"[用户消息] {user_message[:200]}",
+                priority=0.95,  # 最高优先级，确保 LLM 先关注
+            ))
+
         # 5. 执行
         running_updates = await _refresh_running_runs(self._task_store, episodic=self._episodic, semantic=self._semantic)
         active_task = await self._task_store.get_active()

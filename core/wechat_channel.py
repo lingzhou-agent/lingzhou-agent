@@ -117,9 +117,20 @@ def extract_text(items: list[dict]) -> str:
                 parts.append(f'[语音消息: "{x}"]')
         elif tp == 2:  # 图片
             img = it.get("image_item", {})
-            url = img.get("url", img.get("cdn_url", ""))
-            if url:
-                parts.append(f"[图片消息] {url}")
+            aeskey = img.get("aeskey", "")
+            media = img.get("media", {})
+            encrypt_param = media.get("encrypt_query_param", "")
+            full_url = media.get("full_url", "")
+            if aeskey and (encrypt_param or full_url):
+                import json as _json
+                img_data = _json.dumps({
+                    "aeskey": aeskey,
+                    "encrypt_query_param": encrypt_param,
+                    "full_url": full_url,
+                })
+                parts.append(f"[图片消息] {img_data}")
+            elif full_url:
+                parts.append(f"[图片消息] {full_url}")
             else:
                 parts.append("[图片消息]（无 URL）")
     return "\n".join(parts).strip()
@@ -171,6 +182,10 @@ class WechatChannel:
     def _handle_inbound(self, msg: dict) -> None:
         from_user = msg.get("from_user_id", "")
         items = msg.get("item_list", [])
+        
+        # 先下载图片
+        items = self._download_images(items, from_user)
+        
         text = extract_text(items)
         if not text:
             return
@@ -213,6 +228,80 @@ class WechatChannel:
             self._stop.wait(self._cfg.reply_poll_sec)
 
     def _check_and_reply(self) -> None:
+
+    def _download_images(self, items: list[dict], from_user: str) -> list[dict]:
+        """下载 iLink 图片（AES-ECB 解密），替换为本地路径。"""
+        import base64, hashlib
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from pathlib import Path
+        
+        img_dir = Path.home() / ".lingzhou" / "wechat_images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        
+        new_items = []
+        for it in items:
+            tp = it.get("type", 0)
+            if tp != 2:
+                new_items.append(it)
+                continue
+            
+            img = it.get("image_item", {})
+            aeskey_hex = img.get("aeskey", "")
+            media = img.get("media", {})
+            encrypt_param = media.get("encrypt_query_param", "")
+            full_url = media.get("full_url", "")
+            
+            if not aeskey_hex or (not encrypt_param and not full_url):
+                new_items.append(it)
+                continue
+            
+            try:
+                # AES-128-ECB 解密
+                aes_key = bytes.fromhex(aeskey_hex)
+                cipher = Cipher(algorithms.AES(aes_key[:16]), modes.ECB())
+                decryptor = cipher.decryptor()
+                
+                # 构造 CDN URL 并下载
+                if encrypt_param:
+                    cdn_url = f"https://ilinkai.weixin.qq.com/cdn/download?{encrypt_param}"
+                else:
+                    cdn_url = full_url
+                
+                resp = requests.get(cdn_url, timeout=30)
+                if resp.status_code != 200:
+                    log.warning("[wechat] 图片下载失败: status=%d", resp.status_code)
+                    new_items.append(it)
+                    continue
+                
+                # 解密
+                decrypted = decryptor.update(resp.content) + decryptor.finalize()
+                # PKCS7 unpad
+                if decrypted:
+                    pad_len = decrypted[-1]
+                    if 1 <= pad_len <= 16:
+                        decrypted = decrypted[:-pad_len]
+                
+                # 保存
+                fhash = hashlib.md5(decrypted).hexdigest()[:12]
+                ext = ".jpg"
+                if decrypted[:4] == b"\x89PNG":
+                    ext = ".png"
+                elif decrypted[:4] == b"GIF8":
+                    ext = ".gif"
+                fname = img_dir / f"{from_user[:16]}_{fhash}{ext}"
+                fname.write_bytes(decrypted)
+                
+                # 替换为文本项，指向本地文件
+                new_items.append({
+                    "type": 1,
+                    "text_item": {"text": f"[图片消息，已保存到本地] 文件: {fname} 大小: {len(decrypted)} bytes"}
+                })
+                log.info("[wechat] 图片已下载: %s (%d bytes)", fname, len(decrypted))
+            except Exception as e:
+                log.error("[wechat] 图片下载解密失败: %s", e)
+                new_items.append(it)
+        
+        return new_items
         import sqlite3
         conn = sqlite3.connect(self._db_path)
         conn.row_factory = sqlite3.Row
