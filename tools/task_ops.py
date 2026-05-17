@@ -28,7 +28,10 @@ _INFO_ONLY_COMPLETION_TOOLS = frozenset({
 # 会修改文件系统/代码/DB 的工具 — 需要后续验证才算有效完成
 _MUTATION_TOOLS = frozenset({
     "file.edit", "file.write", "file.delete",
-    "shell.run",  # shell 可能执行破坏性命令
+    # 注意：shell.run 不在此列表。虽然 shell 可执行破坏性命令，
+    # 但它同时是 _VERIFY_TOOLS 的唯一成员，放入会导致死循环：
+    # shell.run(验证) → 被视为新 mutation → 要求再次验证 → 无限循环。
+    # 文件级 mutation 的验证需求由 file.edit/write/delete 触发已足够。
 })
 
 # 验证型动作 — 能确认修改是否正确的工具/模式
