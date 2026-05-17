@@ -326,6 +326,15 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     try:
         # 安全守卫：备份原文件 + 核心文件警告
         guard_warning, _ = _safety_guard(path, "写入")
+        
+        # 目录保护：路径是目录而非文件时给出明确提示
+        if path.is_dir():
+            return ToolResult(
+                summary=f"无法写入：{path} 是一个目录，不是文件。请指定具体文件路径（如 {path}/README.md）。",
+                error="IsDirectory",
+                skipped=True,
+            )
+        
         path.parent.mkdir(parents=True, exist_ok=True)
         text = str(content)
         path.write_text(text, encoding="utf-8")
@@ -387,6 +396,14 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary="edits 必须是数组或 JSON 字符串", error="InvalidType", skipped=True)
 
     try:
+        # 目录保护
+        if path.is_dir():
+            return ToolResult(
+                summary=f"无法编辑：{path} 是一个目录，不是文件。请指定具体文件路径。",
+                error="IsDirectory",
+                skipped=True,
+            )
+        
         # 安全守卫：备份原文件 + 核心文件警告
         guard_warning, _ = _safety_guard(path, "编辑")
         original = path.read_text(encoding="utf-8", errors="replace")
