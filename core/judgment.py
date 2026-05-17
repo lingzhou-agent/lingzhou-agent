@@ -193,6 +193,10 @@ class JudgmentOutput:
 
 # ── 判断层 ─────────────────────────────────────────────────────────────────────
 
+# Note (P2): JudgmentLayer is 1684 lines. Future refactoring could extract:
+# - _build_routing_prompt → separate routing module
+# - _parse_action → action parser module
+# - _select_tool → tool selector module
 class JudgmentLayer:
     def __init__(
         self,

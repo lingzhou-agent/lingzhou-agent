@@ -225,7 +225,7 @@ class SelfDriveEngine:
         domain_tasks = {
             "code_structure": {
                 "title": "探索灵舟代码结构",
-                "goal": "阅读 /root/lingzhou/core/ 中的关键模块，理解架构和可改进点。选择你之前没细读过的文件开始。",
+                "goal": "阅读 core/ 中的关键模块，理解架构和可改进点。选择你之前没细读过的文件开始。",
                 "next_step": "列出 core/ 目录中最近修改的文件，选择一个不熟悉的开始阅读",
             },
             "tool_mastery": {
