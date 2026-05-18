@@ -6,9 +6,11 @@ Python 相对于 Go 的决定性优势就在这里：
 """
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import json
+import os
 import sys
 import traceback
 from dataclasses import dataclass
@@ -74,8 +76,8 @@ def _clean_old_backups(tool_path: Path, keep: int = 3) -> None:
     parent = tool_path.parent
     stem = tool_path.stem
     backups = sorted(
-        parent.glob(f"{stem}.backup-*")
-        + parent.glob(f"{stem}.lingzhou-backup"),
+        list(parent.glob(f"{stem}.backup-*"))
+        + list(parent.glob(f"{stem}.lingzhou-backup")),
         key=lambda p: p.stat().st_mtime if p.exists() else 0,
     )
     for old in backups[:-keep] if len(backups) > keep else []:

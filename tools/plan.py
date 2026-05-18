@@ -69,7 +69,7 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     task = None
     if ctx.task_store:
         if task_id:
-            task = await ctx.task_store.get_task(int(task_id))
+            task = await ctx.task_store.get_task_by_id(int(task_id))
         else:
             task = await ctx.task_store.get_active()
 
@@ -80,10 +80,8 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             skipped=True,
         )
 
-    # 持久化 plan 到任务 data
-    data = json.loads(task.data) if task.data else {}
-    data["plan"] = clean_plan
-    await ctx.task_store.update_task_data(task.id, json.dumps(data, ensure_ascii=False))
+    # 持久化 plan 到任务 extras
+    await ctx.task_store.update_task_data(task.id, {"plan": clean_plan})
 
     # 生成摘要
     pending = sum(1 for s in clean_plan if s["status"] == "pending")

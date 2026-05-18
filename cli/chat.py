@@ -11,7 +11,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Annotated, Optional  # noqa: F401
+from typing import Annotated, Any, Optional  # noqa: F401
 
 import typer
 from rich.panel import Panel
@@ -139,7 +139,7 @@ def _parse_user_title_from_llm_output(raw: str) -> str:
     return _normalize_user_title(head)
 
 
-async def _infer_user_title_with_llm(provider: object, messages: list[dict[str, object]]) -> str:
+async def _infer_user_title_with_llm(provider: Any, messages: list[dict[str, object]]) -> str:
     excerpt = _history_excerpt(messages)
     if not excerpt:
         return ""

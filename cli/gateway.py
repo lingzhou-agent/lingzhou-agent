@@ -356,7 +356,7 @@ def gateway_start(
     cfg = load_cfg(config)
     # 加载 .env 确保 daemon 进程有 API keys
     try:
-        from dotenv import load_dotenv
+        from dotenv import load_dotenv  # type: ignore[import-untyped]
         load_dotenv(Path("~/.lingzhou/.env").expanduser())
     except Exception:
         pass

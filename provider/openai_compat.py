@@ -425,7 +425,7 @@ class OpenAICompatProvider:
 
     async def _ensure_copilot_token(self, *, force_refresh: bool = False) -> str:
         if hasattr(self._mode, "_ensure_copilot_token"):
-            return await self._mode._ensure_copilot_token(force_refresh=force_refresh)
+            return await self._mode._ensure_copilot_token(force_refresh=force_refresh)  # type: ignore[union-attr]
         raise RuntimeError("Not in copilot mode")
 
     def _uses_responses_api(self) -> bool:

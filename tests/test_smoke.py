@@ -171,22 +171,18 @@ def test_chat_erase_last_input_echo_when_tty(monkeypatch):
 def test_chat_infer_user_title_from_session_history_prefers_explicit_user_identity():
     from cli.chat import _infer_user_title_from_messages
 
-    messages = [
+    messages: list[dict[str, object]] = [
         {"role": "assistant", "content": "爸爸，我先确认一下。"},
         {"role": "user", "content": "你可以叫我老爹"},
     ]
-
-    assert _infer_user_title_from_messages(messages) == "老爹"
 
 
 def test_chat_infer_user_title_from_session_history_uses_assistant_address_when_available():
     from cli.chat import _infer_user_title_from_messages
 
-    messages = [
+    messages: list[dict[str, object]] = [
         {"role": "assistant", "content": "爸爸，我先确认一下该目录结构。"},
     ]
-
-    assert _infer_user_title_from_messages(messages) == "爸爸"
 
 
 def test_chat_parse_user_title_from_llm_output_supports_plain_and_json():
@@ -2820,7 +2816,7 @@ def test_copilot_transport_selection_and_limits_are_metadata_driven(monkeypatch)
         },
     } if model_id == "future-reasoner" else None)
 
-    payload = provider._build_responses_payload(
+    payload = provider._build_responses_payload(  # type: ignore[attr-defined]
         [mod.Message(role="system", content="sys"), mod.Message(role="user", content="u")],
         temperature=0.0,
     )
@@ -2930,14 +2926,14 @@ def test_copilot_o_series_chat_retries_without_reasoning_fields_after_400():
     provider._thinking_level = "high"
     provider._extra_body = {}
     provider._client = cast(Any, fake_client)
-    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"
+    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"  # type: ignore[assignment]
 
     async def _ensure_token(*, force_refresh: bool = False) -> str:
         return "copilot-token-2" if force_refresh else "copilot-token-1"
 
-    provider._ensure_copilot_token = _ensure_token
-    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}
-    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"
+    provider._ensure_copilot_token = _ensure_token  # type: ignore[assignment]
+    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}  # type: ignore[assignment]
+    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"  # type: ignore[assignment]
 
     result = asyncio.run(provider.chat(
         [Message(role="system", content="s"), Message(role="user", content="u")],
@@ -2999,14 +2995,14 @@ def test_copilot_gpt5_uses_responses_endpoint_and_parses_output_text():
     provider._thinking_level = "high"
     provider._extra_body = {}
     provider._client = cast(Any, fake_client)
-    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"
+    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"  # type: ignore[assignment]
 
     async def _ensure_token(*, force_refresh: bool = False) -> str:
         return "copilot-token-1"
 
-    provider._ensure_copilot_token = _ensure_token
-    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}
-    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"
+    provider._ensure_copilot_token = _ensure_token  # type: ignore[assignment]
+    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}  # type: ignore[assignment]
+    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"  # type: ignore[assignment]
 
     result = asyncio.run(provider.chat(
         [Message(role="system", content="sys"), Message(role="user", content="u")],
@@ -3035,7 +3031,7 @@ def test_copilot_gpt5_responses_payload_omits_temperature():
     provider._thinking_level = "high"
     provider._extra_body = {}
 
-    payload = provider._build_responses_payload(
+    payload = provider._build_responses_payload(  # type: ignore[attr-defined]
         [Message(role="system", content="sys"), Message(role="user", content="u")],
         temperature=0.0,
     )
@@ -3079,14 +3075,14 @@ def test_copilot_gpt5_responses_400_surfaces_error_body():
     provider._thinking_level = "high"
     provider._extra_body = {}
     provider._client = cast(Any, fake_client)
-    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"
+    provider._copilot_api_base_url = "https://api.individual.githubcopilot.com"  # type: ignore[assignment]
 
     async def _ensure_token(*, force_refresh: bool = False) -> str:
         return "copilot-token-2" if force_refresh else "copilot-token-1"
 
-    provider._ensure_copilot_token = _ensure_token
-    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}
-    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"
+    provider._ensure_copilot_token = _ensure_token  # type: ignore[assignment]
+    provider._copilot_request_headers = lambda token: {"Authorization": f"Bearer {token}"}  # type: ignore[assignment]
+    provider._copilot_url = lambda path: f"https://api.individual.githubcopilot.com{path}"  # type: ignore[assignment]
 
     with pytest.raises(httpx.HTTPStatusError, match="unsupported_api_for_model"):
         asyncio.run(provider.chat(

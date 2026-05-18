@@ -548,7 +548,7 @@ def _spawn_pty_process(command: str, workdir: str, env: dict[str, str]) -> tuple
 
 
 async def _watch_pipe_process(info: ProcessInfo) -> None:
-    proc: asyncio.subprocess.Process = info.proc
+    proc = info.proc
     assert proc is not None
 
     async def _reader() -> None:
@@ -593,7 +593,7 @@ async def _watch_pipe_process(info: ProcessInfo) -> None:
 
 
 def _run_pty_until_exit(info: ProcessInfo) -> tuple[int, bool, str | None]:
-    proc: subprocess.Popen[Any] = info.proc
+    proc = info.proc
     master_fd = info.master_fd
     assert proc is not None and master_fd is not None
 
@@ -823,7 +823,7 @@ async def process_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             if eof:
                 os.write(info.master_fd, b"\x04")
         else:
-            proc: asyncio.subprocess.Process = info.proc
+            proc = info.proc
             if proc is None or proc.stdin is None:
                 return ToolResult(summary=f"进程 {session_id} 没有可写 stdin", error="NoStdin")
             if data:

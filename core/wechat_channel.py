@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import requests
+import requests  # type: ignore[import]
 
 log = logging.getLogger("lingzhou.wechat")
 
@@ -300,7 +300,7 @@ class WechatChannel:
         """Download and decrypt iLink images (AES-ECB)."""
         import base64, hashlib
         try:
-            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes as cipher_modes
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes as cipher_modes  # type: ignore[import-untyped]
         except ImportError:
             return items
         

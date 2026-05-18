@@ -54,7 +54,7 @@ async def _browser_run(*args: str, timeout: int = BROWSER_TIMEOUT) -> tuple[int,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return proc.returncode, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+        return proc.returncode or -1, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
     except asyncio.TimeoutError:
         proc.kill()
         return -1, "", "操作超时"

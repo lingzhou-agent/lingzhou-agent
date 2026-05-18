@@ -27,7 +27,7 @@ _log = logging.getLogger("lingzhou.loop")
 
 from core.config import Config
 from core.perception import (
-    PerceptionLayer, EmotionState,
+    PerceptionLayer, EmotionState, PerceptionReplaySummary,
     build_perception_replay, build_emotion_replay,
     derive_ethos_state, compute_judgment_signals,
 )
@@ -446,14 +446,9 @@ def _prefer_tier_for_task(pending_tier: str | None, task: Task | None) -> str | 
     return _task_model_tier(task)
 
 
-def _perception_replay_fallback():
+def _perception_replay_fallback() -> PerceptionReplaySummary:
     """感知回放的兜底默认值，防止 build_perception_replay 异常导致 NameError。"""
-    from dataclasses import dataclass
-    @dataclass
-    class _FallbackReplay:
-        high_error_streak: int = 0
-        trend: str = "stable"
-    return _FallbackReplay()
+    return PerceptionReplaySummary()
 
 
 
@@ -509,7 +504,7 @@ class CognitionLoop:
 
         # 自驱力引擎 (Active Inference + Intrinsic Motivation)
         from core.self_drive import SelfDriveEngine
-        self._self_drive = SelfDriveEngine(cfg.db_path)
+        self._self_drive = SelfDriveEngine(str(cfg.db_path))
 
         # tick 间连续性追踪(预测误差 + 认知信号计算用)
         self._last_next_step: str = ""
@@ -1267,6 +1262,7 @@ class CognitionLoop:
                 )
             )
         if _should_evolve:
+            ctx = self._make_ctx()
             results = await self._evolution.run(ctx)
             for r in results:
                 if r.success:
@@ -1323,6 +1319,7 @@ class CognitionLoop:
         # LLM 通过 model_strategy.next_phase_tier 表达下一轮 tier 偏好,存储到下轮传入
         _next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
         _task_tier = _task_model_tier(active_task)
+        _actual_tier = (self._judgment.last_call_meta or {}).get("tier") or "default"
         _persist_tier = _next_tier if _next_tier in _VALID_MODEL_TIERS else (_task_tier or (_actual_tier if _actual_tier in _VALID_MODEL_TIERS else ""))
         if active_task and _persist_tier and _persist_tier != _task_tier:
             await self._task_store.update_task_data(active_task.id, {"model_tier": _persist_tier})
@@ -1405,6 +1402,7 @@ class CognitionLoop:
             self._success_stall_streak = 0
             return
 
+        assert active_task is not None
         task_id = str(active_task.id)
         if self._success_stall_task_id != task_id:
             self._success_stall_task_id = task_id
@@ -1521,7 +1519,7 @@ class CognitionLoop:
         signal = self._self_drive.compute_signal(
             idle_ticks=self._behavior.wait_streak,
             has_user_message=False,
-            has_active_task=has_real_work and not explore_stuck,
+            has_active_task=bool(has_real_work and not explore_stuck),
             tick=self._judgment.self_model.tick_count,
         )
         if not signal.should_explore:

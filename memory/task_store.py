@@ -434,15 +434,15 @@ class TaskStore:
     async def open(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._db_opt = await aiosqlite.connect(str(self._path))
-        await self._db_opt.execute("PRAGMA journal_mode=WAL")
-        await self._db_opt.execute("PRAGMA foreign_keys=ON")
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA foreign_keys=ON")
         # 检测旧 schema 并迁移
         await self._migrate()
         # 建表（幂等）+ 补充性能索引（IF NOT EXISTS，对存量 DB 同样生效）
-        await self._db_opt.executescript(
+        await self._db.executescript(
             _CREATE_TASKS + _CREATE_FAILURES + _CREATE_FACTS + _CREATE_SIGNALS + _CREATE_CHAT + _CREATE_RUNS + _CREATE_META_REFLECTIONS + _CREATE_INDEXES
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def close(self) -> None:
         if self._db_opt:
@@ -586,16 +586,16 @@ class TaskStore:
         }
         if extras:
             data.update(extras)
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "INSERT INTO tasks (title, status, priority, data) VALUES (?,?,?,?)",
             (title.strip(), status, priority, json.dumps(data, ensure_ascii=False)),
         ) as cur:
             task_id: int = cur.lastrowid or 0
-        await self._db_opt.commit()
+        await self._db.commit()
         return task_id
 
     async def get_task_by_id(self, task_id: int) -> Optional[Task]:
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id, title, status, priority, created_at, data FROM tasks WHERE id=?",
             (task_id,),
         ) as cur:
@@ -608,7 +608,7 @@ class TaskStore:
         runnable = pending / ready / in_progress / resumed
         waiting / blocked / cooldown / done / failed / cancelled 不参与本轮调度。
         """
-        async with self._db_opt.execute(
+        async with self._db.execute(
             """SELECT id, title, status, priority, created_at, data
                FROM tasks
                WHERE status IN ('pending','ready','in_progress','resumed')
@@ -638,7 +638,7 @@ class TaskStore:
             sql = ("SELECT id, title, status, priority, created_at, data "
                    "FROM tasks ORDER BY id LIMIT ?")
             args = (limit,)
-        async with self._db_opt.execute(sql, args) as cur:
+        async with self._db.execute(sql, args) as cur:
             rows = await cur.fetchall()
         return [Task.from_row(r) for r in rows]
 
@@ -652,11 +652,11 @@ class TaskStore:
         task.status = status
         if next_step is not None:
             task.next_step = next_step
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
             (status, task.to_data_json(), task_id),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def mark_waiting(
         self,
@@ -679,11 +679,11 @@ class TaskStore:
             task.current_step = current_step
         if next_step is not None:
             task.next_step = next_step
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
             (task.status, task.to_data_json(), task_id),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def resume_task(
         self,
@@ -709,11 +709,11 @@ class TaskStore:
             merged = dict(task.result_json or {})
             merged.update(result_json)
             task.result_json = merged
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
             (task.status, task.to_data_json(), task_id),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def update_task_data(self, task_id: int, extra_dict: dict[str, Any]) -> None:
         """将 extra_dict 合并进 data JSON（不覆盖 goal/source/next_step）。"""
@@ -735,11 +735,11 @@ class TaskStore:
             for k, v in extra_dict.items()
             if k not in protected_keys and k not in {"current_step", "model_tier"}
         })
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE tasks SET data=? WHERE id=?",
             (task.to_data_json(), task_id),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def update_task_result(self, task_id: int, result_json: dict[str, Any]) -> None:
         task = await self.get_task_by_id(task_id)
@@ -748,11 +748,11 @@ class TaskStore:
         merged = dict(task.result_json or {})
         merged.update(result_json or {})
         task.result_json = merged
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE tasks SET data=? WHERE id=?",
             (task.to_data_json(), task_id),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def sync_task_progress(
         self,
@@ -768,11 +768,11 @@ class TaskStore:
             task.current_step = current_step
         if next_step is not None:
             task.next_step = next_step
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE tasks SET data=? WHERE id=?",
             (task.to_data_json(), task_id),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def add_run(
         self,
@@ -804,16 +804,16 @@ class TaskStore:
         if extras:
             data.update(extras)
         now = datetime.now(UTC).isoformat()
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "INSERT INTO runs (task_id, run_type, worker_type, status, created_at, started_at, data) VALUES (?,?,?,?,?,?,?)",
             (task_id, run_type, worker_type, status, now, now, json.dumps(data, ensure_ascii=False)),
         ) as cur:
             run_id: int = cur.lastrowid or 0
-        await self._db_opt.commit()
+        await self._db.commit()
         return run_id
 
     async def get_run_by_id(self, run_id: int) -> Optional[Run]:
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data FROM runs WHERE id=?",
             (run_id,),
         ) as cur:
@@ -837,7 +837,7 @@ class TaskStore:
             args.append(status)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         args.append(limit)
-        async with self._db_opt.execute(
+        async with self._db.execute(
             f"SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data FROM runs {where} ORDER BY id DESC LIMIT ?",
             tuple(args),
         ) as cur:
@@ -878,11 +878,11 @@ class TaskStore:
             run.extras.update(extras)
         if run.status in {"succeeded", "failed", "cancelled"} and not run.completed_at:
             run.completed_at = datetime.now(UTC).isoformat()
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE runs SET status=?, completed_at=?, data=? WHERE id=?",
             (run.status, run.completed_at, run.to_data_json(), run_id),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def add_meta_reflection(
         self,
@@ -907,7 +907,7 @@ class TaskStore:
         }
         if extras:
             data.update(extras)
-        await self._db_opt.execute(
+        await self._db.execute(
             "INSERT OR REPLACE INTO meta_reflections (id, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, data) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 reflection_id,
@@ -921,17 +921,17 @@ class TaskStore:
                 json.dumps(data, ensure_ascii=False),
             ),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def list_meta_reflections(self, limit: int = 20, loop_level: str | None = None) -> list[MetaReflection]:
         if loop_level:
-            async with self._db_opt.execute(
+            async with self._db.execute(
                 "SELECT id, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data FROM meta_reflections WHERE loop_level=? ORDER BY created_at DESC LIMIT ?",
                 (loop_level, limit),
             ) as cur:
                 rows = await cur.fetchall()
         else:
-            async with self._db_opt.execute(
+            async with self._db.execute(
                 "SELECT id, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data FROM meta_reflections ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ) as cur:
@@ -947,7 +947,7 @@ class TaskStore:
     ) -> bool:
         """如果标题相同的未完成任务不存在，则创建。返回是否新建。"""
         title = title.strip()
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id FROM tasks WHERE title=? AND status NOT IN ('done','failed') LIMIT 1",
             (title,),
         ) as cur:
@@ -970,13 +970,13 @@ class TaskStore:
             {"summary": summary, "context": context, "task_id": task_id},
             ensure_ascii=False,
         )
-        await self._db_opt.execute(
+        await self._db.execute(
             "INSERT INTO failures (kind, data) VALUES (?,?)", (kind, data)
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def list_failures(self, limit: int = 20) -> list[Failure]:
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id, kind, dismissed, created_at, data FROM failures "
             "WHERE dismissed=0 ORDER BY id DESC LIMIT ?",
             (limit,),
@@ -985,7 +985,7 @@ class TaskStore:
         return [Failure.from_row(r) for r in rows]
 
     async def list_failures_for_task(self, task_id: str, limit: int = 20) -> list[Failure]:
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id, kind, dismissed, created_at, data FROM failures "
             "WHERE (json_extract(data,'$.task_id')=? OR json_extract(data,'$.task_id')='') AND dismissed=0 "
             "ORDER BY id DESC LIMIT ?",
@@ -995,32 +995,32 @@ class TaskStore:
         return [Failure.from_row(r) for r in rows]
 
     async def count_failures_by_kind(self, kind: str) -> int:
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT COUNT(*) FROM failures WHERE kind=? AND dismissed=0", (kind,)
         ) as cur:
             row = await cur.fetchone()
         return row[0] if row else 0
 
     async def dismiss_failure(self, failure_id: int) -> None:
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE failures SET dismissed=1 WHERE id=?", (failure_id,)
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     # ── Facts KV ─────────────────────────────────────────────────────────
 
     async def set_fact(self, key: str, value: str, scope: str = "general") -> None:
-        await self._db_opt.execute(
+        await self._db.execute(
             "INSERT INTO facts (key, value, scope, updated_at) VALUES (?,?,?,datetime('now')) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
             "scope=excluded.scope, updated_at=excluded.updated_at",
             (key, value, scope),
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def get_fact(self, key: str) -> tuple[str, bool]:
         """返回 (value, found)。"""
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT value FROM facts WHERE key=?", (key,)
         ) as cur:
             row = await cur.fetchone()
@@ -1030,13 +1030,13 @@ class TaskStore:
 
     async def list_facts(self, prefix: str = "", limit: int = 100) -> list[tuple[str, str]]:
         if prefix:
-            async with self._db_opt.execute(
+            async with self._db.execute(
                 "SELECT key, value FROM facts WHERE key LIKE ? ORDER BY updated_at DESC LIMIT ?",
                 (f"{prefix}%", limit),
             ) as cur:
                 rows = await cur.fetchall()
         else:
-            async with self._db_opt.execute(
+            async with self._db.execute(
                 "SELECT key, value FROM facts ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             ) as cur:
@@ -1044,8 +1044,8 @@ class TaskStore:
         return [(str(k), str(v)) for k, v in rows]
 
     async def delete_fact(self, key: str) -> None:
-        await self._db_opt.execute("DELETE FROM facts WHERE key=?", (key,))
-        await self._db_opt.commit()
+        await self._db.execute("DELETE FROM facts WHERE key=?", (key,))
+        await self._db.commit()
 
     # ── 调度信号（cron 机制）──────────────────────────────────────────────
 
@@ -1058,18 +1058,18 @@ class TaskStore:
     ) -> int:
         """添加一条调度信号。run_at 为 ISO8601 UTC 字符串，返回新记录 id。"""
         payload_json = json.dumps(payload or {}, ensure_ascii=False)
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "INSERT INTO signals (title, run_at, repeat_secs, payload) VALUES (?,?,?,?)",
             (title, run_at, repeat_secs, payload_json),
         ) as cur:
             new_id = cur.lastrowid
-        await self._db_opt.commit()
+        await self._db.commit()
         return new_id  # type: ignore[return-value]
 
     async def due_signals(self) -> list[dict[str, Any]]:
         """返回所有 run_at <= 当前 UTC 时间 且 status='pending' 的信号。"""
         rows: list[dict[str, Any]] = []
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id, title, run_at, repeat_secs, payload "
             "FROM signals WHERE status='pending' AND run_at <= datetime('now') "
             "ORDER BY run_at"
@@ -1090,7 +1090,7 @@ class TaskStore:
 
     async def ack_signal(self, signal_id: int) -> None:
         """确认信号已处理。一次性信号标记为 done；重复信号更新 run_at 到下次触发时间。"""
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT repeat_secs, run_at FROM signals WHERE id=?", (signal_id,)
         ) as cur:
             row = await cur.fetchone()
@@ -1099,21 +1099,21 @@ class TaskStore:
         repeat_secs: Any = row[0]
         if repeat_secs and repeat_secs > 0:
             # 更新到下次触发时间（从当前 run_at + interval，防止漂移）
-            await self._db_opt.execute(
+            await self._db.execute(
                 "UPDATE signals SET run_at=datetime(run_at, ?||' seconds') WHERE id=?",
                 (str(repeat_secs), signal_id),
             )
         else:
-            await self._db_opt.execute(
+            await self._db.execute(
                 "UPDATE signals SET status='done' WHERE id=?", (signal_id,)
             )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     async def list_signals(self, limit: int = 30, include_done: bool = False) -> list[dict[str, Any]]:
         """列出调度信号（默认只列 pending；include_done=True 则包含 done）。"""
         where = "" if include_done else "WHERE status='pending'"
         rows: list[dict[str, Any]] = []
-        async with self._db_opt.execute(
+        async with self._db.execute(
             f"SELECT id, title, run_at, repeat_secs, status, payload "
             f"FROM signals {where} ORDER BY run_at LIMIT ?",
             (limit,),
@@ -1135,7 +1135,7 @@ class TaskStore:
 
     async def get_signal(self, signal_id: int) -> dict[str, Any] | None:
         """按 id 查询单条调度信号；不存在或已删除时返回 None。"""
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id, title, run_at, repeat_secs, status, payload FROM signals WHERE id=?",
             (signal_id,),
         ) as cur:
@@ -1157,34 +1157,34 @@ class TaskStore:
 
     async def cancel_signal(self, signal_id: int) -> None:
         """取消一条调度信号。"""
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE signals SET status='cancelled' WHERE id=?", (signal_id,)
         )
-        await self._db_opt.commit()
+        await self._db.commit()
 
     # ── 对话消息（chat IPC）────────────────────────────────────────────────
 
     async def add_chat_message(self, role: str, content: str, session_id: str = "") -> int:
         """写入一条对话消息（role='user'|'assistant'）。"""
         cleaned = _sanitize_chat_content(content)
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "INSERT INTO chat_messages(role, content, session_id) VALUES (?,?,?)",
             (role, cleaned, session_id),
         ) as cur:
             row_id: int = cur.lastrowid or 0
-        await self._db_opt.commit()
+        await self._db.commit()
         return row_id
 
     async def has_pending_chat_message(self) -> bool:
         """非破坏性检查：是否有待处理的 user 消息（仅用于早唤醒轮询，不消费）。"""
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT 1 FROM chat_messages WHERE role='user' AND status='pending' LIMIT 1"
         ) as cur:
             return await cur.fetchone() is not None
 
     async def pop_pending_chat_message(self) -> Optional[dict[str, Any]]:
         """原子获取并标记最早一条待处理 user 消息（无则返回 None）。"""
-        async with self._db_opt.execute(
+        async with self._db.execute(
             "SELECT id, content, session_id FROM chat_messages "
             "WHERE role='user' AND status='pending' ORDER BY id LIMIT 1"
         ) as cur:
@@ -1192,10 +1192,10 @@ class TaskStore:
         if row is None:
             return None
         mid, content, session_id = row
-        await self._db_opt.execute(
+        await self._db.execute(
             "UPDATE chat_messages SET status='processed' WHERE id=?", (mid,)
         )
-        await self._db_opt.commit()
+        await self._db.commit()
         return {"id": mid, "content": content, "session_id": session_id}
 
     async def get_chat_messages_since(self, since_id: int = 0, session_id: str = "") -> list[dict[str, Any]]:
@@ -1212,14 +1212,14 @@ class TaskStore:
                 "WHERE id > ? ORDER BY id"
             )
             params = (since_id,)
-        async with self._db_opt.execute(sql, params) as cur:
+        async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [{"id": r[0], "role": r[1], "content": r[2], "created_at": r[3]} for r in rows]
 
     async def reset_in_progress_tasks(self) -> int:
         """重启时将所有 in_progress 任务重置为 pending。返回重置数量。"""
-        result = await self._db_opt.execute(
+        result = await self._db.execute(
             "UPDATE tasks SET status='pending' WHERE status='in_progress'"
         )
-        await self._db_opt.commit()
+        await self._db.commit()
         return result.rowcount if result else 0
