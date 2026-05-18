@@ -72,7 +72,7 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
     # 然后原子 drain — 合并为同一个 LLM 上下文轮次，避免"看不到图片"的竞态。
     if chat_id:
         await asyncio.sleep(0.4)
-        follow_ups = await loop._task_store.drain_pending_for_session(chat_id, after_id=msg_id)
+        follow_ups = await loop._task_store.drain_pending_for_chat(chat_id, after_id=msg_id)
         if follow_ups:
             extra = "\n".join(m["content"] for m in follow_ups)
             user_message = f"{user_message}\n{extra}".strip()

@@ -846,14 +846,12 @@ class TaskStore:
         role: str,
         content: str,
         chat_id: str = "",
-        session_id: str | None = None,
     ) -> int:
         """写入一条对话消息（role='user'|'assistant'）。"""
         return await self._chat.add_message(
             role,
             content,
             chat_id=chat_id,
-            session_id=session_id,
         )
 
     async def has_pending_chat_message(self) -> bool:
@@ -864,25 +862,23 @@ class TaskStore:
         """原子获取并标记最早一条待处理 user 消息（无则返回 None）。"""
         return await self._chat.pop_pending_message()
 
-    async def drain_pending_for_session(
+    async def drain_pending_for_chat(
         self, chat_id: str, after_id: int
     ) -> list[dict[str, Any]]:
-        """原子获取并标记同 session 中 id > after_id 的所有 pending 用户消息。
+        """原子获取并标记同 chat_id 中 id > after_id 的所有 pending 用户消息。
         用于合并图片等紧随文本消息之后到达的附件消息。
         """
-        return await self._chat.drain_pending_for_session(chat_id, after_id)
+        return await self._chat.drain_pending_for_chat(chat_id, after_id)
 
     async def get_chat_messages_since(
         self,
         since_id: int = 0,
         chat_id: str = "",
-        session_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """返回 id > since_id 的所有消息（可选按 chat_id 过滤）。"""
         return await self._chat.get_messages_since(
             since_id,
             chat_id=chat_id,
-            session_id=session_id,
         )
 
     async def list_probes(self) -> list[Any]:

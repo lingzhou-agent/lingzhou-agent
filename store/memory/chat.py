@@ -43,10 +43,9 @@ class ChatMessageStore:
         role: str,
         content: str,
         chat_id: str = "",
-        session_id: str | None = None,
     ) -> int:
         cleaned = sanitize_chat_content(content)
-        resolved_chat_id = str(chat_id or session_id or "")
+        resolved_chat_id = str(chat_id or "")
         async with self._db.execute(
             "INSERT INTO chat_messages(role, content, session_id) VALUES (?,?,?)",
             (role, cleaned, resolved_chat_id),
@@ -76,14 +75,14 @@ class ChatMessageStore:
         await self._db.commit()
         return {"id": mid, "content": content, "chat_id": chat_id}
 
-    async def drain_pending_for_session(
+    async def drain_pending_for_chat(
         self,
         chat_id: str,
         after_id: int,
     ) -> list[dict[str, Any]]:
-        """原子获取并标记同 session_id 中 id > after_id 的所有 pending 用户消息。
+        """原子获取并标记同 chat_id 中 id > after_id 的所有 pending 用户消息。
 
-        用于在 pop_pending_message 之后合并紧跟而来的同会话消息（如图片附件）。
+        用于在 pop_pending_message 之后合并紧跟而来的附件消息（如图片）。
         """
         async with self._db.execute(
             "SELECT id, content FROM chat_messages "
@@ -106,9 +105,8 @@ class ChatMessageStore:
         self,
         since_id: int = 0,
         chat_id: str = "",
-        session_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        resolved_chat_id = str(chat_id or session_id or "")
+        resolved_chat_id = str(chat_id or "")
         if resolved_chat_id:
             sql = (
                 "SELECT id, role, content, created_at FROM chat_messages "
