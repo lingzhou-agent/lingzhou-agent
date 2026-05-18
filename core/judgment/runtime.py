@@ -39,6 +39,7 @@ from .context import (
     _fmt_perception_replay,
     _fmt_percept,
     _fmt_primary_skill,
+    _fmt_probe_sensors,
     _fmt_recent_runs,
     _fmt_shell_capabilities,
     _fmt_skill_catalog,
@@ -995,6 +996,7 @@ class JudgmentLayer:
         waiting_tasks = await task_store.list_tasks(status="waiting", limit=5)
         durable_failure_snapshot = await _load_durable_failure_snapshot(task_store)
         context_facts = await _load_context_facts_snapshot(task_store, task)
+        probes = await task_store.list_probes()
 
         search_query = (task.goal or task.title) if task else user_message
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
@@ -1071,6 +1073,7 @@ class JudgmentLayer:
             "primary_skill_section": _fmt_primary_skill(primary_skill),
             "skills_section": _fmt_skills(secondary_skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
+            "probe_sensors_section": _fmt_probe_sensors(probes),
             "self_model_section": fmt_self_model(self.self_model),
             "team_view": _build_team_view_from_cfg(self._cfg),
             "model_routing_section": self._build_model_routing_section(

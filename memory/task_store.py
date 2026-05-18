@@ -885,6 +885,16 @@ class TaskStore:
             session_id=session_id,
         )
 
+    async def list_probes(self) -> list[Any]:
+        """返回所有已部署探针配置（含最近运行结果）。探针系统未初始化时返回空列表。"""
+        pm = self._probe_manager_ref
+        if pm is None:
+            return []
+        try:
+            return await pm.store.list_all()
+        except Exception:
+            return []
+
     async def reset_in_progress_tasks(self) -> int:
         """重启时将所有 in_progress 任务重置为 pending。返回重置数量。"""
         result = await self._db.execute(

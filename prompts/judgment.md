@@ -30,6 +30,9 @@
 ### 认知信号（当前内部状态异常提示）
 {{cognitive_signals_section}}
 
+### 传感器网络（Probe Sensors）
+{{probe_sensors_section}}
+
 ---
 
 ### 工作记忆（最近高优先级条目）
