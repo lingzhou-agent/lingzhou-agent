@@ -85,23 +85,35 @@ async def _maybe_reconcile_bootstrap(loop: Any) -> None:
 
 
 def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
-    """bootstrap_mode=full 且无活跃任务时，向 WM 注入引导待完成感知信号。
+    """bootstrap_mode=full 时，向 WM 注入引导待完成感知信号（无论是否有活跃任务）。
 
     BOOTSTRAP.md 以静态 identity 前缀注入系统提示词，LLM 倾向于将其视为"背景说明"
     而非"当前待办工作"。此函数在动态感知层（WM）补充一条高优先级条目，
     将引导任务拉入 LLM 每轮的主动注意焦点——不是命令，是感知。
     LLM 依然可以基于整体判断决定此刻是否行动。
+
+    注意：不再以 active_task 为过滤条件——有任务时同样注入，
+    确保 LLM 始终感知到"bootstrap 尚未关闭"这一事实。
     """
-    if loop._bootstrap_mode != "full" or active_task is not None:
+    if loop._bootstrap_mode != "full":
         return
-    loop._wm.add(WMItem(
-        kind="bootstrap",
-        content=(
+    if active_task is not None:
+        content = (
+            "[初始化未完成] BOOTSTRAP.md 仍然存在，初始化步骤尚未全部完成并确认。"
+            "当前有活跃任务，可在任务完成后处理初始化，"
+            "或在本轮穿插完成初始化步骤（逐项确认 IDENTITY/SOUL/USER/TOOLS 内容是否落实），"
+            "完成后用 file.delete 删除 BOOTSTRAP.md 以结束引导阶段。"
+        )
+    else:
+        content = (
             "[初始化待完成] BOOTSTRAP.md 仍然存在，说明初始化检查项尚未全部完成并确认。"
             "当前无活跃任务，这是推进初始化的自然时机："
             "逐项确认 IDENTITY / SOUL / USER / TOOLS 的内容是否已具体落实，"
             "完成后用 file.delete 删除 BOOTSTRAP.md 以结束引导阶段。"
-        ),
+        )
+    loop._wm.add(WMItem(
+        kind="bootstrap",
+        content=content,
         priority=0.90,
     ))
 
