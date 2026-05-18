@@ -1,19 +1,17 @@
 """core/probe/manager.py — 探针系统外部 API。
 
 ProbeManager 是探针系统的唯一对外接口，由 CognitionLoop 持有。
-它封装了 ProbeStore（持久化）和 ProbeRunner（调度执行）。
+它封装了 ProbeStore（JSON 文件持久化）和 ProbeRunner（调度执行）。
 """
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 from .store import ProbeStore
 from .runner import ProbeRunner
 from .types import ProbeConfig, ProbeResult
-
-if TYPE_CHECKING:
-    import aiosqlite
 
 _log = logging.getLogger("lingzhou.probe")
 
@@ -22,19 +20,19 @@ class ProbeManager:
     """探针系统管理器（由 CognitionLoop 持有）。
 
     生命周期：
-    1. ProbeManager(db_getter) — 创建（不开连接）
-    2. await manager.start(wm, task_store) — 迁移 DB + 启动调度器
+    1. ProbeManager(probe_file) — 创建；探针配置从 JSON 文件加载
+    2. await manager.start(wm, loop_ref) — 启动所有调度 Task
     3. manager.stop() — 优雅停止所有调度 Task
     """
 
-    def __init__(self, db_getter: Any) -> None:
-        self._store = ProbeStore(db_getter)
+    def __init__(self, probe_file: Path) -> None:
+        self._store = ProbeStore(probe_file)
+        self._store.load()  # 同步加载，在事件循环前就就绪
         self._runner = ProbeRunner(self._store)
 
-    async def start(self, wm: Any, task_store: Any, loop_ref: Any | None = None) -> None:
-        """迁移数据库，注入运行时依赖，启动所有调度任务。"""
-        await self._store.migrate()
-        self._runner.attach(wm, task_store, loop_ref)
+    async def start(self, wm: Any, loop_ref: Any | None = None) -> None:
+        """注入运行时依赖，启动所有调度任务。"""
+        self._runner.attach(wm, loop_ref)
         await self._runner.start_all()
         _log.info("[probe] ProbeManager started")
 

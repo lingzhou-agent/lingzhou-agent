@@ -177,10 +177,10 @@ class CognitionLoop:
         # bootstrap 模式（由 soul.bootstrap() 在 open/run 时写入）
         # "full" = 首次运行；"none" = 正常运行（BOOTSTRAP.md 已删除）
         self._bootstrap_mode: str = "none"
-        # 探针系统：由 startup.open 调用 manager.start() 初始化
-        self._probe_manager: ProbeManager = ProbeManager(lambda: self._task_store._db)
-        # 将 probe_manager 注入 task_store，供工具层通过 ctx.task_store 访问
-        self._task_store._probe_manager_ref = self._probe_manager
+        # 探针系统：配置来自工作区 probes.json（与主 DB 完全解耦）
+        _probe_file = Path(cfg.loop.workspace_dir).expanduser() / "probes.json"
+        self._probe_manager: ProbeManager = ProbeManager(_probe_file)
+        self._judgment._probe_manager = self._probe_manager
         # 按请求计费聚合:追踪距上次真正调用 LLM 已经过了几轮
         self._ticks_since_judge: int = 0
         # LLM 通过 model_strategy.next_phase_tier 跨 tick 传递的 tier 偏好
@@ -219,6 +219,7 @@ class CognitionLoop:
             episodic=self._episodic,
             semantic=self._semantic,
             emotion=self._emotion,
+            probe_manager=self._probe_manager,
         )
 
     async def open(self) -> None:

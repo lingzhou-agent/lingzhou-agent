@@ -416,8 +416,6 @@ class TaskStore:
         self._tasks = TaskStateStore(lambda: self._db)
         self._runs = RunStore(lambda: self._db)
         self._meta_reflections = MetaReflectionStore(lambda: self._db)
-        # 由 CognitionLoop.__init__ 注入，供 probe 工具通过 ctx.task_store 访问
-        self._probe_manager_ref: Any = None
 
     @property
     def _db(self) -> aiosqlite.Connection:
@@ -880,16 +878,6 @@ class TaskStore:
             since_id,
             chat_id=chat_id,
         )
-
-    async def list_probes(self) -> list[Any]:
-        """返回所有已部署探针配置（含最近运行结果）。探针系统未初始化时返回空列表。"""
-        pm = self._probe_manager_ref
-        if pm is None:
-            return []
-        try:
-            return await pm.store.list_all()
-        except Exception:
-            return []
 
     async def reset_in_progress_tasks(self) -> int:
         """重启时将所有 in_progress 任务重置为 pending。返回重置数量。"""

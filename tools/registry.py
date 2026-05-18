@@ -89,6 +89,7 @@ class ToolContext:
     episodic: "EpisodicMemory"
     semantic: "SemanticMemory"
     emotion: "EmotionState"
+    probe_manager: Any = None  # ProbeManager，由 CognitionLoop._make_ctx() 注入
 
     @property
     def dry_run(self) -> bool:

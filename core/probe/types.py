@@ -8,8 +8,8 @@ from typing import Literal
 # 探针执行方式
 ProbeKind = Literal["shell", "http", "python"]
 
-# 数据回传路径
-ProbeDataBack = Literal["none", "wm", "chat"]
+# 数据回传路径（LLM 自行决定如何处置 probe.run 的返回值；interval 探针后台推送到 wm）
+ProbeDataBack = Literal["none", "wm"]
 
 
 @dataclass
@@ -51,7 +51,6 @@ class ProbeConfig:
     data_back: ProbeDataBack = "wm"
     alert_expr: str | None = None
     alert_message: str | None = None
-    chat_id: str | None = None
     enabled: bool = True
 
     # 以下字段由 store 填充，不由用户设置

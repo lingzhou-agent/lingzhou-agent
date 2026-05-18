@@ -54,8 +54,8 @@ async def _open_runtime_impl(loop: Any) -> None:
     loop._routing_providers = _build_routing_providers(loop._cfg)
     loop._judgment.set_routing_providers(loop._routing_providers)
     loop._bootstrap_mode = await loop._soul.bootstrap(loop._judgment, run_kind="interactive")
-    # 探针系统：迁移 DB + 启动所有调度 Task
-    await loop._probe_manager.start(loop._wm, loop._task_store, loop_ref=loop)
+    # 探针系统：从 probes.json 加载（已在 ProbeManager.__init__ 同步完成），启动调度 Task
+    await loop._probe_manager.start(loop._wm, loop_ref=loop)
     await _restore_state_from_db_impl(loop)
 
 

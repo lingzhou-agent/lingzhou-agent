@@ -4,10 +4,11 @@
 - interval:<N>  — 每 N 秒执行一次，独立异步 Task
 - manual        — 仅在 probe.run 工具显式调用时执行
 
-数据回传路径：
-- none / log    — 只写日志
-- wm            — 注入 WorkingMemory，优先级 0.72
-- chat          — 以 user 消息写入 chat_messages，触发下一轮 LLM 处理
+数据回传：
+- wm            — interval 探针后台周期执行时推入 WorkingMemory，下一轮 tick LLM 可见
+- none          — 仅记日志，不自动推送（LLM 通过 probe.run 主动获取）
+
+LLM 可对 probe.run 返回结果自行决定如何处置。
 """
 from __future__ import annotations
 
@@ -61,13 +62,11 @@ class ProbeRunner:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         # 由 ProbeManager 在启动后注入（避免循环依赖）
         self._wm: Any = None
-        self._task_store: Any = None
         self._loop_ref: Any = None
 
-    def attach(self, wm: Any, task_store: Any, loop_ref: Any | None = None) -> None:
-        """注入运行时依赖（WM / TaskStore / Loop 引用）。"""
+    def attach(self, wm: Any, loop_ref: Any | None = None) -> None:
+        """注入运行时依赖（WM / Loop 引用）。"""
         self._wm = wm
-        self._task_store = task_store
         self._loop_ref = loop_ref
 
     async def start_all(self) -> None:
@@ -166,37 +165,17 @@ class ProbeRunner:
         """按 data_back 策略回传探针结果。"""
         if result.alerted and result.alert_detail:
             await self._push_wm(f"[🔔 探针告警] {result.alert_detail}", priority=_ALERT_WM_PRIORITY)
-            if cfg.data_back == "chat":
-                await self._push_chat(result.alert_detail, cfg.chat_id)
 
         if cfg.data_back == "wm":
             summary = _format_summary(cfg, result)
             await self._push_wm(summary, priority=_WM_PRIORITY)
-        elif cfg.data_back == "chat":
-            summary = _format_summary(cfg, result)
-            await self._push_chat(summary, cfg.chat_id)
-        # "none" / "log" — 仅日志，已在上面记录
+        # "none" — 仅日志，已在上面记录
 
     async def _push_wm(self, content: str, priority: float = _WM_PRIORITY) -> None:
         if self._wm is None:
             return
         from memory.working import WMItem  # 延迟 import 避免循环
         self._wm.add(WMItem(kind="probe_result", content=content, priority=priority))
-
-    async def _push_chat(self, content: str, chat_id: str | None) -> None:
-        if self._task_store is None:
-            return
-        resolved_chat_id = chat_id or ""
-        if not resolved_chat_id:
-            # 尝试从 facts 获取最近活跃会话
-            val, found = await self._task_store.get_fact("chat:last_chat_id")
-            if found:
-                resolved_chat_id = val
-        if not resolved_chat_id:
-            _log.debug("[probe] data_back=chat 但无可用 chat_id，降级为 wm")
-            await self._push_wm(content)
-            return
-        await self._task_store.add_chat_message("user", content, chat_id=resolved_chat_id)
 
     def status(self) -> dict[str, str]:
         """返回所有调度 Task 的状态摘要。"""

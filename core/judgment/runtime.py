@@ -251,6 +251,8 @@ class JudgmentLayer:
         self._routing_providers: dict[str, "Provider"] = {}
         # 内层工具循环用：缓存上一次 decide() 组装的完整上下文，由 decide_continue() 复用
         self._last_context_text: str = ""
+        # 探针系统引用：由 CognitionLoop.__init__ 在创建 ProbeManager 后注入
+        self._probe_manager: Any = None
         # 最近一次真实 LLM 调用元数据（供 loop 日志输出实际 model/tier/thinking）
         self._last_call_meta: dict[str, str] = {
             "phase": "",
@@ -996,7 +998,7 @@ class JudgmentLayer:
         waiting_tasks = await task_store.list_tasks(status="waiting", limit=5)
         durable_failure_snapshot = await _load_durable_failure_snapshot(task_store)
         context_facts = await _load_context_facts_snapshot(task_store, task)
-        probes = await task_store.list_probes()
+        probes = await self._probe_manager.list_probes() if self._probe_manager else []
 
         search_query = (task.goal or task.title) if task else user_message
         episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""

@@ -29,8 +29,9 @@ _log = logging.getLogger("lingzhou.probe")
 @tool(ToolManifest(
     name="probe.install",
     description=(
-        "安装（或更新）一个探针传感器。探针会按指定间隔自动运行，"
-        "并将结果回传到工作记忆（wm）或活跃对话（chat）。\n\n"
+        "安装（或更新）一个探针传感器。\n\n"
+        "interval 探针会在后台周期运行，结果写入工作记忆（wm）下一轮可见；\n"
+        "manual 探针仅在你主动调用 probe.run 时执行，结果直接返回。\n\n"
         "示例（每 60 秒监控 CPU 温度）：\n"
         "  kind=shell  spec='cat /sys/class/thermal/thermal_zone0/temp'\n"
         "  trigger='interval:60'  data_back='wm'\n"
@@ -41,10 +42,9 @@ _log = logging.getLogger("lingzhou.probe")
         ToolParam("kind", "string", "执行方式：shell | http | python", required=True),
         ToolParam("spec", "string", "命令字符串 / URL / Python 代码（对应 kind）", required=True),
         ToolParam("trigger", "string", "调度触发器：interval:<秒> 或 manual", required=True),
-        ToolParam("data_back", "string", "结果回传：none | wm | chat（默认 wm）", required=False),
+        ToolParam("data_back", "string", "interval 探针结果回传：wm（写入工作记忆）| none（仅日志），默认 wm", required=False),
         ToolParam("alert_expr", "string", "告警表达式（Python bool，变量 output 为结果字符串）", required=False),
         ToolParam("alert_message", "string", "告警消息文本，支持 {output} 占位符", required=False),
-        ToolParam("chat_id", "string", "data_back=chat 时发往哪个会话（空 = 最近活跃会话）", required=False),
     ],
     prefer_tier="reasoner",
     progress_category="mutation",
@@ -71,7 +71,7 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(summary="trigger 不能为空，格式：interval:<秒> 或 manual", error="InvalidParam", skipped=True)
 
     data_back_raw = str(params.get("data_back") or "wm").strip().lower()
-    if data_back_raw not in ("none", "wm", "chat"):
+    if data_back_raw not in ("none", "wm"):
         data_back_raw = "wm"
 
     cfg = ProbeConfig(
@@ -82,7 +82,6 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         data_back=data_back_raw,  # type: ignore[arg-type]
         alert_expr=str(params.get("alert_expr") or "") or None,
         alert_message=str(params.get("alert_message") or "") or None,
-        chat_id=str(params.get("chat_id") or "") or None,
         enabled=True,
     )
 
@@ -205,11 +204,5 @@ async def probe_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 # ── 内部工具函数 ────────────────────────────────────────────────────────────────
 
 def _get_probe_manager(ctx: ToolContext) -> Any:
-    """从 ToolContext.task_store 或全局 loop 引用中获取 ProbeManager。"""
-    # ProbeManager 通过 task_store 的 _probe_manager_ref 传递
-    ts = ctx.task_store
-    probe_mgr = getattr(ts, "_probe_manager_ref", None)
-    if probe_mgr is not None:
-        return probe_mgr
-    # 兜底：尝试从模块全局 _loop_ref 获取
-    return None
+    """从 ToolContext.probe_manager 获取 ProbeManager。"""
+    return ctx.probe_manager
