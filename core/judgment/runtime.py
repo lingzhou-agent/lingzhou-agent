@@ -59,7 +59,7 @@ _log = logging.getLogger("lingzhou.judgment")
 # 低成本读取/枚举类工具 → reader tier（也被 loop.py 用于自动 tier 推断）
 _READER_TOOLS = frozenset({
     "file.list", "file.read",
-    "memory.get_fact",
+    "memory.get_fact", "memory.search",
     "schedule.list", "schedule.ack", "schedule.cancel",
     "shell.capabilities",
     "task.list",

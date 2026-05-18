@@ -130,12 +130,11 @@
   "model_strategy": {
     "next_phase_tier": "reader | reasoner | repair | default",
     "escalate_if": ["条件1", "条件2"],
-    "reason": "为什么下一阶段应该使用这个 tier（可为空）",
-    "routing_overrides": {},
-    "next_idle_gap_secs": null,
-    "thinking_override": null
+    "reason": "为什么下一阶段应该使用这个 tier（可为空）"
   }
 }
+
+（`routing_overrides`、`next_idle_gap_secs`、`thinking_override` 为可选字段，不需要时可省略；需要时按 model_routing_section 说明填写）
 
 决策规则：
 - wait: 当前无需行动，感知信号正常，等待下一轮

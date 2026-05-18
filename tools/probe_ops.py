@@ -116,6 +116,7 @@ async def probe_install(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     params=[
         ToolParam("name", "string", "要移除的探针名称", required=True),
     ],
+    prefer_tier="reasoner",
     progress_category="mutation",
 ))
 async def probe_remove(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -139,7 +140,10 @@ async def probe_remove(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(ToolManifest(
     name="probe.run",
-    description="立即执行指定探针（无论 trigger 配置），获取当前数据快照。",
+    description=(
+        "立即执行指定探针（无论 trigger 配置），获取当前数据快照。\n"
+        "结果始终直接返回，不受 data_back 设置影响。"
+    ),
     params=[
         ToolParam("name", "string", "探针名称", required=True),
     ],
@@ -217,6 +221,7 @@ async def probe_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     params=[
         ToolParam("name", "string", "要禁用的探针名称", required=True),
     ],
+    prefer_tier="reasoner",
     progress_category="mutation",
 ))
 async def probe_disable(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -239,6 +244,7 @@ async def probe_disable(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     params=[
         ToolParam("name", "string", "要启用的探针名称", required=True),
     ],
+    prefer_tier="reasoner",
     progress_category="mutation",
 ))
 async def probe_enable(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
