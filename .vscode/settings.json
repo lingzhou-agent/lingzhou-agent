@@ -1,0 +1,11 @@
+{
+  "files.exclude": {
+    "core/loop.py": true
+  },
+  "files.watcherExclude": {
+    "**/core/loop.py": true
+  },
+  "search.exclude": {
+    "core/loop.py": true
+  }
+}

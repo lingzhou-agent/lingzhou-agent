@@ -5,7 +5,6 @@ import asyncio
 import hashlib
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -13,22 +12,6 @@ from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, too
 
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_PREVIEW_CHARS = 500
-_COMMON_COMMANDS = (
-    "python3",
-    "python",
-    "bash",
-    "sh",
-    "grep",
-    "find",
-    "ls",
-    "cat",
-    "sqlite3",
-    "git",
-    "sed",
-    "awk",
-    "jq",
-    "rg",
-)
 
 _MANIFEST = ToolManifest(
     name="shell.run",
@@ -44,13 +27,6 @@ _MANIFEST = ToolManifest(
         ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认 500", required=False),
     ],
 )
-
-_CAP_MANIFEST = ToolManifest(
-    name="shell.capabilities",
-    description="返回 shell 执行能力画像（可用命令、默认限制、环境语义）",
-    params=[],
-)
-
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -69,26 +45,6 @@ def _threshold_value(ctx: ToolContext, attr: str, default: Any) -> Any:
     config = getattr(ctx, "config", None)
     thresholds = getattr(config, "thresholds", None)
     return getattr(thresholds, attr, default)
-
-
-def _build_capabilities(
-    workdir: Path,
-    timeout: float = _DEFAULT_TIMEOUT,
-    preview: int = _DEFAULT_PREVIEW_CHARS,
-) -> dict[str, Any]:
-    available = [cmd for cmd in _COMMON_COMMANDS if shutil.which(cmd)]
-    return {
-        "engine": "asyncio.create_subprocess_shell",
-        "execution_model": "one-shot-non-persistent",
-        "sandbox": False,
-        "network_policy": "inherits-host-environment",
-        "default_timeout_sec": timeout,
-        "default_output_preview_chars": preview,
-        "workdir": str(workdir),
-        "shell": os.environ.get("SHELL") or "/bin/sh",
-        "available_commands": available,
-        "missing_commands": [cmd for cmd in _COMMON_COMMANDS if cmd not in available],
-    }
 
 
 def _truncate_text(text: str, limit: int) -> str:
@@ -122,28 +78,6 @@ def _fingerprint(command: str, workdir: Path, returncode: int, output: str) -> s
     digest.update(b"\0")
     digest.update(output.encode("utf-8", errors="replace"))
     return f"shell:{digest.hexdigest()[:16]}"
-
-
-@tool(_CAP_MANIFEST)
-async def shell_capabilities(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    workdir = _resolve_workdir(params.get("workdir"), ctx)
-    caps = _build_capabilities(
-        workdir,
-        float(_threshold_value(ctx, "shell_timeout", _DEFAULT_TIMEOUT)),
-        int(_threshold_value(ctx, "shell_max_output_chars", _DEFAULT_PREVIEW_CHARS)),
-    )
-    summary = (
-        "shell.capabilities: "
-        f"sandbox={caps['sandbox']} mode={caps['execution_model']} "
-        f"timeout={caps['default_timeout_sec']}s cmds={len(caps['available_commands'])}"
-    )
-    return ToolResult(
-        summary=summary,
-        evidence=json.dumps(caps, ensure_ascii=False),
-        resource_key=str(workdir),
-        fingerprint=f"caps:{len(caps['available_commands'])}",
-        metadata={"caps": caps},
-    )
 
 
 @tool(_MANIFEST)

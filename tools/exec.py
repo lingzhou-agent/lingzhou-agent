@@ -307,8 +307,6 @@ def _build_capabilities_v2(workdir: str) -> dict[str, Any]:
     }
 
 
-# ── shell.capabilities 覆盖增强版 ─────────────────────────────────────────────
-
 _CAP_MANIFEST_V2 = ToolManifest(
     name="shell.capabilities",
     description="返回 shell 执行能力画像（可用命令、默认限制、环境语义、exec/process 支持）",
