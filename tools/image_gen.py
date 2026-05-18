@@ -102,7 +102,7 @@ async def asyncio_sleep(seconds: float):
     name="image.generate",
     description=(
         "文字生成图片。使用 DashScope wanx 或 OpenAI DALL-E。\n"
-        "生成的图片保存到 generated/ 目录（项目根下）。"
+        "生成的图片保存到 ~/.lingzhou/generated/ 目录。"
     ),
     progress_category="io",
     params=[

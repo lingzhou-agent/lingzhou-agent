@@ -206,6 +206,15 @@ class LoopConfig(BaseModel):
             "空列表 [] 表示禁用此机制。示例：[3] 仅轻提示；[3,6,10] 三级递进。"
         ),
     )
+    wechat_coalesce_delay: float = Field(
+        default=1.5, ge=0.0,
+        description=(
+            "wechat 通道图文合并等待窗口（秒）。"
+            "用户连续发文字+图片时，iLink 将两条消息独立下发，图片需要下载解密才能写入 DB。"
+            "drain 前等待此时长，让同批次图片消息有机会落库后再合并进同一 LLM 轮次。"
+            "设为 0 可禁用（不等待）；建议范围 0.5-3.0。"
+        ),
+    )
 
 
 class PromptsConfig(BaseModel):

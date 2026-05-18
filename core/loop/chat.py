@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -69,6 +70,13 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
 
     # drain 同一会话紧随而来的消息，合并为同一 LLM 上下文轮次
     if chat_id:
+        # wechat 通道：用户经常紧接文字发图片，各为独立 iLink 消息。
+        # 图片消息需要下载解密才能写入 DB，可能晚于文字消息被 asyncio 消费。
+        # 短暂等待让同批次图片消息有机会写入 DB 再 drain。
+        if chat_id.startswith("wechat:"):
+            delay = loop._cfg.loop.wechat_coalesce_delay
+            if delay > 0:
+                await asyncio.sleep(delay)
         follow_ups = await loop._task_store.drain_pending_for_chat(chat_id, after_id=msg_id)
         if follow_ups:
             extra = "\n".join(m["content"] for m in follow_ups)

@@ -4,7 +4,7 @@ from pathlib import Path
 
 _DATA_DIR = Path("~/.lingzhou").expanduser()
 _PROJECT_DIR = Path(__file__).resolve().parent.parent
-_GENERATED_DIR = _PROJECT_DIR / "generated"
+_GENERATED_DIR = _DATA_DIR / "generated"
 
 
 def project_root() -> Path:
@@ -18,6 +18,6 @@ def data_dir() -> Path:
 
 
 def generated_dir() -> Path:
-    """生成文件目录（<项目根>/generated）。"""
+    """生成文件目录 ~/.lingzhou/generated（运行期数据目录）。"""
     _GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     return _GENERATED_DIR

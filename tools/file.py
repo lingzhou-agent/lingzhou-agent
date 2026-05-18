@@ -563,9 +563,12 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     partial_idx = original.find(first_line) if len(first_line) > 10 else -1
                     context = ""
                     if partial_idx != -1:
-                        ctx_start = max(0, partial_idx - 20)
-                        ctx_end = min(len(original), partial_idx + len(first_line) + 60)
-                        context = f"\n实际内容（大约该位置）:\n{original[ctx_start:ctx_end]}"
+                        ctx_start = max(0, partial_idx - 150)
+                        ctx_end = min(len(original), partial_idx + len(first_line) + 300)
+                        context = f"\n实际内容（该位置附近）:\n{original[ctx_start:ctx_end]}"
+                    else:
+                        # 完全没找到，返回完整文件内容，让 LLM 自己定位并重建 oldText
+                        context = f"\n完整文件内容:\n{original}"
                     return ToolResult(
                         summary=f"edits[{i}]: oldText 在文件中未找到。{context}\n请用 file.read 确认完整的当前内容后重试。",
                         error="OldTextNotFound",

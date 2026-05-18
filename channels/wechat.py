@@ -206,6 +206,11 @@ class WechatChannel:
                     (f"wechat:ctx:{from_user}", ctx_token),
                 )
                 conn.commit()
+            conn.execute(
+                "INSERT OR REPLACE INTO facts (key, value) VALUES (?,?)",
+                ("wechat:last_user", from_user),
+            )
+            conn.commit()
             self._user_msg_ids[from_user] = msg_id
             log.info("[wechat] chat_msg id=%d from=%s: %s", msg_id, from_user[:16], short)
         finally:
