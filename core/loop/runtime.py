@@ -71,7 +71,7 @@ from core.task_runtime import (
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
     _sync_task_progress_state,
-    _VALID_MODEL_TIERS,
+    VALID_MODEL_TIERS,
 )
 from memory.working import WorkingMemory, WMItem
 from memory.episodic import EpisodicMemory

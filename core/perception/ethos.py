@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from core.perception.emotion import _clamp01
+from core.perception.emotion import clamp01
 
 
 @dataclass
@@ -55,29 +55,29 @@ def derive_ethos_state(
     """
     v = EthosValues()
     if failure_count > 0:
-        v.truth   = _clamp01(v.truth   + 0.10)
-        v.caution = _clamp01(v.caution + 0.10)
-        v.curiosity = _clamp01(v.curiosity - 0.08)
+        v.truth   = clamp01(v.truth   + 0.10)
+        v.caution = clamp01(v.caution + 0.10)
+        v.curiosity = clamp01(v.curiosity - 0.08)
     if high_error_streak >= 2:
-        v.truth   = _clamp01(v.truth   + 0.10)
-        v.caution = _clamp01(v.caution + 0.12)
-        v.care    = _clamp01(v.care    - 0.08)
+        v.truth   = clamp01(v.truth   + 0.10)
+        v.caution = clamp01(v.caution + 0.12)
+        v.care    = clamp01(v.care    - 0.08)
     if has_active_task:
-        v.continuity = _clamp01(v.continuity + 0.12)
+        v.continuity = clamp01(v.continuity + 0.12)
     if has_next_step:
-        v.continuity = _clamp01(v.continuity + 0.08)
-        v.care       = _clamp01(v.care       + 0.06)
+        v.continuity = clamp01(v.continuity + 0.08)
+        v.care       = clamp01(v.care       + 0.06)
     if perception_trend == "recovering":
-        v.curiosity = _clamp01(v.curiosity + 0.08)
-        v.care      = _clamp01(v.care      + 0.04)
+        v.curiosity = clamp01(v.curiosity + 0.08)
+        v.care      = clamp01(v.care      + 0.04)
     # EMA 混合历史基线（演化速率由 ema_alpha 控制，从 cfg.soul.ethos_ema_alpha 传入）
     if baseline:
         a = ema_alpha
-        v.truth      = _clamp01(a * baseline.get("truth",      v.truth)      + (1-a) * v.truth)
-        v.caution    = _clamp01(a * baseline.get("caution",    v.caution)    + (1-a) * v.caution)
-        v.continuity = _clamp01(a * baseline.get("continuity", v.continuity) + (1-a) * v.continuity)
-        v.curiosity  = _clamp01(a * baseline.get("curiosity",  v.curiosity)  + (1-a) * v.curiosity)
-        v.care       = _clamp01(a * baseline.get("care",       v.care)       + (1-a) * v.care)
+        v.truth      = clamp01(a * baseline.get("truth",      v.truth)      + (1-a) * v.truth)
+        v.caution    = clamp01(a * baseline.get("caution",    v.caution)    + (1-a) * v.caution)
+        v.continuity = clamp01(a * baseline.get("continuity", v.continuity) + (1-a) * v.continuity)
+        v.curiosity  = clamp01(a * baseline.get("curiosity",  v.curiosity)  + (1-a) * v.curiosity)
+        v.care       = clamp01(a * baseline.get("care",       v.care)       + (1-a) * v.care)
     # 运行时下限（防止极端场景下完全崩溃）
     v.truth   = max(v.truth,   floor_truth)
     v.caution = max(v.caution, floor_caution)

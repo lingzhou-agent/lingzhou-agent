@@ -7,7 +7,7 @@ from typing import Any
 from core.config import Config
 from core.judgment import JudgmentOutput
 from core.perception import PerceptionReplaySummary
-from core.task_runtime import _VALID_MODEL_TIERS
+from core.task_runtime import VALID_MODEL_TIERS
 from memory.task_store import Task
 
 # 上下文截断具名常量(语义记忆 & 日志截断阈值;调整后重启即生效,不影响已存数据)
@@ -88,11 +88,11 @@ def _task_model_tier(task: Task | None) -> str | None:
     if not task:
         return None
     tier = (task.model_tier or "").strip()
-    return tier if tier in _VALID_MODEL_TIERS else None
+    return tier if tier in VALID_MODEL_TIERS else None
 
 
 def _prefer_tier_for_task(pending_tier: str | None, task: Task | None) -> str | None:
-    if pending_tier in _VALID_MODEL_TIERS:
+    if pending_tier in VALID_MODEL_TIERS:
         return pending_tier
     return _task_model_tier(task)
 

@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 # ── 辅助 ──────────────────────────────────────────────────────────────────────
 
-def _clamp01(x: float) -> float:
+def clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
@@ -87,40 +87,40 @@ class EmotionState:
         设计原则：感知信号 → 评价维度 → core affect → 离散情感 → 调节策略。
         LLM 不参与情绪计算（LLM 自报告自身情绪属自引用错误）。
         """
-        prediction = _clamp01(prediction_error)
-        wm_trust = _clamp01(1.0 - wm_pressure)
-        failures = _clamp01(failure_count / 3.0)
+        prediction = clamp01(prediction_error)
+        wm_trust = clamp01(1.0 - wm_pressure)
+        failures = clamp01(failure_count / 3.0)
         blocked = 1.0 if task_status == "blocked" else 0.0
         next_s = 1.0 if has_next_step else 0.0
         has_task = 1.0 if has_active_task else 0.0
         recovering = 1.0 if replay_trend == "recovering" else 0.0
-        high_err = _clamp01(high_error_streak / 3.0)
+        high_err = clamp01(high_error_streak / 3.0)
 
         # ── OCC 评价维度 ────────────────────────────────────────────────────────
         app = Appraisal(
-            novelty        = _clamp01(0.25 + 0.55 * prediction + 0.20 * (1.0 - wm_trust)),
+            novelty        = clamp01(0.25 + 0.55 * prediction + 0.20 * (1.0 - wm_trust)),
             goal_congruence= _clamp_signed(
                 0.35 * wm_trust + 0.15 * next_s + 0.12 * recovering
                 - 0.55 * failures - 0.25 * blocked
             ),
-            control        = _clamp01(
+            control        = clamp01(
                 0.20 + 0.45 * wm_trust + 0.15 * next_s + 0.10 * has_task
                 - 0.20 * prediction - 0.10 * high_err
             ),
-            certainty      = _clamp01(
+            certainty      = clamp01(
                 0.20 + 0.60 * wm_trust + 0.10 * next_s - 0.40 * prediction
             ),
         )
 
         # ── 离散情感（强度 < 0.15 过滤）──────────────────────────────────────
         raw_feelings: list[tuple[str, float, str]] = [
-            ("distress",   _clamp01(max(0, -app.goal_congruence) * 0.8 + 0.2 * failures), "goal_failure"),
-            ("frustration",_clamp01(0.6 * blocked + 0.4 * prediction),                    "blocked_or_error"),
-            ("fear",       _clamp01(0.7 * prediction + 0.2 * (1.0 - app.certainty)),       "uncertainty"),
-            ("hope",       _clamp01(0.45 * next_s + 0.25 * wm_trust + 0.20 * recovering), "recoverable_path"),
-            ("confidence", _clamp01(0.55 * app.control + 0.25 * wm_trust),                 "available_control"),
-            ("relief",     _clamp01(0.45 * recovering + 0.20 * wm_trust - 0.20 * prediction), "improving_trend"),
-            ("joy",        _clamp01(max(0, app.goal_congruence) * 0.55),                   "goal_progress"),
+            ("distress",   clamp01(max(0, -app.goal_congruence) * 0.8 + 0.2 * failures), "goal_failure"),
+            ("frustration",clamp01(0.6 * blocked + 0.4 * prediction),                    "blocked_or_error"),
+            ("fear",       clamp01(0.7 * prediction + 0.2 * (1.0 - app.certainty)),       "uncertainty"),
+            ("hope",       clamp01(0.45 * next_s + 0.25 * wm_trust + 0.20 * recovering), "recoverable_path"),
+            ("confidence", clamp01(0.55 * app.control + 0.25 * wm_trust),                 "available_control"),
+            ("relief",     clamp01(0.45 * recovering + 0.20 * wm_trust - 0.20 * prediction), "improving_trend"),
+            ("joy",        clamp01(max(0, app.goal_congruence) * 0.55),                   "goal_progress"),
         ]
         feelings = sorted(
             [Feeling(n, i, c) for n, i, c in raw_feelings if i >= 0.15],
@@ -130,9 +130,9 @@ class EmotionState:
         # ── Core Affect（Russell 2003）────────────────────────────────────────
         pos_avg = sum(f.intensity for f in feelings if f.name in {"hope", "confidence", "relief", "joy"})
         neg_avg = sum(f.intensity for f in feelings if f.name in {"distress", "frustration", "fear"})
-        target_v = _clamp01(0.35 + app.goal_congruence * 0.45 + (pos_avg - neg_avg) * 0.20)
-        target_a = _clamp01(0.20 + app.novelty * 0.45 + (1.0 - app.control) * 0.35)
-        target_d = _clamp01(0.30 + app.control * 0.45 + app.certainty * 0.25)
+        target_v = clamp01(0.35 + app.goal_congruence * 0.45 + (pos_avg - neg_avg) * 0.20)
+        target_a = clamp01(0.20 + app.novelty * 0.45 + (1.0 - app.control) * 0.35)
+        target_d = clamp01(0.30 + app.control * 0.45 + app.certainty * 0.25)
 
         # EMA 平滑（性格不因单次经历骤变）
         self.valence   = alpha * target_v + (1 - alpha) * self.valence

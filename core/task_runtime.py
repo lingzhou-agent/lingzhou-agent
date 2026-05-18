@@ -12,7 +12,7 @@ from memory.working import WorkingMemory, WMItem
 
 _log = logging.getLogger("lingzhou.loop")
 
-_VALID_MODEL_TIERS = frozenset({"reader", "reasoner", "repair"})
+VALID_MODEL_TIERS = frozenset({"reader", "reasoner", "repair"})
 
 
 def _suggest_tier_from_text(text: str) -> str | None:
@@ -221,7 +221,7 @@ async def _consume_task_runtime_hints(
             tool_name = str(guard.get("tool_name") or "unknown")
             proposal = str(guard.get("proposal") or "").strip()
             preferred_tier = str(guard.get("preferred_tier") or "").strip()
-            tier = preferred_tier if preferred_tier in _VALID_MODEL_TIERS else "repair"
+            tier = preferred_tier if preferred_tier in VALID_MODEL_TIERS else "repair"
             if task.model_tier != tier:
                 await task_store.update_task_data(task.id, {"model_tier": tier})
                 task.model_tier = tier

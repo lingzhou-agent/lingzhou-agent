@@ -20,7 +20,7 @@ from core.perception import (
 )
 from core.run_refresh import refresh_running_runs
 from core.task_runtime import (
-    _VALID_MODEL_TIERS,
+    VALID_MODEL_TIERS,
     _consume_task_runtime_hints,
     _ingest_actionable_meta_reflections,
     _sync_task_progress_state,
@@ -578,7 +578,7 @@ async def _tick_finalize_impl(
     next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
     task_tier = _task_model_tier(active_task)
     actual_tier = (loop._judgment.last_call_meta or {}).get("tier") or "default"
-    persist_tier = next_tier if next_tier in _VALID_MODEL_TIERS else (task_tier or (actual_tier if actual_tier in _VALID_MODEL_TIERS else ""))
+    persist_tier = next_tier if next_tier in VALID_MODEL_TIERS else (task_tier or (actual_tier if actual_tier in VALID_MODEL_TIERS else ""))
     if active_task and persist_tier and persist_tier != task_tier:
         await loop._task_store.update_task_data(active_task.id, {"model_tier": persist_tier})
         active_task.model_tier = persist_tier
