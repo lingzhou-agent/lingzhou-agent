@@ -73,7 +73,6 @@ class WorkingMemory:
         """
         if item.kind:
             self._items = [i for i in self._items if i.kind != item.kind]
-            heapq.heapify(self._items)  # 修复堆损坏：过滤后重建堆，再 push
         heapq.heappush(self._items, item)
         # 先按条目数收敛
         while len(self._items) > self._capacity:
