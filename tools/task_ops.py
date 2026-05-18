@@ -148,20 +148,22 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 metadata={"task_id": task.id, "recent_tools": recent_tools},
             )
 
-        # 新门槛：如果最近有 mutation（file.edit/write/delete/shell.run），
-        # 要求后面至少有一个成功的验证动作（如跑测试）。
-        # 这样"改了代码就跑"不会被当作已完成。
+        # 新门槛：如果最近有 mutation（file.edit/write/delete），
+        # 要求其后至少有一个成功的验证动作（如跑测试）。
+        # 注意：list_runs 返回的是 ORDER BY id DESC（最新在前），
+        # 因此用 min(idx) 找最新 mutation，[:idx] 取比它更新的工具。
         has_mutation = any(t in _MUTATION_TOOLS for t in recent_tools)
         if has_mutation:
-            # 找到最后一个 mutation 之后的所有 run
-            last_mutation_idx = max(i for i, t in enumerate(recent_tools) if t in _MUTATION_TOOLS)
-            post_mutation_tools = recent_tools[last_mutation_idx + 1:]
+            # 最新 mutation 的索引（DESC 顺序下 min = 最近）
+            latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if t in _MUTATION_TOOLS)
+            # 比最新 mutation 更近的工具（索引更小）
+            post_mutation_tools = recent_tools[:latest_mutation_idx]
             verified_after = any(t in _VERIFY_TOOLS for t in post_mutation_tools)
             if not verified_after:
                 return ToolResult(
                     summary=(
                         f"任务 [{task.id}] 暂不允许完成：最近有修改动作"
-                        f"（{recent_tools[last_mutation_idx]}），"
+                        f"（{recent_tools[latest_mutation_idx]}），"
                         "但缺少后续验证（如 shell.run 跑测试）。"
                         "请先验证修改正确性，再完成任务。"
                     ),
@@ -169,7 +171,7 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     skipped=True,
                     metadata={
                         "task_id": task.id,
-                        "last_mutation": recent_tools[last_mutation_idx],
+                        "last_mutation": recent_tools[latest_mutation_idx],
                         "post_mutation_tools": post_mutation_tools,
                     },
                 )
