@@ -64,7 +64,7 @@ async def _load_durable_failure_policy(task_store: "TaskStore | None") -> dict[s
     return policy
 
 
-def _action_key_param(params: dict[str, Any] | None) -> str:
+def action_key_param(params: dict[str, Any] | None) -> str:
     p = params or {}
     return (
         p.get("path")
@@ -79,7 +79,7 @@ def _action_key_param(params: dict[str, Any] | None) -> str:
 
 
 def _failure_fact_key(action: "JudgmentOutput") -> str:
-    sig = f"{action.chosen_action_id or ''}|{_action_key_param(action.params)}"
+    sig = f"{action.chosen_action_id or ''}|{action_key_param(action.params)}"
     digest = hashlib.md5(sig.encode("utf-8", errors="replace")).hexdigest()[:16]
     return f"durable_failure:{digest}"
 
@@ -478,7 +478,7 @@ class ExecutionLayer:
                 if count >= durable_threshold and muted_until > time.time():
                     result = ToolResult(
                         summary=(
-                            f"跳过已知稳定失败动作：{action.chosen_action_id} {_action_key_param(action.params)}\n"
+                            f"跳过已知稳定失败动作：{action.chosen_action_id} {action_key_param(action.params)}\n"
                             f"原因: {reason}；最近已连续失败 {count} 次。"
                             " 若外部状态已修复，请等待静默窗口结束后重试，或更换动作/参数。"
                         ),
@@ -536,7 +536,7 @@ class ExecutionLayer:
                 count = int(prev.get("count") or 0) + 1 if prev.get("reason") == reason else 1
                 payload = {
                     "tool": action.chosen_action_id,
-                    "key": _action_key_param(action.params),
+                    "key": action_key_param(action.params),
                     "reason": reason,
                     "count": count,
                     "last_summary": result.summary[:200],
@@ -551,7 +551,7 @@ class ExecutionLayer:
                     failure_key,
                     json.dumps({
                         "tool": action.chosen_action_id,
-                        "key": _action_key_param(action.params),
+                        "key": action_key_param(action.params),
                         "reason": "",
                         "count": 0,
                         "last_summary": result.summary[:200],

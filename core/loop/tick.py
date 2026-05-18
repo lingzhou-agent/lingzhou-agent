@@ -61,7 +61,7 @@ from .postprocess import (
     _write_success_stall_meta_reflection,
 )
 from .progress import (
-    _action_key_param,
+    action_key_param,
     _action_made_progress,
     _result_fingerprint,
 )
@@ -351,7 +351,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     if action.decision == "act":
         tool_id = action.chosen_action_id or ""
-        key_param = _action_key_param(action.params)
+        key_param = action_key_param(action.params)
         current_task_id = str(active_task.id) if active_task else None
         for item in loop._behavior.on_act(tool_id, key_param, current_task_id):
             loop._wm.add(item)
@@ -410,7 +410,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
             if cont.decision == "act":
                 tool_name = cont.chosen_action_id or ""
-                key_param = _action_key_param(cont.params)
+                key_param = action_key_param(cont.params)
                 for behavior_item in loop._behavior.on_act(tool_name, key_param, str(active_task.id) if active_task else None):
                     loop._wm.add(behavior_item)
                 loop._behavior.apply_cognitive_probe(cognitive_signals)
@@ -419,7 +419,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
             if cont_result.summary and not cont_result.skipped:
                 tool_name = cont.chosen_action_id or ""
-                key_param = _action_key_param(cont.params)
+                key_param = action_key_param(cont.params)
                 prefix = f"[{tool_name}{'  ' + key_param if key_param else ''}] "
                 loop._wm.add(WMItem(kind=tool_name or cont_result.kind, content=prefix + cont_result.summary, priority=cont_result.priority))
             if cont.reflection and cont.reflection.strip():
@@ -535,14 +535,14 @@ async def _tick_finalize_impl(
     previous_task_next_step = (active_task.next_step or "") if active_task else ""
     prev_sig = loop._last_action_sig
     prev_fp = loop._last_result_fp
-    cur_sig = f"{action.chosen_action_id or ''}|{_action_key_param(action.params)}" if action.decision == "act" else ""
+    cur_sig = f"{action.chosen_action_id or ''}|{action_key_param(action.params)}" if action.decision == "act" else ""
     cur_fp = _result_fingerprint(result.summary) if action.decision == "act" and not result.error and not result.skipped else ""
     loop._last_next_step = action.next_step or ""
     loop._last_decision = action.decision
     loop._last_act_error = bool(action.decision == "act" and result.error)
     loop._last_act_progressful, loop._last_act_progress_reason = _action_made_progress(action, result, prev_sig=prev_sig, prev_fp=prev_fp)
     loop._last_action_tool = action.chosen_action_id or ""
-    loop._last_action_key = _action_key_param(action.params) if action.decision == "act" else ""
+    loop._last_action_key = action_key_param(action.params) if action.decision == "act" else ""
     loop._last_action_summary = _clip_signal_text(result.summary or "") if action.decision == "act" else ""
     loop._last_action_error = _clip_signal_text(result.error or "", 100) if action.decision == "act" else ""
     loop._last_action_state_delta = _summarize_state_delta(result.state_delta) if action.decision == "act" else ""
@@ -704,7 +704,7 @@ async def _post_tick_memory_impl(
 
     if result.summary and not result.skipped:
         tool_id = action.chosen_action_id or ""
-        key_param = _action_key_param(action.params)
+        key_param = action_key_param(action.params)
         wm_prefix = f"[{tool_id}{'  ' + key_param if key_param else ''}] "
         loop._wm.add(WMItem(
             kind=tool_id or result.kind,

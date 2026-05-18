@@ -57,7 +57,7 @@ from .common import (
     _thinking_floor,
 )
 from .progress import (
-    _action_key_param,
+    action_key_param,
     _action_made_progress,
     _result_fingerprint,
 )

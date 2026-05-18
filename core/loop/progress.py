@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
 
+from core.execution import action_key_param
 from core.judgment import JudgmentOutput
 from tools.registry import ToolResult
 
@@ -25,21 +25,6 @@ _PROGRESS_INFO_TOOLS = frozenset({
     "process.poll", "process.log",
     "shell.capabilities",
 })
-
-
-def _action_key_param(params: dict[str, Any] | None) -> str:
-    """提取动作的主键参数，用于行为追踪与重复判定。"""
-    p = params or {}
-    return (
-        p.get("path")
-        or p.get("name")
-        or p.get("title")
-        or p.get("key")
-        or str(p.get("id") or "")
-        or p.get("command")
-        or p.get("query")
-        or ""
-    )
 
 
 def _result_fingerprint(summary: str) -> str:
@@ -97,7 +82,7 @@ def _shell_run_made_progress(
     fp = _result_fingerprint(probe_text)
     if not fp:
         return False, "shell.run 无有效输出"
-    cur_sig = f"{action.chosen_action_id or ''}|{_action_key_param(action.params)}"
+    cur_sig = f"{action.chosen_action_id or ''}|{action_key_param(action.params)}"
     if cur_sig == prev_sig and fp == prev_fp:
         return False, "shell.run 结果与上轮相同"
     return True, "shell.run 获得新输出"
@@ -125,7 +110,7 @@ def _action_made_progress(
         fp = _result_fingerprint(result.summary)
         if not fp:
             return False, f"{tool} 返回空结果"
-        cur_sig = f"{tool}|{_action_key_param(action.params)}"
+        cur_sig = f"{tool}|{action_key_param(action.params)}"
         if cur_sig == prev_sig and fp == prev_fp:
             return False, f"{tool} 结果与上轮相同(重复操作)"
         return True, f"{tool} 获得新信息(结果指纹变化)"
@@ -135,7 +120,7 @@ def _action_made_progress(
     fp = _result_fingerprint(result.summary)
     if not fp:
         return False, f"{tool} 无有效输出"
-    cur_sig = f"{tool}|{_action_key_param(action.params)}"
+    cur_sig = f"{tool}|{action_key_param(action.params)}"
     if cur_sig == prev_sig and fp == prev_fp:
         return False, f"{tool} 结果与上轮相同"
     return True, f"{tool} 输出与上轮不同"

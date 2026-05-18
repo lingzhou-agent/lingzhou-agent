@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.judgment import JudgmentOutput
-from .progress import _action_key_param
+from core.execution import action_key_param
 from memory.task_store import Task
 from tools.registry import ToolResult
 
@@ -48,7 +48,7 @@ def _format_action_feedback_line(
     progressful: bool,
 ) -> str:
     tool = action.chosen_action_id or action.decision or "-"
-    key = _action_key_param(action.params) if action.decision == "act" else ""
+    key = action_key_param(action.params) if action.decision == "act" else ""
     status = "error" if result.error else ("skipped" if result.skipped else ("ok" if action.decision == "act" else action.decision))
     parts = [f"tool={tool}"]
     if key:
