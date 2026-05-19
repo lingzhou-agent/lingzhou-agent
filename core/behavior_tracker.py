@@ -358,10 +358,10 @@ class BehaviorTracker:
         self,
         action: "JudgmentOutput",
         cognitive_signals: Any | None,
-    ) -> "JudgmentOutput":
-        """透传：不替 LLM 做决定，只把行为探针信号写进上下文与日志。"""
+    ) -> None:
+        """纯日志监测：不返回也不修改 action，从架构上排除任何拦截可能性。"""
         if action.decision != "act" or cognitive_signals is None:
-            return action
+            return
 
         tool_id = action.chosen_action_id or ""
         repeat_action_count = int(getattr(cognitive_signals, "repeat_action_count", 0) or 0)
@@ -372,12 +372,11 @@ class BehaviorTracker:
         repeat_list_path = str(getattr(cognitive_signals, "repeat_list_path", "") or "")
 
         if repeat_action_count >= 3 and repeat_action_tool == tool_id:
-            _log.info("[behavior-sense] repeated action delegated to llm: tool=%s count=%d key=%s", tool_id, repeat_action_count, getattr(cognitive_signals, "repeat_action_key", "") or "")
+            _log.info("[behavior-sense] repeated action: tool=%s count=%d key=%s", tool_id, repeat_action_count, getattr(cognitive_signals, "repeat_action_key", "") or "")
         if tool_id == "file.read" and repeat_read_count >= 3:
-            _log.info("[behavior-sense] repeated read delegated to llm: path=%s count=%d", repeat_read_path, repeat_read_count)
+            _log.info("[behavior-sense] repeated read: path=%s count=%d", repeat_read_path, repeat_read_count)
         if tool_id == "file.list" and repeat_list_count >= 3:
-            _log.info("[behavior-sense] repeated list delegated to llm: path=%s count=%d", repeat_list_path, repeat_list_count)
-        return action
+            _log.info("[behavior-sense] repeated list: path=%s count=%d", repeat_list_path, repeat_list_count)
 
     def on_edit_failure(self, error: str) -> list:
         """追踪 file.edit 失败，连续失败时返回感知信号。
