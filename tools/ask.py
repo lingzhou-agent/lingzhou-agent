@@ -14,8 +14,9 @@ from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContex
 @tool(ToolManifest(
     name="task.ask",
     description=(
-        "向用户提问以获取澄清或额外信息。\n"
+        "登记一次需要用户补充信息的澄清请求。\n"
         "适合场景：任务信息不足、需要用户确认、遇到歧义需要澄清。\n"
+        "真正发送给用户的话应写入 reply_to_user；task.ask 只负责把这次外部依赖记入执行轨迹。\n"
         "choices 可选：最多 4 个预定义选项，用户可从中选择或自由回答。"
     ),
     progress_category="info",
@@ -41,8 +42,7 @@ async def task_ask(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if isinstance(choices_raw, list):
             choices = [str(c).strip() for c in choices_raw[:4] if str(c).strip()]
 
-    # 构建提问文本
-    lines = [f"🤔 {question}"]
+    lines = [f"已登记用户澄清请求: {question}"]
     if choices:
         for i, c in enumerate(choices, 1):
             lines.append(f"  [{i}] {c}")

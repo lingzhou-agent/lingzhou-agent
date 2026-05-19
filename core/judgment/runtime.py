@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from provider.catalog import lookup_model
 from core.self_model import SelfModel, fmt_self_model
+from tools.registry import tool_has_capability
 from .context import (
     _emotion_label,
     _fill_template,
@@ -36,6 +37,7 @@ from .context import (
     _fmt_hard_boundaries,
     _fmt_judgment_signals,
     _fmt_memories,
+    _fmt_memory_system,
     _fmt_perception_replay,
     _fmt_percept,
     _fmt_primary_skill,
@@ -86,6 +88,262 @@ _TOOL_TIER_MAPPING = {
     "reasoner": sorted(_REASONER_TOOLS),
     "repair": [],
 }
+
+_ASK_MIN_EVIDENCE_HITS = 2
+_ASK_IDENTIFIER_HINT_RE = re.compile(
+    r"\b(id|task|run|chat|message|ctx|token)\b|任务|编号|日志|运行|聊天|微信|上下文|消息",
+    re.IGNORECASE,
+)
+
+
+def _tool_history_evidence_stats(
+    tool_history: list[dict[str, Any]] | None,
+    *,
+    registry: Any | None = None,
+) -> tuple[int, set[str]]:
+    count = 0
+    tools: set[str] = set()
+    if not tool_history:
+        return count, tools
+    for item in reversed(tool_history):
+        tool_name = str(item.get("tool") or "")
+        if not tool_has_capability(registry, tool_name, "ask_evidence"):
+            continue
+        result_text = str(item.get("result") or "").strip()
+        if result_text and not result_text.startswith("ERROR["):
+            count += 1
+            tools.add(tool_name)
+    return count, tools
+
+
+def _rewrite_task_ask_to_evidence(
+    output: "JudgmentOutput",
+    *,
+    user_message: str,
+    tool_history: list[dict[str, Any]] | None = None,
+    registry: Any | None = None,
+) -> "JudgmentOutput":
+    if output.decision != "act" or output.chosen_action_id != "task.ask":
+        return output
+    evidence_hits, evidence_tools = _tool_history_evidence_stats(tool_history, registry=registry)
+    ask_question = str((output.params or {}).get("question") or "").strip()
+    identifier_hint = bool(_ASK_IDENTIFIER_HINT_RE.search(f"{user_message}\n{ask_question}"))
+    if evidence_hits >= _ASK_MIN_EVIDENCE_HITS:
+        return output
+
+    query_text = ask_question or (user_message or "").strip()
+    if not query_text:
+        return output
+
+    model_strategy = dict(output.model_strategy or {})
+    model_strategy["next_phase_tier"] = "reasoner"
+    model_strategy.setdefault("reason", "先完成本地取证，再由 reasoner 判断是否仍需向用户追问")
+
+    rationale_prefix = (output.rationale or "").strip()
+    if rationale_prefix:
+        rationale_prefix += " "
+
+    budget_note = f"[guard] 当前证据预算 {evidence_hits}/{_ASK_MIN_EVIDENCE_HITS}，先补齐本地证据再决定是否追问用户。"
+
+    if identifier_hint and "task.list" not in evidence_tools:
+        return JudgmentOutput(
+            decision="act",
+            chosen_action_id="task.list",
+            params={"status": "all", "limit": 10},
+            rationale=(
+                rationale_prefix
+                + budget_note
+                + " 先枚举任务与上下文，再判断是否仍需向用户索取 id。"
+            ),
+            reflection=output.reflection,
+            reply_to_user="",
+            next_step=output.next_step or "先确认本地任务与上下文，再决定是否继续追问用户",
+            model_strategy=model_strategy,
+        )
+
+    if "memory.search" not in evidence_tools:
+        return JudgmentOutput(
+            decision="act",
+            chosen_action_id="memory.search",
+            params={"query": query_text[:120]},
+            rationale=(
+                rationale_prefix
+                + budget_note
+                + " 先检索现有记忆与上下文，再由 reasoner 判断是否需要向用户追问。"
+            ),
+            reflection=output.reflection,
+            reply_to_user="",
+            next_step=output.next_step or "先补齐本地证据，再决定是否向用户追问",
+            model_strategy=model_strategy,
+        )
+
+    if "task.list" not in evidence_tools:
+        return JudgmentOutput(
+            decision="act",
+            chosen_action_id="task.list",
+            params={"status": "all", "limit": 10},
+            rationale=(
+                rationale_prefix
+                + budget_note
+                + " 再补一轮任务侧证据，避免只凭单一检索结果就向用户追问。"
+            ),
+            reflection=output.reflection,
+            reply_to_user="",
+            next_step=output.next_step or "先补齐本地证据，再决定是否向用户追问",
+            model_strategy=model_strategy,
+        )
+
+    return JudgmentOutput(
+        decision="act",
+        chosen_action_id="memory.search",
+        params={"query": query_text[:120]},
+        rationale=(
+            rationale_prefix
+            + budget_note
+            + " 继续补齐本地证据，再由 reasoner 判断是否需要向用户追问。"
+        ),
+        reflection=output.reflection,
+        reply_to_user="",
+        next_step=output.next_step or "先补齐本地证据，再决定是否向用户追问",
+        model_strategy=model_strategy,
+    )
+
+
+def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple[str, str]:
+    history_parts: list[str] = []
+    structured_window: list[dict[str, Any]] = []
+    start_index = max(0, len(tool_history) - 6)
+    for index, item in enumerate(tool_history[start_index:], start=start_index + 1):
+        raw_params = item.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+        status = str(item.get("status") or "").strip() or (
+            "error" if str(item.get("error") or "").strip() else ("skipped" if item.get("skipped") else "ok")
+        )
+        summary = str(item.get("summary") or item.get("result") or "").strip()
+        error = str(item.get("error") or "").strip()
+        state_delta = item.get("state_delta") if isinstance(item.get("state_delta"), dict) else {}
+        key = (
+            params.get("path")
+            or params.get("name")
+            or params.get("title")
+            or params.get("key")
+            or str(params.get("id") or "")
+            or params.get("command")
+            or params.get("query")
+            or ""
+        )
+        structured_window.append({
+            "index": index,
+            "tool": str(item.get("tool") or ""),
+            "status": status,
+            "key": str(key),
+            "summary": summary[:400],
+            "error": error[:240],
+            "error_category": str(item.get("error_category") or ""),
+            "state_delta": state_delta,
+        })
+        parts = [f"[{index}] tool={item.get('tool', '')} status={status}"]
+        if key:
+            parts.append(f"key={key}")
+        if summary:
+            parts.append(f"summary={summary[:240]}")
+        if error:
+            parts.append(f"error={error[:180]}")
+        if state_delta:
+            try:
+                state_text = json.dumps(state_delta, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                state_text = str(state_delta)
+            parts.append(f"state_delta={state_text[:200]}")
+        history_parts.append(" | ".join(parts))
+    return (
+        json.dumps(structured_window, ensure_ascii=False, indent=2),
+        "\n".join(history_parts),
+    )
+
+
+def _task_has_structured_plan(active_task: Any | None) -> bool:
+    if active_task is None:
+        return False
+    extras = getattr(active_task, "extras", None)
+    if not isinstance(extras, dict):
+        return False
+    raw_plan = extras.get("plan")
+    return isinstance(raw_plan, list) and len(raw_plan) > 0
+
+
+def _action_step_text(tool_name: str, params: dict[str, Any] | None) -> str:
+    payload = params or {}
+    key = (
+        payload.get("path")
+        or payload.get("name")
+        or payload.get("title")
+        or payload.get("key")
+        or str(payload.get("id") or "")
+        or payload.get("command")
+        or payload.get("query")
+        or ""
+    )
+    label = f"执行 {tool_name}"
+    if key:
+        return f"{label}: {str(key)[:80]}"
+    return label
+
+
+def _rewrite_complex_act_to_task_plan(
+    output: "JudgmentOutput",
+    *,
+    user_message: str,
+    active_task: Any | None,
+    registry: Any | None = None,
+) -> "JudgmentOutput":
+    if output.decision != "act":
+        return output
+    tool_name = output.chosen_action_id or ""
+    if not tool_name or tool_has_capability(registry, tool_name, "plan_bootstrap_exempt"):
+        return output
+    if active_task is None or _task_has_structured_plan(active_task):
+        return output
+
+    next_step = str(output.next_step or "").strip()
+    if not user_message.strip() or not next_step:
+        return output
+
+    current_step = str(getattr(active_task, "current_step", "") or "").strip()
+    focus_step = current_step or _action_step_text(tool_name, output.params)
+    plan = [{"step": focus_step, "status": "in_progress"}]
+    if next_step and next_step != focus_step:
+        plan.append({"step": next_step, "status": "pending"})
+    if "整理证据并回复用户" not in {item["step"] for item in plan}:
+        plan.append({"step": "整理证据并回复用户", "status": "pending"})
+
+    model_strategy = dict(output.model_strategy or {})
+    model_strategy["next_phase_tier"] = "reasoner"
+    model_strategy.setdefault("reason", "复杂任务先显式维护 task.plan，再继续执行")
+
+    rationale_prefix = (output.rationale or "").strip()
+    if rationale_prefix:
+        rationale_prefix += " "
+
+    params: dict[str, Any] = {"plan": plan}
+    task_id = int(getattr(active_task, "id", 0) or 0)
+    if task_id > 0:
+        params["task_id"] = task_id
+
+    return JudgmentOutput(
+        decision="act",
+        chosen_action_id="task.plan",
+        params=params,
+        rationale=(
+            rationale_prefix
+            + "[guard] 这是复杂用户任务，且当前已出现 next_step，但活跃任务还没有结构化计划。"
+            "先用 task.plan 固化步骤，再继续执行。"
+        ),
+        reflection=output.reflection,
+        reply_to_user="",
+        next_step=next_step or "先落结构化计划，再继续执行",
+        model_strategy=model_strategy,
+    )
 
 
 def _build_team_view_from_cfg(cfg) -> str:
@@ -606,9 +864,18 @@ class JudgmentLayer:
                 "trigger": f"last_action={current_action}",
                 "condition": "仅在本轮未显式设置 next_phase_tier 时生效",
             }
+        capability_mapping: dict[str, list[str]] = {}
+        current_action_caps: list[str] = []
+        for manifest in self._registry.list_manifests():
+            for cap in manifest.capabilities:
+                capability_mapping.setdefault(cap, []).append(manifest.name)
+            if manifest.name == current_action:
+                current_action_caps = sorted(list(manifest.capabilities))
         payload = {
             "active_overrides": routing_overrides or {},
             "tool_tier_mapping": _TOOL_TIER_MAPPING,
+            "tool_capability_mapping": {k: sorted(v) for k, v in capability_mapping.items()},
+            "current_action_capabilities": current_action_caps,
             "implicit_next_phase_default": implicit_next_phase_default,
             "tier_descriptions": {
                 "reader": "轻量感知层：适合常规状态查询、读文件、检查计划、无复杂推理的心跳 tick",
@@ -620,6 +887,8 @@ class JudgmentLayer:
                 "• next_phase_tier：分配下轮的推理层级。reader=轻量感知，reasoner=深度推理，repair=修复。"
                 "示例：本轮已完成复杂判断并写入任务，下轮只需追踪状态 → next_phase_tier=reader；\n"
                 "• tool_tier_mapping：runtime 当前对工具族的默认分层真相；若你觉得某次具体动作应临时跨层处理，可通过 next_phase_tier 或 routing_overrides 调整，但不要假装这份映射不存在。\n"
+                "• tool_capability_mapping：runtime 注入的工具能力真相（如 ask_evidence / plan_bootstrap_exempt / completion_verify）。"
+                "优先按能力标签推理，不要仅凭工具名字猜类别。\n"
                 "• implicit_next_phase_default：runtime 的隐式下轮 tier 默认行为。若该字段非空，表示你本轮若不显式设置 next_phase_tier，loop 可能按这里的规则自动选择下一轮 tier。\n"
                 "• next_idle_gap_secs：【必须设置！】你的生命节奏控制器（秒，整数，范围 5-600）。"
                 "你必须根据当前上下文主动选择一个合理值，不要依赖默认："
@@ -786,6 +1055,15 @@ class JudgmentLayer:
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
         if output.decision == "act" and not output.chosen_action_id:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+        output = _rewrite_task_ask_to_evidence(output, user_message=user_message, registry=self._registry)
+        if user_message:
+            active_task = await task_store.get_active()
+            output = _rewrite_complex_act_to_task_plan(
+                output,
+                user_message=user_message,
+                active_task=active_task,
+                registry=self._registry,
+            )
 
         _log.info(
             "[judgment] phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s rationale=%s",
@@ -800,9 +1078,11 @@ class JudgmentLayer:
         self,
         tool_history: list[dict],
         user_message: str = "",
+        active_task: Any | None = None,
         prefer_tier: str | None = None,
         thinking_override: str | None = None,
         routing_overrides: "dict[str, str] | None" = None,
+        reply_only: bool = False,
     ) -> JudgmentOutput:
         """内层工具循环的续判请求。
 
@@ -818,28 +1098,34 @@ class JudgmentLayer:
         if not self._last_context_text:
             return JudgmentOutput.wait(reason="[inner-loop] no cached context for continuation")
 
-        # 构建工具历史摘要（完整保留工具返回内容，现代大模型支持 100k+ context）
-        history_parts: list[str] = []
-        for i, h in enumerate(tool_history):
-            params_str = json.dumps(h.get("params", {}), ensure_ascii=False)
-            result_str = str(h.get("result", ""))
-            history_parts.append(
-                f"[{i + 1}] {h.get('tool', '')}({params_str})\n返回: {result_str}"
+        history_json_block, history_block = _structured_tool_history_window(tool_history)
+        if reply_only:
+            continuation_context = (
+                f"{self._last_context_text}\n\n"
+                "---\n"
+                "## 结构化最近工具结果(JSON)\n"
+                f"{history_json_block}\n\n"
+                "## 本轮已执行工具历史\n"
+                f"{history_block}\n\n"
+                "你现在处于最终回复阶段。禁止再调用任何工具。"
+                "请只基于已有证据生成对用户的最终 reply_to_user。"
+                "decision 只能是 pause 或 wait，chosen_action_id 必须留空。"
             )
-
-        history_block = "\n\n".join(history_parts)
-        hint = (
-            "用户正在等待回复，尽快在本轮设置 reply_to_user 字段。"
-            if user_message else ""
-        )
-
-        continuation_context = (
-            f"{self._last_context_text}\n\n"
-            "---\n"
-            "## 本轮已执行工具历史\n"
-            f"{history_block}\n\n"
-            f"请根据以上结果继续执行下一个必要工具，或生成最终回复（reply_to_user 非空）。{hint}"
-        )
+        else:
+            hint = (
+                "用户正在等待回复，尽快在本轮设置 reply_to_user 字段。"
+                if user_message else ""
+            )
+            continuation_context = (
+                f"{self._last_context_text}\n\n"
+                "---\n"
+                "## 结构化最近工具结果(JSON)\n"
+                f"{history_json_block}\n\n"
+                "## 本轮已执行工具历史\n"
+                f"{history_block}\n\n"
+                "优先依据结构化结果判断当前状态，不要只凭模糊回忆续写。\n\n"
+                f"请根据以上结果继续执行下一个必要工具，或生成最终回复（reply_to_user 非空）。{hint}"
+            )
 
         _sys = (
             self._identity_prefix + "\n\n" + self._system_prompt
@@ -851,13 +1137,15 @@ class JudgmentLayer:
             Message(role="user", content=continuation_context),
         ]
 
-        current_action = str(tool_history[-1].get("tool", "")) if tool_history else ""
+        current_action = "" if reply_only else str(tool_history[-1].get("tool", "")) if tool_history else ""
+        phase = "reply" if reply_only else "continue"
+        forced_prefer_tier = "reasoner" if reply_only else prefer_tier
         selected_provider, selection = self._select_provider(
-            phase="continue",
+            phase=phase,
             user_message=user_message,
             current_action=current_action,
             tool_history=tool_history,
-            prefer_tier=prefer_tier,
+            prefer_tier=forced_prefer_tier,
             thinking_override=thinking_override,
             routing_overrides=routing_overrides,
         )
@@ -884,11 +1172,11 @@ class JudgmentLayer:
                 if _attempt == 0:
                     _fallback_tier = self._fallback_tiers(selection.tier)[0]
                     fb_provider, fb_selection = self._select_provider(
-                        phase="continue",
+                        phase=phase,
                         user_message=user_message,
                         current_action=current_action,
                         tool_history=tool_history,
-                        prefer_tier=_fallback_tier,
+                        prefer_tier="reasoner" if reply_only else _fallback_tier,
                         thinking_override=resolved_thinking,
                     )
                     if fb_selection.model_ref != selection.model_ref:
@@ -916,6 +1204,33 @@ class JudgmentLayer:
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
         if output.decision == "act" and not output.chosen_action_id:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+        if reply_only:
+            if not output.reply_to_user.strip():
+                output = JudgmentOutput.wait(reason="[reply-only] reply_to_user 不能为空")
+            else:
+                output = JudgmentOutput(
+                    decision=output.decision if output.decision in {"pause", "wait"} else "pause",
+                    chosen_action_id="",
+                    params={},
+                    rationale=output.rationale,
+                    reflection=output.reflection,
+                    reply_to_user=output.reply_to_user,
+                    next_step=output.next_step,
+                    model_strategy=dict(output.model_strategy or {}),
+                )
+        else:
+            output = _rewrite_task_ask_to_evidence(
+                output,
+                user_message=user_message,
+                tool_history=tool_history,
+                registry=self._registry,
+            )
+            output = _rewrite_complex_act_to_task_plan(
+                output,
+                user_message=user_message,
+                active_task=active_task,
+                registry=self._registry,
+            )
 
         _log.info(
             "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s",
@@ -1083,6 +1398,12 @@ class JudgmentLayer:
             "episodic_section": episodic_text or "（暂无情节记忆）",
             "entity_section": entity_section,
             "memories_section": _fmt_memories(memories),
+            "memory_system_section": _fmt_memory_system(
+                runtime_db=str(self._cfg.db_path),
+                memory_dir=str(self._cfg.memory_dir),
+                workspace_dir=str(self._cfg.workspace_dir),
+                semantic=semantic,
+            ),
             "soul_section": soul_section,
             "tools_section": _fmt_tools(self._registry.list_manifests()),
             "shell_capabilities_section": _fmt_shell_capabilities(),

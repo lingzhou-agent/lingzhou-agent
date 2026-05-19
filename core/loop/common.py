@@ -19,6 +19,14 @@ _EVENT_APPEND_CHARS = 8000
 _EVENT_BODY_MAX_CHARS = 40000
 _EVENT_NEW_BODY_CHARS = 16000
 
+_USER_MESSAGE_EVIDENCE_TOOLS = frozenset({
+    "file.list",
+    "file.read",
+    "memory.get_fact",
+    "memory.search",
+    "task.list",
+})
+
 _VALENCE_POS = frozenset(["完成", "成功", "理解", "学到", "进步", "有效", "清晰", "好", "正确", "解决", "突破"])
 _VALENCE_NEG = frozenset(["失败", "错误", "困惑", "卡住", "无法", "问题", "不对", "不清", "循环", "重复", "卡顿"])
 
@@ -80,8 +88,17 @@ def _should_continue_within_tick(
     if (action.chosen_action_id or "") in {"task.complete", "task.fail"}:
         return False
     if user_message and has_active_task:
-        return False
+        return (action.chosen_action_id or "") in _USER_MESSAGE_EVIDENCE_TOOLS
     return True
+
+
+def _preferred_continue_tier(action: JudgmentOutput, *, user_message: str = "") -> str | None:
+    next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+    if next_tier in VALID_MODEL_TIERS:
+        return next_tier
+    if user_message and (action.chosen_action_id or "") in _USER_MESSAGE_EVIDENCE_TOOLS:
+        return "reasoner"
+    return None
 
 
 def _task_model_tier(task: Task | None) -> str | None:

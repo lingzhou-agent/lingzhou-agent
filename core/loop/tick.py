@@ -42,6 +42,7 @@ from .common import (
     _infer_valence_from_text,
     _next_thinking_override,
     _perception_replay_fallback,
+    _preferred_continue_tier,
     _prefer_tier_for_task,
     _resolve_thinking_override,
     _should_continue_within_tick,
@@ -410,6 +411,22 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
     action = loop._behavior.apply_execution_gate(action, cognitive_signals)
     result = await loop._execution.dispatch(action, ctx)
+    tool_history: list[dict[str, Any]] = []
+    if action.decision == "act":
+        initial_result_text = result.summary
+        if result.error:
+            err_lower = (result.error or "").lower()
+            err_cat = (
+                "transient"
+                if any(marker in err_lower for marker in ("timeout", "connect", "reset", "unavailable", "rate", "429", "503"))
+                else "fatal"
+            )
+            initial_result_text = f"ERROR[{err_cat}]: {result.summary}"
+        tool_history.append({
+            "tool": action.chosen_action_id or "",
+            "params": action.params or {},
+            "result": initial_result_text,
+        })
 
     if action.decision == "act" and not result.error:
         tool = action.chosen_action_id or ""
@@ -435,18 +452,13 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         user_message=user_message,
         has_active_task=active_task is not None,
     ):
-        tool_history: list[dict[str, Any]] = [{
-            "tool": action.chosen_action_id or "",
-            "params": action.params or {},
-            "result": result.summary,
-        }]
         affect = {"valence": loop._emotion.valence, "arousal": loop._emotion.arousal}
         for inner in range(cfg.loop.max_tool_rounds - 1):
             if await loop._task_store.has_pending_chat_message():
                 _log.debug("[continue] chat 消息到达，中断工具循环 inner=%d", inner)
                 break
 
-            next_tier = str((action.model_strategy or {}).get("next_phase_tier", "") or "")
+            next_tier = _preferred_continue_tier(action, user_message=user_message) or ""
             continue_thinking = _resolve_thinking_override(
                 cfg,
                 user_message=user_message,
@@ -511,6 +523,31 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
         # ② continue 循环结束后同步检测（兜底 inner 轮删除 BOOTSTRAP.md 的场景）
         await _maybe_reconcile_bootstrap(loop)
+
+    if user_message and not action.reply_to_user:
+        reply_only = await loop._judgment.decide_continue(
+            tool_history,
+            user_message=user_message,
+            prefer_tier="reasoner",
+            thinking_override=_thinking_floor(
+                _resolve_thinking_override(
+                    cfg,
+                    user_message=user_message,
+                    model_strategy=action.model_strategy,
+                ),
+                "low",
+            ),
+            routing_overrides=loop._pending_routing_overrides,
+            reply_only=True,
+        )
+        if reply_only.reply_to_user:
+            action.reply_to_user = reply_only.reply_to_user
+            if reply_only.rationale:
+                action.rationale = reply_only.rationale
+            if reply_only.reflection and not action.reflection:
+                action.reflection = reply_only.reflection
+            if reply_only.next_step and not action.next_step:
+                action.next_step = reply_only.next_step
 
     if user_message and not action.reply_to_user:
         action.reply_to_user = _fallback_reply_for_user(action, result, active_task)

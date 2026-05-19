@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     )
     from core.skill import Skill
     from memory.task_store import Failure, Run, Task, TaskStore
+    from memory.semantic import SemanticMemory
     from tools.registry import ToolManifest
 
 
@@ -77,6 +78,22 @@ def _fmt_task(task: "Task | None") -> str:
         f"下一步: {task.next_step or '（未指定）'}",
         f"叙事线: {_task_narrative(task)}",
     ]
+    raw_plan = task.extras.get("plan") if isinstance(task.extras, dict) else None
+    if isinstance(raw_plan, list) and raw_plan:
+        status_icons = {"completed": "✅", "in_progress": "🔄", "pending": "⏳"}
+        plan_lines: list[str] = []
+        for index, item in enumerate(raw_plan[:5], 1):
+            if not isinstance(item, dict):
+                continue
+            step = str(item.get("step") or "").strip()
+            if not step:
+                continue
+            status = str(item.get("status") or "pending").strip()
+            icon = status_icons.get(status, "•")
+            plan_lines.append(f"  [{index}] {icon} {_clip_text(step, 80)}")
+        if plan_lines:
+            lines.append("当前计划:")
+            lines.extend(plan_lines)
     if last_run_status:
         lines.append(f"最近运行状态: {last_run_status}")
     return "\n".join(lines)
@@ -297,7 +314,36 @@ def _fmt_durable_failures(snapshot: dict[str, Any]) -> str:
 def _fmt_memories(memories: list[dict[str, Any]]) -> str:
     if not memories:
         return "（无相关记忆）"
-    lines = [f"- [{memory['kind']}] {memory['title']}: {memory['body']}" for memory in memories]
+    lines: list[str] = []
+    for memory in memories:
+        score = memory.get("score")
+        score_part = ""
+        if isinstance(score, (int, float)):
+            score_part = f" (score={float(score):.3f})"
+        lines.append(f"- [{memory['kind']}] {memory['title']}{score_part}: {memory['body']}")
+    return "\n".join(lines)
+
+
+def _fmt_memory_system(
+    *,
+    runtime_db: str,
+    memory_dir: str,
+    workspace_dir: str,
+    semantic: "SemanticMemory",
+) -> str:
+    stats = semantic.stats()
+    lines = [
+        f"runtime_db: {runtime_db}",
+        f"memory_dir: {memory_dir}",
+        f"workspace_dir: {workspace_dir}",
+        f"semantic_db: {stats.get('db_path')}",
+        f"semantic_nodes_dir: {stats.get('nodes_dir')}",
+        f"semantic_nodes: {int(stats.get('nodes') or 0)}",
+        f"semantic_fts5_ok: {'yes' if stats.get('fts5_ok') else 'no'}",
+        f"embedding_enabled: {'yes' if stats.get('embedding_enabled') else 'no'}",
+        f"decay_lambda: {float(stats.get('decay_lambda') or 0.0):.3f}",
+    ]
+    lines.append("说明: runtime_db 是任务/事实/聊天/运行轨迹主存储；SOUL/IDENTITY/BOOTSTRAP 等 md 是身份与可读镜像层。")
     return "\n".join(lines)
 
 

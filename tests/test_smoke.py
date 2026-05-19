@@ -4230,9 +4230,22 @@ def test_fallback_reply_for_user_uses_real_error_instead_of_background_ack():
     assert "我这轮" not in reply
 
 
+def test_fallback_reply_for_user_does_not_echo_tool_summary_on_success():
+    from core.loop.logging import _fallback_reply_for_user
+    from tools.registry import ToolResult
+
+    action = _judgment_output(decision="act", chosen_action_id="file.read", rationale="我已经收集到关键证据。")
+    result = ToolResult(summary="/tmp/a.py\n/tmp/b.py")
+
+    reply = _fallback_reply_for_user(action, result, None)
+    assert reply.startswith("状态: progressed")
+    assert "basis:" in reply
+    assert "/tmp/a.py" not in reply
+
+
 def test_should_continue_within_tick_for_autonomous_act():
     from core.judgment import JudgmentOutput
-    from core.loop.common import _should_continue_within_tick
+    from core.loop.common import _preferred_continue_tier, _should_continue_within_tick
 
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="file.read")) is True
     assert _should_continue_within_tick(_judgment_output(decision="act", chosen_action_id="task.complete")) is False
@@ -4241,12 +4254,122 @@ def test_should_continue_within_tick_for_autonomous_act():
         _judgment_output(decision="act", chosen_action_id="file.read"),
         user_message="帮我看下 mini 为什么 400",
         has_active_task=True,
-    ) is False
+    ) is True
     assert _should_continue_within_tick(
         _judgment_output(decision="act", chosen_action_id="file.read"),
         user_message="帮我看下 mini 为什么 400",
         has_active_task=False,
     ) is True
+    assert _should_continue_within_tick(
+        _judgment_output(decision="act", chosen_action_id="file.write"),
+        user_message="帮我顺手改一下配置",
+        has_active_task=True,
+    ) is False
+    assert _preferred_continue_tier(
+        _judgment_output(decision="act", chosen_action_id="memory.search"),
+        user_message="继续分析这个问题",
+    ) == "reasoner"
+    assert _preferred_continue_tier(
+        _judgment_output(
+            decision="act",
+            chosen_action_id="memory.search",
+            model_strategy={"next_phase_tier": "reader"},
+        ),
+        user_message="继续分析这个问题",
+    ) == "reader"
+
+
+def test_rewrite_task_ask_to_task_list_before_asking_for_id():
+    from core.judgment.runtime import _rewrite_task_ask_to_evidence
+
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="task.ask",
+        params={"question": "请提供相关 task id"},
+        rationale="我需要先定位任务。",
+    )
+
+    rewritten = _rewrite_task_ask_to_evidence(
+        action,
+        user_message="帮我看看昨晚那个任务为什么没回消息",
+    )
+
+    assert rewritten.chosen_action_id == "task.list"
+    assert rewritten.params == {"status": "all", "limit": 10}
+    assert rewritten.reply_to_user == ""
+    assert rewritten.model_strategy["next_phase_tier"] == "reasoner"
+
+
+async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        def __init__(self) -> None:
+            self.last_messages = None
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.last_messages = messages
+            return (
+                '{"decision":"act","chosen_action_id":"file.read",'
+                '"params":{"path":"/tmp/ignored"},'
+                '"rationale":"证据已足够，直接整理用户答复。",'
+                '"reply_to_user":"这是最终回复。"}'
+            )
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _DummyProvider()
+    layer = JudgmentLayer(provider, ToolRegistry(), cfg)
+    layer._last_context_text = "cached context"
+
+    out = await layer.decide_continue(
+        [{"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 2 条相关记忆"}],
+        user_message="继续分析",
+        prefer_tier="reader",
+        reply_only=True,
+    )
+
+    assert out.decision == "pause"
+    assert out.chosen_action_id == ""
+    assert out.params == {}
+    assert out.reply_to_user == "这是最终回复。"
+    assert layer.last_call_meta["tier"] == "reasoner"
+    assert "禁止再调用任何工具" in provider.last_messages[1].content
+
+
+def test_rewrite_task_ask_keeps_direct_question_after_evidence():
+    from core.judgment.runtime import _rewrite_task_ask_to_evidence
+
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="task.ask",
+        params={"question": "还需要你补充具体 id 吗？"},
+    )
+
+    rewritten = _rewrite_task_ask_to_evidence(
+        action,
+        user_message="继续分析",
+        tool_history=[{"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 2 条相关记忆"}],
+    )
+
+    assert rewritten.chosen_action_id == "task.ask"
+    assert rewritten.params["question"] == "还需要你补充具体 id 吗？"
 
 
 async def test_sync_task_progress_state_promotes_previous_next_step():

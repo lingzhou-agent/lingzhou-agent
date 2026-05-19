@@ -272,6 +272,23 @@ class SemanticMemory:
         """Decay coefficient used by Ebbinghaus-style activation scoring."""
         return self._decay_lambda
 
+    def stats(self) -> dict[str, Any]:
+        """Return lightweight health stats for prompt/context diagnostics."""
+        total_nodes = 0
+        try:
+            row = self._conn.execute("SELECT COUNT(*) FROM nodes").fetchone()
+            total_nodes = int(row[0] or 0) if row else 0
+        except Exception:
+            total_nodes = 0
+        return {
+            "nodes": total_nodes,
+            "fts5_ok": bool(self._fts5_ok),
+            "decay_lambda": float(self._decay_lambda),
+            "embedding_enabled": bool(self._embed_fn is not None),
+            "db_path": str(self._db_path),
+            "nodes_dir": str(self._dir),
+        }
+
     def upsert(self, node: MemoryNode) -> None:
         """Write or overwrite a memory node. json written first (disaster recovery), then DB (search index)."""
         # 1. Disaster recovery layer: write json first (safe even if DB fails)
@@ -363,7 +380,11 @@ class SemanticMemory:
             return []
         scored = [(self._score(query, n, query_vec=query_vec), n) for n in nodes]
         scored.sort(key=lambda x: x[0], reverse=True)
-        retrieved = [n.to_dict() for _, n in scored[:top_k]]
+        retrieved = []
+        for score, node in scored[:top_k]:
+            item = node.to_dict()
+            item["score"] = round(float(score), 4)
+            retrieved.append(item)
 
         if _log.isEnabledFor(_log_sem.DEBUG):
             qm = evaluate_retrieval_quality(query, retrieved, self._decay_lambda)
@@ -450,7 +471,11 @@ class SemanticMemory:
             final.append((score, node_map[nid]))
 
         final.sort(key=lambda x: x[0], reverse=True)
-        retrieved = [n.to_dict() for _, n in final[:top_k]]
+        retrieved = []
+        for score, node in final[:top_k]:
+            item = node.to_dict()
+            item["score"] = round(float(score), 4)
+            retrieved.append(item)
 
         if _log.isEnabledFor(_log_sem.DEBUG):
             combined_query = " ".join(valid_anchors)

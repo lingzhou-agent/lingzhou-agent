@@ -8,6 +8,7 @@ from typing import Any
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
 from memory.working import WMItem
 from memory.semantic import MemoryNode
+from memory.quality_checker import evaluate_retrieval_quality
 
 _PRIORITY_ALIASES = {"high": 0.9, "medium": 0.6, "mid": 0.6, "low": 0.3, "critical": 1.0}
 
@@ -115,6 +116,8 @@ async def memory_set_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 @tool(ToolManifest(
     name="memory.search",
     description="搜索语义记忆节点。当你需要先回忆再行动时使用。",
+    prefer_tier="reader",
+    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
     params=[
         ToolParam("query", "string", "搜索查询", required=True),
         ToolParam("top_k", "number", "返回条数，默认 5", required=False),
@@ -141,6 +144,7 @@ async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     )
     if not hits:
         return ToolResult(summary=f"没有找到与 {query!r} 相关的语义记忆", skipped=True)
+    quality = evaluate_retrieval_quality(query, hits, ctx.semantic.decay_lambda)
     lines = []
     for i, hit in enumerate(hits, 1):
         title = str(hit.get("title") or "")
@@ -150,12 +154,24 @@ async def memory_search(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if isinstance(score, (int, float)):
             score_part = f" (score={float(score):.3f})"
         lines.append(f"[{i}] {title}{score_part}\n{body}")
-    return ToolResult(summary="\n\n".join(lines))
+    overall = float(quality.get("overall_score") or 0.0)
+    lines.append(f"\n检索质量: overall={overall:.3f}")
+    return ToolResult(
+        summary="\n\n".join(lines),
+        metadata={
+            "query": query,
+            "hits": len(hits),
+            "retrieval_quality": quality,
+        },
+        state_delta={"memory_hits": len(hits), "memory_quality": round(overall, 3)},
+    )
 
 
 @tool(ToolManifest(
     name="memory.get_fact",
     description="读取一个持久化 key-value 事实",
+    prefer_tier="reader",
+    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
     params=[
         ToolParam("key", "string", "事实 key", required=True),
     ],
@@ -173,6 +189,8 @@ async def memory_get_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 @tool(ToolManifest(
     name="failure.dismiss",
     description="豁免指定失败记录，同 kind 的失败以后不再重复记录",
+    prefer_tier="reader",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
     params=[
         ToolParam("failure_id", "number", "失败记录 ID", required=True),
     ],
