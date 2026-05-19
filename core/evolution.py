@@ -536,16 +536,30 @@ class EvolutionEngine:
 
                 _log.info("[evolution] 工具 %r 已进化并热加载（尝试 %d）", tool_name, attempt + 1)
 
-                # 后进化验证：确保整个项目能正常导入
+                # 后进化验证：AST 解析全部 Python 文件
                 from pathlib import Path
                 _root = Path(__file__).parent.parent
-                _verify = os.popen(f"cd {_root} && python3 -c 'import ast; [ast.parse(open(f).read()) for f in [\"core/loop/__init__.py\",\"core/loop/runtime.py\",\"core/evolution.py\"]]' 2>&1").read()
-                if "Error" in _verify or "Traceback" in _verify:
-                    _log.warning("[evolution] 后进化验证失败，回滚: %s", _verify[:200])
+                _all_ok = True
+                _errors = []
+                for _py in sorted(_root.rglob("*.py")):
+                    _rp = str(_py.relative_to(_root))
+                    if "__pycache__" in _rp or ".py.bak" in _rp:
+                        continue
+                    try:
+                        _chk = os.popen(
+                            "cd " + str(_root) + " && python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' " + str(_py) + " 2>&1"
+                        ).read()
+                        if "Error" in _chk or "Traceback" in _chk:
+                            _all_ok = False
+                            _errors.append(_rp + ": " + _chk[:100])
+                    except Exception:
+                        pass
+                if not _all_ok:
+                    _log.warning("[evolution] post-evolution check failed (%d files), rolling back: %s", len(_errors), _errors[:3])
                     if tool_path.exists() and current_src:
                         self._restore_text(tool_path, current_src)
                         self._reload_module_from_path(module_name, tool_path)
-                    continue  # 重试下一轮
+                    continue
                 if ctx is not None and self._cfg.evolution.backup and backup_path.exists():
                     await self._record_pending_verification(
                         ctx,

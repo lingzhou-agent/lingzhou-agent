@@ -74,11 +74,13 @@ def _daemonize(argv: list[str]) -> None:
     log_dir = Path("~/.lingzhou/logs").expanduser()
     log_dir.mkdir(parents=True, exist_ok=True)
     crash_log = os.open(str(log_dir / "crash.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    tick_log = os.open(str(log_dir / "daemon-stdout.log"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     devnull = os.open(os.devnull, os.O_RDWR)
-    os.dup2(devnull, 0)   # stdin
-    os.dup2(crash_log, 1)  # stdout → crash.log
-    os.dup2(crash_log, 2)  # stderr → crash.log
+    os.dup2(devnull, 0)     # stdin → /dev/null
+    os.dup2(tick_log, 1)    # stdout → daemon-stdout.log（tick 快照等）
+    os.dup2(crash_log, 2)   # stderr → crash.log（只放真正的异常栈）
     os.close(crash_log)
+    os.close(tick_log)
     os.close(devnull)
     # 写 PID
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -301,7 +303,7 @@ def gateway_status() -> None:
 
 @gateway_app.command("restart")
 def gateway_restart(
-    channel: Annotated[str, typer.Option("--channel", "-ch", help="消息渠道（默认 local）")] = "local",
+    channel: Annotated[Optional[str], typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
     config: Annotated[Path, typer.Option("--config", "-c")] = DEFAULT_CONFIG_PATH,
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,

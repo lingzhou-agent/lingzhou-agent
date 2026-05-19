@@ -633,6 +633,29 @@ def _fmt_cognitive_signals(signals: "CognitiveSignals | None") -> str:
     return signals.to_text()
 
 
+
+def _fmt_blind_spots(probes: list[Any], self_model_tokens: int = 0) -> str:
+    """计算当前可能存在的感知盲点——LLM 意识不到的缺失。
+
+    不是命令，是让 LLM 自己决定是否需要关注这些潜在盲区。
+    """
+    has_hermesclaw = any("hermesclaw" in (getattr(p, "purpose", "") or "").lower() or "19997" in (getattr(p, "spec", "") or "") for p in probes)
+    has_api_quota = any("quota" in (getattr(p, "purpose", "") or "").lower() or "api" in (getattr(p, "purpose", "") or "").lower() for p in probes)
+    has_git = any("git" in (getattr(p, "purpose", "") or "").lower() for p in probes)
+
+    gaps = []
+    if not has_hermesclaw:
+        gaps.append("- hermesclaw（微信代理 at 127.0.0.1:19997）未监控 → 代理挂了你也收不到微信，但你不会发现")
+    if not has_api_quota:
+        gaps.append("- API 调用量/额度未追踪 → 你可能在悄悄耗尽配额而不自知")
+    if not has_git:
+        gaps.append("- git 变更未追踪 → evolution 改了代码你不知道改了什么")
+
+    if not gaps:
+        return "当前感知覆盖良好，暂无明显盲点。"
+
+    return "以下是你当前**没有在监控**的东西——不是要求你立即行动，只是提醒你可能忽略了：\n" + "\n".join(gaps)
+
 def _fmt_probe_sensors(probes: list[Any]) -> str:
     """将当前已部署的探针传感器网络格式化为 LLM 可读的感知面板。
 
@@ -640,7 +663,14 @@ def _fmt_probe_sensors(probes: list[Any]) -> str:
     让 LLM 随时知道自己的感知网络状态及每个探针的意义。
     """
     if not probes:
-        return "（无部署的探针——可用 probe.install 安装探针，并填写 purpose 说明监控意图）"
+        return (
+            "⚠️ 你目前没有部署任何探针。探针是你的『感知触手』——采集外部信息，结果自动注入工作记忆。\n"
+            "建议安装以下自我监控探针（用 probe.install）：\n"
+            "  1. 磁盘使用率 → kind=shell spec='df -h / | tail -1' trigger=interval:600 purpose='磁盘超85%需清理'\n"
+            "  2. 内存 → kind=shell spec='free -m | grep Mem' trigger=interval:300 purpose='内存压力预警'\n"
+            "  3. 自身进程 → kind=shell spec='ps aux | grep lingzhou | grep -v grep | wc -l' trigger=interval:120 purpose='确认自身存活'\n"
+            "  4. hermesclaw → kind=shell spec='curl -s -o /dev/null -w %{http_code} http://127.0.0.1:19997/' trigger=interval:300 purpose='微信代理健康，非200说明微信通道中断'\n"
+        )
     lines: list[str] = []
     for p in probes:
         mark = "✓" if p.enabled else "⊘"

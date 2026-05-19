@@ -566,7 +566,31 @@ async def _tick_finalize_impl(
     if cycle % cfg.loop.consolidate_every == 0:
         if loop._wm.pressure >= loop._cfg.thresholds.wm_pressure_task:
             await loop._consolidate(active_task)
+        # 感知 global.md 膨胀 → 注入信号让 LLM 自主决定是否压缩
+        try:
+            _gm = loop._cfg.memory_dir / "global.md"
+            if _gm.exists():
+                _sz = _gm.stat().st_size
+                _lc = len(_gm.read_text().splitlines())
+                if _sz > 80000 or _lc > 600:
+                    from memory.working import WMItem
+                    loop._wm.add(WMItem(
+                        kind="self_awareness",
+                        content=(
+                            f"[记忆压力] global.md 当前 {_lc} 行 / {_sz} 字节，已经较大。"
+                            "建议在空闲时压缩旧记录：保留最近 100 条详情，旧内容用 LLM 提炼为关键要点摘要。"
+                            "压缩方法：file.read global.md 的旧段落 → 提炼为简短摘要 → file.edit 替换。"
+                        ),
+                        priority=0.75,
+                    ))
+        except Exception:
+            pass
         await loop._soul.sync_md()
+        # 定期 WAL checkpoint 防止 DB 膨胀
+        try:
+            await loop._task_store._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            pass
 
     should_evolve = False
     if perception_replay is not None:

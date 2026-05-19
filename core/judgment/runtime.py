@@ -40,6 +40,7 @@ from .context import (
     _fmt_percept,
     _fmt_primary_skill,
     _fmt_probe_sensors,
+    _fmt_blind_spots,
     _fmt_recent_runs,
     _fmt_shell_capabilities,
     _fmt_skill_catalog,
@@ -182,6 +183,19 @@ class JudgmentOutput:
         text = original
         # 防御：剥离 <think>...</think> 块（provider 层已处理，此处兜底）
         text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+        # 防御：剥离 LLM 混入的非 JSON 内容（markdown 树形图等）
+        # 模式：以路径/目录树开头的行（如 "provider/\n├── __init__.py"）
+        if not text.startswith("{") and not text.startswith("```"):
+            stripped = re.sub(
+                r"(?:^|\n)(?:[\w./_-]+/\s*\n)?(?:[│├└──+|\\]+[ \t]+[\w.+/_-]+[ \t]*(?:#.*)?\n)+",
+                "\n",
+                text,
+            )
+            if stripped != text:
+                text = stripped.strip()
+        # 如果清理后文本为空或不含 JSON，提前返回避免无谓的 parse 尝试
+        if not text or ("{" not in text and "decision" not in text):
+            return cls.wait(reason=f"LLM 输出非 JSON 且无法提取: {original[:120]}")
         # 裸代码检测：LLM 直接输出 bash/python 脚本时提前标记
         _CODE_PREFIXES = ("#!/", "```bash", "```python", "```sh", "```shell", "# -*-")
         _is_raw_code = any(text.lstrip().startswith(p) for p in _CODE_PREFIXES)
@@ -607,9 +621,11 @@ class JudgmentLayer:
                 "示例：本轮已完成复杂判断并写入任务，下轮只需追踪状态 → next_phase_tier=reader；\n"
                 "• tool_tier_mapping：runtime 当前对工具族的默认分层真相；若你觉得某次具体动作应临时跨层处理，可通过 next_phase_tier 或 routing_overrides 调整，但不要假装这份映射不存在。\n"
                 "• implicit_next_phase_default：runtime 的隐式下轮 tier 默认行为。若该字段非空，表示你本轮若不显式设置 next_phase_tier，loop 可能按这里的规则自动选择下一轮 tier。\n"
-                "• next_idle_gap_secs：下一轮空闲等待时长（秒，整数，范围 5-600）。默认 60。"
-                "示例：已发起 shell 命令，预计 30s 出结果 → next_idle_gap_secs=35；"
-                "无任务等待用户下一步 → next_idle_gap_secs=120；任务进行中需快速追踪 → next_idle_gap_secs=10；\n"
+                "• next_idle_gap_secs：【必须设置！】你的生命节奏控制器（秒，整数，范围 5-600）。"
+                "你必须根据当前上下文主动选择一个合理值，不要依赖默认："
+                "已发起shell预计30s出结果 → 35；刚回复完用户等下一步 → 120；"
+                "任务推进中需快速追踪 → 10；完全空闲无事 → 120。"
+                "不设置此字段则用兜底值 60 秒。控制权在你手里。\n"
                 "• routing_overrides：临时覆盖 tier→model 映射，格式 {\"reader\": \"bailian/qwen3.6-plus\"}。"
                 "可选 tier: reader / reasoner / repair。从 catalog_models 中选择可用模型。"
                 "设为 {} 可清除覆盖。覆盖持久到显式修改，无需每轮重复设置。\n"
@@ -1080,6 +1096,7 @@ class JudgmentLayer:
             "skills_section": _fmt_skills(secondary_skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
             "probe_sensors_section": _fmt_probe_sensors(probes),
+            "blind_spot_section": _fmt_blind_spots(probes, self.self_model.total_tokens),
             "self_model_section": fmt_self_model(self.self_model),
             "team_view": _build_team_view_from_cfg(self._cfg),
             "model_routing_section": self._build_model_routing_section(

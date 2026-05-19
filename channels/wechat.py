@@ -62,7 +62,12 @@ def _ilink_post(base_url: str, ep: str, bd: dict, token: str, timeout: int = 30)
     return r.json()
 
 
+_last_warn_at: float = 0.0
+_WARN_COOLDOWN: float = 60.0
+
+
 def get_updates(base_url: str, token: str, buf: str = "", timeout: int | None = None) -> dict:
+    global _last_warn_at
     req = _requests_module()
     if timeout is None:
         timeout = DEFAULT_POLL_SEC
@@ -77,7 +82,10 @@ def get_updates(base_url: str, token: str, buf: str = "", timeout: int | None = 
     except req.exceptions.Timeout:
         return {"ret": 0, "msgs": [], "get_updates_buf": buf}
     except Exception as e:
-        log.warning("getUpdates error: %s", e)
+        now = time.monotonic()
+        if now - _last_warn_at >= _WARN_COOLDOWN:
+            _last_warn_at = now
+            log.warning("getUpdates error: %s", e)
         return {"ret": -1, "msgs": [], "get_updates_buf": buf}
 
 
@@ -158,12 +166,17 @@ class WechatChannel:
         log.info("[wechat] poll 启动 base_url=%s", self._cfg.base_url)
         buf = ""
         fails = 0
+        _last_error_logged: float = 0.0
+        _err_cooldown = 60.0
 
         while not self._stop.is_set():
             try:
                 resp = get_updates(self._cfg.base_url, self._cfg.token, buf, self._cfg.poll_sec)
             except Exception as e:
-                log.error("[wechat] getUpdates 异常: %s", e)
+                now = time.monotonic()
+                if now - _last_error_logged >= _err_cooldown:
+                    _last_error_logged = now
+                    log.error("[wechat] getUpdates 异常 (连续%d次): %s", fails + 1, e)
                 fails += 1
                 time.sleep(min(2 ** fails, 30))
                 continue

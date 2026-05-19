@@ -85,7 +85,11 @@ def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_
         return ";".join(line for line in lines if line)
 
     if action.decision in {"wait", "pause"}:
-        basis = _brief(action.rationale or result.summary or "需要更多信息后再继续。", 100)
+        raw_basis = action.rationale or result.summary or ""
+        # 过滤技术性错误信息，不暴露给用户
+        if any(tech in raw_basis for tech in ("缺少 chosen_action_id", "LLM 输出解析失败", "无效 decision", "list index out of range", "not defined")):
+            raw_basis = ""
+        basis = _brief(raw_basis or "需要更多信息后再继续。", 100)
         lines = [
             _fact_line("状态", action.decision),
             _fact_line("basis", basis),
