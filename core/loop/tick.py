@@ -342,6 +342,29 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     if active_task is None:
         await loop._maybe_curiosity_task(ethos_state)
 
+    # 计划对齐感知：task.plan 存在 in_progress 步骤但 current_step 未推进时注入 WM 信号
+    if active_task is not None:
+        _plan = (getattr(active_task, "extras", None) or {}).get("plan")
+        if isinstance(_plan, list):
+            _in_progress_step = next(
+                (str(item.get("step") or "").strip()
+                 for item in _plan
+                 if isinstance(item, dict) and str(item.get("status") or "").strip() == "in_progress"),
+                None,
+            )
+            _current_step = str(getattr(active_task, "current_step", "") or "").strip()
+            if _in_progress_step and _current_step != _in_progress_step:
+                loop._wm.add(WMItem(
+                    kind="self_awareness",
+                    content=(
+                        f"[计划对齐] task.plan 当前进行中步骤：「{_in_progress_step}」，"
+                        f"但 task.current_step 仍是「{_current_step or '（未设置）'}」。"
+                        " 如有实质性操作，建议先用 task.advance/task.update 对齐，"
+                        " 或用 task.plan 调整计划；也可直接执行后补对齐。"
+                    ),
+                    priority=0.80,
+                ))
+
     has_external_signal = any(item.get("kind") in ("heartbeat", "scheduler") for item in loop._wm.get_top(20))
     skip_llm = (
         cfg.loop.judge_every > 1

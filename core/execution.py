@@ -155,54 +155,6 @@ def _active_plan_step(task: Any | None) -> str:
     return ""
 
 
-def _plan_alignment_guard(
-    action: "JudgmentOutput",
-    active_task: Any | None,
-    registry: Any | None = None,
-) -> ToolResult | None:
-    if active_task is None:
-        return None
-    tool_name = action.chosen_action_id or ""
-    if tool_has_capability(registry, tool_name, "plan_alignment_exempt"):
-        return None
-
-    plan_step = _active_plan_step(active_task)
-    if not plan_step:
-        return None
-
-    current_step = str(getattr(active_task, "current_step", "") or "").strip()
-    if current_step == plan_step:
-        return None
-
-    evidence = {
-        "task_id": int(getattr(active_task, "id", 0) or 0),
-        "tool": tool_name,
-        "current_step": current_step,
-        "in_progress_step": plan_step,
-    }
-    current_desc = current_step or "（未对齐）"
-    return ToolResult(
-        summary=(
-            f"当前 task.plan 的进行中步骤是“{plan_step}”，"
-            f"但 task.current_step 仍是“{current_desc}”。"
-            f"在执行 {tool_name} 前，先用 task.update/task.advance 对齐 current_step，"
-            "或用 task.plan 调整计划。"
-        ),
-        evidence=json.dumps(evidence, ensure_ascii=False),
-        error="PlanStepMismatch",
-        skipped=True,
-        kind="execute_result",
-        priority=0.55,
-        state_delta={
-            "current_step": current_step,
-            "plan_step": plan_step,
-        },
-        metadata={
-            "log_summary": f"plan-gate tool={tool_name} current={current_desc} expected={plan_step}",
-        },
-    )
-
-
 def _run_status_from_result(result: ToolResult) -> str:
     if (
         isinstance(result.state_delta, dict)
@@ -531,38 +483,7 @@ class ExecutionLayer:
             _log.debug("[exec] %s params=%s", action.chosen_action_id, action.params)
         _log.info("[exec] %s", action.chosen_action_id)
 
-        plan_gate_result = _plan_alignment_guard(action, active_task, self._registry)
-        if plan_gate_result is not None:
-            await self._finalize_run(run_id, plan_gate_result, ctx, active_task_id=active_task.id if active_task else None)
-            return plan_gate_result
-
-        # durable failure sensing：对稳定重复失败的确定性动作做短期持久降噪
         failure_key = _failure_fact_key(action)
-        if ctx.task_store is not None:
-            raw, found = await ctx.task_store.get_fact(failure_key)
-            if found:
-                try:
-                    info = json.loads(raw)
-                except Exception:
-                    info = {}
-                muted_until = float(info.get("muted_until") or 0)
-                count = int(info.get("count") or 0)
-                reason = str(info.get("reason") or "stable_failure")
-                if count >= durable_threshold and muted_until > time.time():
-                    result = ToolResult(
-                        summary=(
-                            f"跳过已知稳定失败动作：{action.chosen_action_id} {action_key_param(action.params)}\n"
-                            f"原因: {reason}；最近已连续失败 {count} 次。"
-                            " 若外部状态已修复，请等待静默窗口结束后重试，或更换动作/参数。"
-                        ),
-                        evidence=raw,
-                        error="KnownStableFailure",
-                        skipped=True,
-                        kind="execute_result",
-                        priority=0.4,
-                    )
-                    await self._finalize_run(run_id, result, ctx)
-                    return result
 
         try:
             result = await self._workers.dispatch(worker_type, entry, action, ctx)
