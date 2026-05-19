@@ -24,7 +24,12 @@ from typing import TYPE_CHECKING, Any
 
 from provider.catalog import lookup_model
 from core.self_model import SelfModel, fmt_self_model
-from tools.registry import tool_has_capability
+try:
+    from tools.registry import tool_has_capability
+except Exception:
+    # 兼容旧版 tools.registry（未暴露 capability helper）。
+    def tool_has_capability(registry: Any | None, tool_name: str, capability: str) -> bool:
+        return False
 from .context import (
     _emotion_label,
     _fill_template,

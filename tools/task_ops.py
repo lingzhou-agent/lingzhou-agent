@@ -1,6 +1,8 @@
 """tools/task_ops.py — 任务管理工具（供 LLM 通过判断层调用）。"""
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
 import uuid
 from typing import Any
 
@@ -13,37 +15,51 @@ def _resolve_task(task_id: Any, ctx: ToolContext):
     except Exception:
         return ctx.task_store.get_active()
 
-from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
+from tools.registry import (
+    ToolManifest,
+    ToolParam,
+    ToolResult,
+    ToolContext,
+    ToolRegistry,
+    tool,
+)
+try:
+    from tools.registry import tool_name_has_capability
+except Exception:
+    def tool_name_has_capability(tool_name: str, capability: str) -> bool:
+        return False
 from memory.semantic import MemoryNode
 
 
-_INFO_ONLY_COMPLETION_TOOLS = frozenset({
-    "file.read", "file.list",
-    "memory.search", "memory.get_fact",
-    "task.list", "schedule.list",
-    "skill.list", "skill.search",
-    "shell.capabilities",
-})
+@lru_cache(maxsize=1)
+def _ensure_tool_capabilities_loaded() -> bool:
+    reg = ToolRegistry()
+    reg.discover(Path(__file__).resolve().parent)
+    return True
 
-# 会修改文件系统/代码/DB 的工具 — 需要后续验证才算有效完成
-_MUTATION_TOOLS = frozenset({
-    "file.edit", "file.write", "file.delete",
-    # 注意：shell.run 不在此列表。虽然 shell 可执行破坏性命令，
-    # 但它同时是 _VERIFY_TOOLS 的唯一成员，放入会导致死循环：
-    # shell.run(验证) → 被视为新 mutation → 要求再次验证 → 无限循环。
-    # 文件级 mutation 的验证需求由 file.edit/write/delete 触发已足够。
-})
 
-# 验证型动作 — 能确认修改是否正确的工具/模式
-_VERIFY_TOOLS = frozenset({
-    "shell.run",  # 通常用于跑测试/验证
-})
+def _has_capability(tool_name: str, capability: str) -> bool:
+    _ensure_tool_capabilities_loaded()
+    return tool_name_has_capability(tool_name, capability)
+
+
+def _is_completion_info_tool(tool_name: str) -> bool:
+    return _has_capability(tool_name, "completion_info_only")
+
+
+def _is_completion_mutation_tool(tool_name: str) -> bool:
+    return _has_capability(tool_name, "completion_mutation")
+
+
+def _is_completion_verify_tool(tool_name: str) -> bool:
+    return _has_capability(tool_name, "completion_verify")
 
 
 @tool(ToolManifest(
     name="task.advance",
     description="将活跃任务推进到 in_progress 状态并更新 next_step（首次取任务时调用）",
     progress_category="mutation",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
         params=[
         ToolParam("task_id", "number", "可选：显式指定要推进的任务 id；不传则使用当前 active task", required=False),
         ToolParam("next_step", "string", "计划的下一步描述", required=False),
@@ -117,6 +133,7 @@ async def task_add(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.complete",
     description="将当前活跃任务标记为完成，并将任务叙事编译进语义记忆",
     progress_category="mutation",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
         params=[
         ToolParam("task_id", "number", "可选：显式指定要完成的任务 id；不传则使用当前 active task", required=False),
         ToolParam("force", "boolean", "可选：强制完成，跳过轻量证据门槛", required=False),
@@ -134,7 +151,7 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             r.tool_name for r in recent_runs
             if r.status == "succeeded" and r.tool_name and not r.tool_name.startswith("task.")
         ]
-        only_info_browsing = bool(recent_tools) and all(t in _INFO_ONLY_COMPLETION_TOOLS for t in recent_tools)
+        only_info_browsing = bool(recent_tools) and all(_is_completion_info_tool(t) for t in recent_tools)
         explicit_progress = bool((task.current_step or "").strip() or str(task.result_json.get("summary") or "").strip())
         if only_info_browsing and not explicit_progress:
             return ToolResult(
@@ -148,17 +165,17 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 metadata={"task_id": task.id, "recent_tools": recent_tools},
             )
 
-        # 新门槛：如果最近有 mutation（file.edit/write/delete），
+        # 新门槛：如果最近有 mutation（manifest 标注 completion_mutation），
         # 要求其后至少有一个成功的验证动作（如跑测试）。
         # 注意：list_runs 返回的是 ORDER BY id DESC（最新在前），
         # 因此用 min(idx) 找最新 mutation，[:idx] 取比它更新的工具。
-        has_mutation = any(t in _MUTATION_TOOLS for t in recent_tools)
+        has_mutation = any(_is_completion_mutation_tool(t) for t in recent_tools)
         if has_mutation:
             # 最新 mutation 的索引（DESC 顺序下 min = 最近）
-            latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if t in _MUTATION_TOOLS)
+            latest_mutation_idx = min(i for i, t in enumerate(recent_tools) if _is_completion_mutation_tool(t))
             # 比最新 mutation 更近的工具（索引更小）
             post_mutation_tools = recent_tools[:latest_mutation_idx]
-            verified_after = any(t in _VERIFY_TOOLS for t in post_mutation_tools)
+            verified_after = any(_is_completion_verify_tool(t) for t in post_mutation_tools)
             if not verified_after:
                 return ToolResult(
                     summary=(
@@ -219,7 +236,9 @@ async def task_complete(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 @tool(ToolManifest(
     name="task.list",
     description="列出任务列表",
+    prefer_tier="reader",
     progress_category="info",
+    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt", "completion_info_only"),
         params=[
         ToolParam("status", "string", "过滤状态: pending/in_progress/ready/resumed/waiting/done/all", required=False),
         ToolParam("limit", "number", "最多返回条数，默认 10", required=False),
@@ -246,6 +265,7 @@ async def task_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.update",
     description="更新当前活跃任务的 next_step 或状态",
     progress_category="mutation",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
         params=[
         ToolParam("task_id", "number", "可选：显式指定要更新的任务 id；不传则使用当前 active task", required=False),
         ToolParam("next_step", "string", "下一步计划", required=False),
@@ -280,6 +300,7 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     name="task.fail",
     description="将当前活跃任务标记为失败，记录失败原因并写入失败日志（触发进化反馈）",
     progress_category="mutation",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
         params=[
         ToolParam("task_id", "number", "可选：显式指定要失败的任务 id；不传则使用当前 active task", required=False),
         ToolParam("reason", "string", "失败原因摘要", required=True),

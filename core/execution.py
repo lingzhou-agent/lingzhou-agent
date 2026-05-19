@@ -18,6 +18,11 @@ from typing import TYPE_CHECKING, Any
 
 from core.worker import WorkerLayer
 from tools.registry import ToolResult, ToolContext
+try:
+    from tools.registry import tool_has_capability
+except Exception:
+    def tool_has_capability(registry: Any | None, tool_name: str, capability: str) -> bool:
+        return False
 
 _log = logging.getLogger("lingzhou.execution")
 
@@ -133,6 +138,74 @@ def _infer_run_profile(tool_name: str, params: dict[str, Any] | None = None) -> 
     if tool_name in _MULTIMODAL_RUN_TOOLS:
         return "multimodal", "multimodal-worker"
     return "tool_chain", "tool-chain-worker"
+
+
+def _active_plan_step(task: Any | None) -> str:
+    if task is None:
+        return ""
+    extras = getattr(task, "extras", None)
+    if not isinstance(extras, dict):
+        return ""
+    raw_plan = extras.get("plan")
+    if not isinstance(raw_plan, list):
+        return ""
+    for item in raw_plan:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "").strip() != "in_progress":
+            continue
+        step = str(item.get("step") or "").strip()
+        if step:
+            return step
+    return ""
+
+
+def _plan_alignment_guard(
+    action: "JudgmentOutput",
+    active_task: Any | None,
+    registry: Any | None = None,
+) -> ToolResult | None:
+    if active_task is None:
+        return None
+    tool_name = action.chosen_action_id or ""
+    if tool_has_capability(registry, tool_name, "plan_alignment_exempt"):
+        return None
+
+    plan_step = _active_plan_step(active_task)
+    if not plan_step:
+        return None
+
+    current_step = str(getattr(active_task, "current_step", "") or "").strip()
+    if current_step == plan_step:
+        return None
+
+    evidence = {
+        "task_id": int(getattr(active_task, "id", 0) or 0),
+        "tool": tool_name,
+        "current_step": current_step,
+        "in_progress_step": plan_step,
+    }
+    current_desc = current_step or "（未对齐）"
+    return ToolResult(
+        summary=(
+            f"当前 task.plan 的进行中步骤是“{plan_step}”，"
+            f"但 task.current_step 仍是“{current_desc}”。"
+            f"在执行 {tool_name} 前，先用 task.update/task.advance 对齐 current_step，"
+            "或用 task.plan 调整计划。"
+        ),
+        evidence=json.dumps(evidence, ensure_ascii=False),
+        error="PlanStepMismatch",
+        skipped=True,
+        kind="execute_result",
+        priority=0.55,
+        state_delta={
+            "current_step": current_step,
+            "plan_step": plan_step,
+        },
+        metadata={
+            "log_summary": f"plan-gate tool={tool_name} current={current_desc} expected={plan_step}",
+        },
+    )
 
 
 def _run_status_from_result(result: ToolResult) -> str:
@@ -462,6 +535,11 @@ class ExecutionLayer:
         if self._cfg.loop.debug:
             _log.debug("[exec] %s params=%s", action.chosen_action_id, action.params)
         _log.info("[exec] %s", action.chosen_action_id)
+
+        plan_gate_result = _plan_alignment_guard(action, active_task, self._registry)
+        if plan_gate_result is not None:
+            await self._finalize_run(run_id, plan_gate_result, ctx, active_task_id=active_task.id if active_task else None)
+            return plan_gate_result
 
         # durable failure sensing：对稳定重复失败的确定性动作做短期持久降噪
         failure_key = _failure_fact_key(action)
