@@ -583,6 +583,39 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     return reply
 
 
+def _write_survival_snapshot(loop: Any, action: "JudgmentOutput", active_task: "Task | None", cycle: int) -> None:
+    """每 tick 覆写 survival.json，记录最近一次运行状态。
+
+    exit_type 始终写为 "crash"；干净退出时由 runtime.run() 的 finally 覆写为 "clean"。
+    LLM 下次启动时感知：上次是否异常退出、退出前在做什么。
+    """
+    import datetime as _dt
+    try:
+        state_dir = loop._cfg.state_dir
+        state_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "tick": cycle,
+            "ts": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "active_task_id": str(active_task.id) if active_task else None,
+            "active_task_title": active_task.title if active_task else None,
+            "active_task_goal": (active_task.goal or "")[:200] if active_task else None,
+            "last_decision": action.decision,
+            "last_action": (
+                f"{action.chosen_action_id} {action_key_param(action.params)}"
+                if action.decision == "act" else action.decision
+            ),
+            "emotion": {
+                "valence": round(loop._emotion.valence, 3),
+                "arousal": round(loop._emotion.arousal, 3),
+            },
+            "exit_type": "crash",
+        }
+        _p = state_dir / "survival.json"
+        _p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as _e:
+        _log.debug("[survival] 写入 survival.json 失败: %s", _e)
+
+
 async def _tick_finalize_impl(
     loop: Any,
     action: JudgmentOutput,
@@ -740,6 +773,13 @@ async def _tick_finalize_impl(
         "arousal": round(loop._emotion.arousal, 4),
         "dominance": round(loop._emotion.dominance, 4),
     }))
+
+    # ── 生存快照：每 tick 覆写 survival.json，exit_type 默认 "crash" ──────────
+    _write_survival_snapshot(loop, action, active_task, cycle)
+
+    # ── rationale 指纹追踪：结论固化检测 ─────────────────────────────────────
+    for _belief_item in loop._behavior.on_judgment(action.rationale or ""):
+        loop._wm.add(_belief_item)
 
     return action.reply_to_user
 

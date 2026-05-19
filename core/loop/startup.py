@@ -13,7 +13,6 @@ from provider.models_gen import ensure_models_json
 
 _log = logging.getLogger("lingzhou.loop")
 
-
 def _build_routing_providers(cfg: Config) -> dict[str, Any]:
     """根据 cfg.routing 构建分层路由 providers 字典。"""
     if not cfg.routing:
@@ -103,6 +102,51 @@ async def _restore_state_from_db_impl(loop: Any) -> None:
     zombie_count = await loop._task_store.reset_in_progress_tasks()
     if zombie_count > 0:
         _log.info("[restart] 重置 %d 个 in_progress 任务为 pending", zombie_count)
+
+    # ── 崩溃连续性恢复：读取 survival.json，若上次非干净退出则注入 WM 感知 ──
+    _inject_crash_recovery(loop)
+
+
+def _inject_crash_recovery(loop: Any) -> None:
+    """若上次为崩溃退出，将崩溃摘要注入 WM，让 LLM 在第一轮 tick 感知到。"""
+    try:
+        _sp = loop._cfg.state_dir / "survival.json"
+        if not _sp.exists():
+            return
+        snap = json.loads(_sp.read_text(encoding="utf-8"))
+        if snap.get("exit_type") == "clean":
+            return
+        # 上次是 crash 退出
+        tick = snap.get("tick", "?")
+        ts = snap.get("ts", "未知时间")
+        task_title = snap.get("active_task_title") or "无"
+        task_goal = snap.get("active_task_goal") or ""
+        last_action = snap.get("last_action") or "未知"
+        emotion = snap.get("emotion") or {}
+        valence = emotion.get("valence", 0)
+        arousal = emotion.get("arousal", 0)
+
+        content = (
+            f"[崩溃恢复] 上次运行在 tick={tick}（{ts}）异常终止（非干净退出）。\n"
+            f"  中断前活跃任务: 「{task_title}」\n"
+        )
+        if task_goal:
+            content += f"  任务目标: {task_goal[:100]}\n"
+        content += (
+            f"  最后动作: {last_action}\n"
+            f"  情绪状态: valence={valence} arousal={arousal}\n"
+            "  建议: 先确认中断前的任务是否需要继续，检查是否有遗留副作用，"
+            "再决定本轮行动。"
+        )
+        from memory.working import WMItem
+        loop._wm.add(WMItem(
+            kind="crash_recovery",
+            content=content,
+            priority=0.97,
+        ))
+        _log.info("[startup] 注入崩溃恢复信号: tick=%s ts=%s", tick, ts)
+    except Exception as exc:
+        _log.debug("[startup] 读取 survival.json 失败: %s", exc)
 
 
 async def _restore_self_model_impl(loop: Any) -> None:

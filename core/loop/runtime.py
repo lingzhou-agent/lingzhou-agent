@@ -269,6 +269,16 @@ class CognitionLoop:
                     await _rp.close()
                 except Exception:
                     pass
+            # 干净退出：更新 survival.json 的 exit_type，下次启动不触发崩溃注入
+            try:
+                import json as _json
+                _sp = self._cfg.state_dir / "survival.json"
+                if _sp.exists():
+                    _snap = _json.loads(_sp.read_text(encoding="utf-8"))
+                    _snap["exit_type"] = "clean"
+                    _sp.write_text(_json.dumps(_snap, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
 
     async def _wait_for_event(self, max_wait: float, before_task) -> None:
         """事件驱动等待:chat 消息、task 状态变化、超时三类事件任一发生即唤醒。"""

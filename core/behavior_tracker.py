@@ -25,6 +25,15 @@ _log = logging.getLogger("lingzhou.behavior_tracker")
 _SEQ_WINDOW_WARN_AT = 3
 # 窗口连续性判断：相邻读的 start 与上一次 end 的差距在此比例内视为连续
 _SEQ_WINDOW_GAP_RATIO = 0.25  # 25% 窗口大小内视作连续
+
+# rationale 指纹：连续相同结论超过此阈值时触发"信念固化"警告
+_BELIEF_STALE_THRESHOLD = 4
+# rationale 指纹窗口大小（deque maxlen）
+_BELIEF_WINDOW = 8
+# rationale 前缀截取长度（指纹只取前 N 字符，减少随机微小措辞差异的影响）
+_BELIEF_HASH_PREFIX = 120
+
+
 class BehaviorTracker:
     """行为模式追踪器：检测循环并把信号交给 LLM。"""
 
@@ -48,6 +57,11 @@ class BehaviorTracker:
         self._seq_window_warned: bool = False
         self._wait_streak: int = 0          # 连续 wait/pause 决策次数
         self._wait_streak_warned: set[int] = set()   # 已触发通知的阈值
+        # rationale 指纹追踪（信念固化检测）
+        self._rationale_hashes: deque[str] = deque(maxlen=_BELIEF_WINDOW)
+        self._belief_stale_hash: str | None = None
+        self._belief_stale_count: int = 0
+        self._belief_stale_warned: bool = False
 
     @property
     def wait_streak(self) -> int:
@@ -287,6 +301,57 @@ class BehaviorTracker:
                           self._wait_streak, thresh, _priority)
                 items.append(WMItem(kind="self_awareness", content=_msg, priority=_priority))
                 break  # 每轮最多触发一条通知
+        return items
+
+    def on_judgment(self, rationale: str) -> list["WMItem"]:
+        """追踪 LLM rationale 指纹，检测"信念固化"（连续相同结论）。
+
+        将 rationale 前 _BELIEF_HASH_PREFIX 字符规范化后计算 MD5 指纹。
+        若同一指纹连续出现 >= _BELIEF_STALE_THRESHOLD 次，注入 WM 警告。
+        警告仅触发一次（_belief_stale_warned），直到结论真正改变后重置。
+
+        返回需注入 WM 的条目列表（通常为空或 1 项）。
+        """
+        from memory.working import WMItem
+
+        items: list[WMItem] = []
+        if not rationale or not rationale.strip():
+            return items
+
+        # 规范化：去首尾空白、折叠空白、取前 N 字符、转小写
+        normalized = " ".join(rationale.strip().split())[:_BELIEF_HASH_PREFIX].lower()
+        fp = hashlib.md5(normalized.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+        self._rationale_hashes.append(fp)
+        if self._belief_stale_hash == fp:
+            self._belief_stale_count += 1
+        else:
+            # 结论改变 → 重置警告状态
+            self._belief_stale_hash = fp
+            self._belief_stale_count = 1
+            self._belief_stale_warned = False
+
+        if (
+            self._belief_stale_count >= _BELIEF_STALE_THRESHOLD
+            and not self._belief_stale_warned
+        ):
+            self._belief_stale_warned = True
+            _log.warning(
+                "[self-awareness] rationale 指纹连续 %d 次相同 (fp=%s)，可能存在信念固化",
+                self._belief_stale_count, fp,
+            )
+            items.append(WMItem(
+                kind="self_awareness",
+                content=(
+                    f"[认知警告] 我的推理结论已连续 {self._belief_stale_count} 轮基本相同。"
+                    " 这可能意味着：(1) 思路卡住，证据未变但结论反复重申；"
+                    " (2) 实际上什么都没做，只是不断地\"分析\"；"
+                    " (3) 我在回避某个让我不确定的步骤。\n"
+                    "  → 请在本轮 rationale 中回答：这个结论是否已经被行动验证过？"
+                    " 如果没有，**现在就执行一个可产生新证据的动作**，而不是再次重申结论。"
+                ),
+                priority=0.96,
+            ))
         return items
 
     def apply_execution_gate(
