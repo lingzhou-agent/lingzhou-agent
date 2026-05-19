@@ -22,9 +22,7 @@ def _strip_memory_context(text: str) -> str:
 
 def _clip_reply_for_log(text: str, limit: int = DEFAULT_LOG_REPLY_CHARS) -> str:
     cleaned = _strip_memory_context(text).replace("\n", "\\n").strip()
-    if len(cleaned) <= limit:
-        return cleaned
-    return cleaned[:limit] + "..."
+    return cleaned
 
 
 def _clip_signal_text(text: str, limit: int = 160) -> str:
@@ -85,8 +83,7 @@ def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_
         return ";".join(line for line in lines if line)
 
     if action.decision in {"wait", "pause"}:
-        raw_basis = action.rationale or result.summary or ""
-        # 过滤技术性错误信息，不暴露给用户
+        raw_basis = action.rationale or ""
         if any(tech in raw_basis for tech in ("缺少 chosen_action_id", "LLM 输出解析失败", "无效 decision", "list index out of range", "not defined")):
             raw_basis = ""
         basis = _brief(raw_basis or "需要更多信息后再继续。", 100)
@@ -109,13 +106,9 @@ def _fallback_reply_for_user(action: JudgmentOutput, result: ToolResult, active_
         ]
         return ";".join(line for line in lines if line)
 
-    if result.summary:
-        lines = [
-            _fact_line("结果", _brief(result.summary, 100)),
-            _fact_line("next", _brief(next_step, 60)) if next_step else "",
-        ]
-        return ";".join(line for line in lines if line)
-
-    if next_step:
-        return _fact_line("next", _brief(next_step, 60))
-    return _fact_line("状态", "progressed")
+    lines = [
+        _fact_line("状态", "progressed"),
+        _fact_line("basis", _brief(action.rationale or "已完成本轮处理，正在整理基于证据的答复。", 100)),
+        _fact_line("next", _brief(next_step, 60)) if next_step else "",
+    ]
+    return ";".join(line for line in lines if line)

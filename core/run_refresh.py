@@ -122,7 +122,7 @@ async def _finalize_refreshed_run_learning(
     semantic: SemanticMemory | None = None,
 ) -> None:
     if error:
-        _log.debug("[run-refresh] record failure for run=%s tool=%s error=%s", run.id, run.tool_name, error[:120])
+        _log.debug("[run-refresh] record failure for run=%s tool=%s error=%s", run.id, run.tool_name, error)
         await task_store.record_failure(
             kind=run.tool_name or run.worker_type or "run",
             summary=summary[:300],

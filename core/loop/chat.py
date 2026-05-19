@@ -87,7 +87,7 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
             _log.debug("[chat] merged %d follow-up message(s) into turn (ids=%s)",
                        len(follow_ups), [m["id"] for m in follow_ups])
 
-    _log.info("[chat] user › %s", user_message[:200])
+    _log.info("[chat] user › %s", user_message)
     reply = await loop._tick(
         cycle,
         user_message=user_message,
@@ -95,7 +95,7 @@ async def _process_pending_chat_turn(loop: Any, cycle: int) -> tuple[int, bool]:
     )
     if reply:
         reply = _strip_memory_context(reply)
-    _log.info("[chat] assistant › %s", (reply or "")[:200])
+    _log.info("[chat] assistant › %s", reply or "")
     if not reply:
         await loop._task_store.add_chat_message(
             "assistant",

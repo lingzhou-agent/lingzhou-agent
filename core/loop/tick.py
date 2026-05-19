@@ -36,7 +36,6 @@ from .common import (
     _EVENT_BODY_MAX_CHARS,
     _EVENT_NEW_BODY_CHARS,
     _EVENT_TITLE_CHARS,
-    _LOG_RATIONALE_CHARS,
     _SEM_TAG_TASK_CHARS,
     _SEM_TITLE_CHARS,
     _infer_valence_from_text,
@@ -421,7 +420,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         actual_phase,
         actual_thinking,
         actual_skills,
-        (action.rationale or "")[:_LOG_RATIONALE_CHARS],
+        action.rationale or "",
     )
 
     if action.decision == "act":

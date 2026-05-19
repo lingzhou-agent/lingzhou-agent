@@ -174,7 +174,7 @@ async def _consume_task_runtime_hints(
                 await task_store.update_status(task.id, task.status, next_step=replan_step)
                 task.next_step = replan_step
                 updated = True
-                _log.info("[runtime-hint] task=%s apply replan next_step=%s", task.id, replan_step[:120])
+                _log.info("[runtime-hint] task=%s apply replan next_step=%s", task.id, replan_step)
             await task_store.update_task_data(task.id, {"last_replan_reflection_id": reflection_id})
             task.extras["last_replan_reflection_id"] = reflection_id
             wm.add(WMItem(

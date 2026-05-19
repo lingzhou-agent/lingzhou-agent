@@ -361,7 +361,6 @@ async def _interactive(
                     if m["role"] == "assistant":
                         # \n 前缀避免把回复直接挤到用户当前输入后面。
                         console.print(f"\n[bold green][{agent_name}][/bold green] {m['content']}\n")
-                        _print_input_prompt(prompt_state["value"])
                     _schedule_prompt_refresh(redraw=(m["role"] == "assistant"))
         except asyncio.CancelledError:
             pass

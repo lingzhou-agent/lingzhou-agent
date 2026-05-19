@@ -8,6 +8,7 @@ import math
 import os
 import tempfile
 import time
+from functools import lru_cache
 from datetime import datetime, UTC, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -81,6 +82,15 @@ def _execution_layer(reg, *, debug: bool = False):
     from core.execution import ExecutionLayer
 
     return ExecutionLayer(reg, cast(Any, SimpleNamespace(loop=SimpleNamespace(debug=debug))))
+
+
+@lru_cache(maxsize=1)
+def _tool_registry():
+    from tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+    reg.discover(_proj_root() / "tools")
+    return reg
 
 
 def _judgment_output(**kwargs: Any) -> Any:
@@ -214,6 +224,50 @@ def test_chat_print_input_prompt_when_tty(monkeypatch):
     _print_input_prompt("小懒> ")
 
     assert fake_stdout.getvalue() == "小懒> "
+
+
+def test_loop_logging_reply_not_truncated():
+    from core.loop.logging import _clip_reply_for_log
+
+    text = "x" * 600
+
+    assert _clip_reply_for_log(text) == text
+
+
+@pytest.mark.asyncio
+async def test_chat_interactive_assistant_reply_redraws_prompt_once(monkeypatch):
+    from cli import chat as chat_mod
+
+    class _FakeStore:
+        def __init__(self):
+            self._history_loaded = False
+            self._reply_sent = False
+
+        async def get_chat_messages_since(self, since: int, *, chat_id: str = ""):
+            if since == 0 and not self._history_loaded:
+                self._history_loaded = True
+                return []
+            if not self._reply_sent:
+                self._reply_sent = True
+                return [{"id": 1, "role": "assistant", "content": "爸爸，收到。"}]
+            return []
+
+        async def add_chat_message(self, role: str, content: str, *, chat_id: str = ""):
+            return 2
+
+    monkeypatch.setattr(chat_mod.console, "print", lambda *args, **kwargs: None)
+    prompt_calls: list[str] = []
+    monkeypatch.setattr(chat_mod, "_print_input_prompt", lambda prompt: prompt_calls.append(prompt))
+
+    def _delayed_eof(prompt: str = "") -> str:
+        time.sleep(0.4)
+        return ""
+
+    monkeypatch.setattr(chat_mod, "_read_line", _delayed_eof)
+
+    await chat_mod._interactive(cast(Any, _FakeStore()), _test_config(), "", "灵舟")
+
+    assert prompt_calls == ["爸爸> "]
 
 
 def test_configure_lingzhou_logging_resets_console_log_each_time():
@@ -1414,6 +1468,119 @@ async def _execution_dispatch_routes_fact_monitored_action_to_llm_worker():
         assert runs
         assert runs[0].run_type == "llm"
         assert runs[0].worker_type == "llm-worker"
+        await store.close()
+
+
+def test_execution_plan_gate_blocks_mutation_until_current_step_aligned():
+    asyncio.run(_execution_plan_gate_blocks_mutation_until_current_step_aligned())
+
+
+async def _execution_plan_gate_blocks_mutation_until_current_step_aligned():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("修复回复链路", goal="验证 plan gate")
+        await store.update_task_data(task_id, {
+            "plan": [
+                {"step": "先搜索证据", "status": "in_progress"},
+                {"step": "再写入修复", "status": "pending"},
+            ]
+        })
+
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+
+        blocked = await layer.dispatch(
+            _judgment_output(
+                decision="act",
+                chosen_action_id="memory.set_fact",
+                params={"key": "debug:test", "value": "1"},
+                rationale="直接写入结论",
+            ),
+            ctx,
+        )
+        assert blocked.skipped is True
+        assert blocked.error == "PlanStepMismatch"
+        assert "先搜索证据" in blocked.summary
+        value, found = await store.get_fact("debug:test")
+        assert found is False
+        assert value == ""
+
+        align = await layer.dispatch(
+            _judgment_output(
+                decision="act",
+                chosen_action_id="task.update",
+                params={"current_step": "先搜索证据"},
+                rationale="先对齐当前步骤",
+            ),
+            ctx,
+        )
+        assert align.error is None
+
+        allowed = await layer.dispatch(
+            _judgment_output(
+                decision="act",
+                chosen_action_id="memory.set_fact",
+                params={"key": "debug:test", "value": "1"},
+                rationale="步骤已对齐，允许写入",
+            ),
+            ctx,
+        )
+        assert allowed.error is None
+        value, found = await store.get_fact("debug:test")
+        assert found is True
+        assert value == "1"
+
+        await store.close()
+
+
+def test_execution_plan_gate_keeps_reader_tools_available():
+    asyncio.run(_execution_plan_gate_keeps_reader_tools_available())
+
+
+async def _execution_plan_gate_keeps_reader_tools_available():
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
+
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    with TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "runtime.db")
+        await store.open()
+        task_id = await store.add_task("分析问题", goal="验证 reader 不被 plan gate 误伤")
+        await store.update_task_data(task_id, {
+            "plan": [
+                {"step": "先搜索证据", "status": "in_progress"},
+                {"step": "再整理结论", "status": "pending"},
+            ]
+        })
+
+        reg = ToolRegistry()
+        reg.discover(_proj_root() / "tools")
+        layer = _execution_layer(reg)
+        ctx = _tool_ctx(debug=False, task_store=store)
+
+        result = await layer.dispatch(
+            _judgment_output(
+                decision="act",
+                chosen_action_id="task.list",
+                params={"status": "all", "limit": 5},
+                rationale="先看当前任务列表",
+            ),
+            ctx,
+        )
+        assert result.error is None
+        assert "分析问题" in result.summary
+
         await store.close()
 
 
@@ -2785,6 +2952,94 @@ async def _chat_reply_is_persisted_before_post_tick_cleanup():
         finally:
             await loop.task_store.close()
             await loop.provider.close()
+
+
+def test_local_chat_reply_is_persisted_for_default_channel():
+    asyncio.run(_local_chat_reply_is_persisted_for_default_channel())
+
+
+async def _local_chat_reply_is_persisted_for_default_channel():
+    os.environ.setdefault("DASHSCOPE_API_KEY", "test-key")
+    os.environ.setdefault("GITHUB_TOKEN", "test-token")
+    from core.config import Config
+    from core.loop import CognitionLoop
+
+    cfg_path = Path.home() / ".lingzhou" / "lingzhou.json"
+    if not cfg_path.exists():
+        cfg_path = _proj_root() / "lingzhou.json.example"
+    cfg = Config.load(cfg_path)
+    with tempfile.TemporaryDirectory() as d:
+        cfg.loop.db_path = f"{d}/state/runtime.db"
+        cfg.loop.memory_dir = f"{d}/memory"
+        cfg.loop.workspace_dir = f"{d}/workspace"
+        cfg.loop.act = False
+        cfg.evolution.enabled = False
+
+        loop = CognitionLoop(cfg)
+        await loop.task_store.open()
+        try:
+            async def _sense(*args, **kwargs):
+                return cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False))
+
+            loop._perception.sense = _sense
+            loop._perception.derive_cognitive_signals = lambda *args, **kwargs: cast(
+                Any,
+                SimpleNamespace(
+                    repeat_action_count=0,
+                    repeat_action_tool="",
+                    repeat_action_key="",
+                    repeat_read_count=0,
+                    repeat_read_path="",
+                    loop_probe_version=0,
+                ),
+            )
+
+            async def _decide(*args, **kwargs):
+                return _judgment_output(
+                    decision="pause",
+                    rationale="已经得到结论",
+                    reply_to_user="这是本地 chat 的回复",
+                )
+
+            loop._judgment.decide = _decide
+            loop._judgment._last_call_meta = {
+                "model_ref": cfg.model,
+                "thinking": cfg.thinking,
+                "tier": "reasoner",
+                "phase": "initial",
+            }
+
+            reply = await loop._tick(1, user_message="你好", chat_id="")
+
+            assert reply == "这是本地 chat 的回复"
+            msgs = await loop.task_store.get_chat_messages_since(0)
+            assert len(msgs) == 1
+            assert msgs[0]["role"] == "assistant"
+            assert msgs[0]["content"] == "这是本地 chat 的回复"
+        finally:
+            await loop.task_store.close()
+            await loop.provider.close()
+
+
+def test_resolve_reply_chat_id_falls_back_to_last_chat_fact():
+    asyncio.run(_resolve_reply_chat_id_falls_back_to_last_chat_fact())
+
+
+async def _resolve_reply_chat_id_falls_back_to_last_chat_fact():
+    from core.loop.chat import _resolve_reply_chat_id
+    from memory.task_store import TaskStore
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "chat-fallback.db")
+        await store.open()
+        try:
+            await store.set_fact("chat:last_chat_id", "wechat:user-9", scope="system")
+            loop = SimpleNamespace(_task_store=store)
+            chat_id = await _resolve_reply_chat_id(loop, None, None)
+            assert chat_id == "wechat:user-9"
+            assert await _resolve_reply_chat_id(loop, None, "") == ""
+        finally:
+            await store.close()
 
 
 def test_autonomous_followup_reply_uses_bound_chat_session():
@@ -4292,6 +4547,7 @@ def test_rewrite_task_ask_to_task_list_before_asking_for_id():
     rewritten = _rewrite_task_ask_to_evidence(
         action,
         user_message="帮我看看昨晚那个任务为什么没回消息",
+        registry=_tool_registry(),
     )
 
     assert rewritten.chosen_action_id == "task.list"
@@ -4335,7 +4591,7 @@ async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
     })
 
     provider = _DummyProvider()
-    layer = JudgmentLayer(provider, ToolRegistry(), cfg)
+    layer = JudgmentLayer(provider, _tool_registry(), cfg)
     layer._last_context_text = "cached context"
 
     out = await layer.decide_continue(
@@ -4350,7 +4606,118 @@ async def test_decide_continue_reply_only_forces_reasoner_and_reply_to_user():
     assert out.params == {}
     assert out.reply_to_user == "这是最终回复。"
     assert layer.last_call_meta["tier"] == "reasoner"
+    assert provider.last_messages is not None
     assert "禁止再调用任何工具" in provider.last_messages[1].content
+
+
+async def test_decide_continue_includes_structured_tool_history_window():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        def __init__(self) -> None:
+            self.last_messages = None
+
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            self.last_messages = messages
+            return '{"decision":"wait","rationale":"继续观察"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    provider = _DummyProvider()
+    layer = JudgmentLayer(provider, _tool_registry(), cfg)
+    layer._last_context_text = "cached context"
+
+    out = await layer.decide_continue(
+        [{
+            "tool": "memory.search",
+            "params": {"query": "继续分析"},
+            "result": "命中 2 条相关记忆",
+            "summary": "命中 2 条相关记忆",
+            "error": "",
+            "status": "ok",
+            "state_delta": {"hits": 2},
+        }],
+        user_message="继续分析",
+        prefer_tier="reasoner",
+    )
+
+    assert out.decision == "wait"
+    assert provider.last_messages is not None
+    assert "结构化最近工具结果(JSON)" in provider.last_messages[1].content
+    assert '"status": "ok"' in provider.last_messages[1].content
+    assert '"state_delta": {' in provider.last_messages[1].content
+
+
+async def test_decide_continue_rewrites_complex_act_to_task_plan_without_existing_plan():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from memory.task_store import Task
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return (
+                '{"decision":"act","chosen_action_id":"shell.run",'
+                '"params":{"command":"pytest -q"},'
+                '"rationale":"先继续排查失败原因。",'
+                '"next_step":"再修复 chat 回复链路"}'
+            )
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "bailian": {
+                "type": "openai_compat",
+                "base_url": "https://example.invalid/v1",
+                "api_key_env": "DASHSCOPE_API_KEY",
+            }
+        },
+        "model": "bailian/qwen3.6-plus",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    task = Task(
+        id=11,
+        title="排查 chat 回复",
+        status="active",
+        priority="high",
+        created_at="2026-05-15T00:00:00+00:00",
+        goal="逐一排查 chat 回复链路",
+    )
+    layer = JudgmentLayer(_DummyProvider(), _tool_registry(), cfg)
+    layer._last_context_text = "cached context"
+
+    out = await layer.decide_continue(
+        [{"tool": "memory.search", "params": {"query": "chat 回复"}, "result": "命中 2 条相关记忆"}],
+        user_message="请你逐一排查并修复 chat 回复问题",
+        active_task=task,
+        prefer_tier="reasoner",
+    )
+
+    assert out.decision == "act"
+    assert out.chosen_action_id == "task.plan"
+    assert out.params["task_id"] == 11
+    assert out.params["plan"][0]["status"] == "in_progress"
+    assert out.params["plan"][1] == {"step": "再修复 chat 回复链路", "status": "pending"}
 
 
 def test_rewrite_task_ask_keeps_direct_question_after_evidence():
@@ -4365,11 +4732,132 @@ def test_rewrite_task_ask_keeps_direct_question_after_evidence():
     rewritten = _rewrite_task_ask_to_evidence(
         action,
         user_message="继续分析",
-        tool_history=[{"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 2 条相关记忆"}],
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 2 条相关记忆"},
+            {"tool": "task.list", "params": {"status": "all"}, "result": "[12] [in_progress] 继续分析"},
+        ],
+        registry=_tool_registry(),
     )
 
     assert rewritten.chosen_action_id == "task.ask"
     assert rewritten.params["question"] == "还需要你补充具体 id 吗？"
+
+
+def test_rewrite_task_ask_requires_evidence_budget_before_asking():
+    from core.judgment.runtime import _rewrite_task_ask_to_evidence
+
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="task.ask",
+        params={"question": "还需要你补充具体 id 吗？"},
+    )
+
+    rewritten = _rewrite_task_ask_to_evidence(
+        action,
+        user_message="继续分析",
+        tool_history=[
+            {"tool": "memory.search", "params": {"query": "继续分析"}, "result": "命中 1 条相关记忆"},
+        ],
+        registry=_tool_registry(),
+    )
+
+    assert rewritten.chosen_action_id == "task.list"
+    assert rewritten.params == {"status": "all", "limit": 10}
+    assert "1/2" in rewritten.rationale
+
+
+def test_rewrite_complex_user_act_to_task_plan_before_mutation():
+    from core.judgment.runtime import _rewrite_complex_act_to_task_plan
+    from memory.task_store import Task
+
+    task = Task(
+        id=7,
+        title="修复 chat 回复",
+        status="active",
+        priority="high",
+        created_at="2026-05-15T00:00:00+00:00",
+        goal="逐一排查 chat 回复链路",
+    )
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="shell.run",
+        params={"command": "rg \"chat\" core -n"},
+        rationale="先检查日志，再修复回复链路。",
+        next_step="再修复 chat 回复链路",
+    )
+
+    rewritten = _rewrite_complex_act_to_task_plan(
+        action,
+        user_message="请你逐一排查昨天日志并修复 chat 回复问题",
+        active_task=task,
+        registry=_tool_registry(),
+    )
+
+    assert rewritten.chosen_action_id == "task.plan"
+    assert rewritten.params["task_id"] == 7
+    assert rewritten.params["plan"][0]["status"] == "in_progress"
+    assert rewritten.params["plan"][0]["step"].startswith("执行 shell.run")
+    assert rewritten.params["plan"][1] == {"step": "再修复 chat 回复链路", "status": "pending"}
+    assert rewritten.reply_to_user == ""
+
+
+def test_rewrite_complex_user_act_keeps_read_action_without_plan():
+    from core.judgment.runtime import _rewrite_complex_act_to_task_plan
+    from memory.task_store import Task
+
+    task = Task(
+        id=8,
+        title="排查日志",
+        status="active",
+        priority="high",
+        created_at="2026-05-15T00:00:00+00:00",
+        goal="逐一分析昨天日志",
+    )
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="file.read",
+        params={"path": "/tmp/runtime.log"},
+        next_step="再总结问题点",
+    )
+
+    rewritten = _rewrite_complex_act_to_task_plan(
+        action,
+        user_message="请你逐一分析昨天日志并整理问题",
+        active_task=task,
+        registry=_tool_registry(),
+    )
+
+    assert rewritten.chosen_action_id == "file.read"
+
+
+def test_rewrite_complex_user_act_uses_structural_next_step_not_keyword_regex():
+    from core.judgment.runtime import _rewrite_complex_act_to_task_plan
+    from memory.task_store import Task
+
+    task = Task(
+        id=9,
+        title="处理回复",
+        status="active",
+        priority="high",
+        created_at="2026-05-15T00:00:00+00:00",
+        goal="处理 chat 回复",
+    )
+    action = _judgment_output(
+        decision="act",
+        chosen_action_id="shell.run",
+        params={"command": "pytest -q"},
+        next_step="汇总结果并修复失败项",
+    )
+
+    rewritten = _rewrite_complex_act_to_task_plan(
+        action,
+        user_message="帮我处理一下",
+        active_task=task,
+        registry=_tool_registry(),
+    )
+
+    assert rewritten.chosen_action_id == "task.plan"
+    assert rewritten.params["plan"][1] == {"step": "汇总结果并修复失败项", "status": "pending"}
 
 
 async def test_sync_task_progress_state_promotes_previous_next_step():
@@ -4449,11 +4937,14 @@ def test_fmt_task_exposes_runtime_state_to_llm():
         current_step="检查 run monitor",
         model_tier="repair",
         result_json={"last_run_status": "failed"},
+        extras={"plan": [{"step": "检查回复链路", "status": "in_progress"}]},
     )
     section = _fmt_task(task)
     assert "状态: active" in section
     assert "模型层级: repair" in section
     assert "当前步骤: 检查 run monitor" in section
+    assert "当前计划:" in section
+    assert "检查回复链路" in section
     assert "最近运行状态: failed" in section
 
 

@@ -1069,7 +1069,7 @@ class JudgmentLayer:
             "[judgment] phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,
             self._last_call_meta.get("skills") or "none",
-            output.decision, output.chosen_action_id, (output.rationale or "")[:120],
+            output.decision, output.chosen_action_id, output.rationale or "",
         )
 
         return output

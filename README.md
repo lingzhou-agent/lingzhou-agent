@@ -1,151 +1,124 @@
-# 灵舟 (lingzhou) — 自编程自进化认知 Agent
+# lingzhou — Self-Evolving Cognitive Agent
+
+[English](README.md) | [中文](README.zh.md)
 
 [![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-灵舟是一个**自编程、自进化的认知 Agent**。它在 Linux 服务器上自主运行，通过微信与用户交互，具备自我感知、自主探索、自我改进的能力。
+lingzhou is a self-programming, self-evolving cognitive agent designed to run autonomously on a Linux host, interact through WeChat or local chat, and improve its own behavior over time.
 
-## 核心理念
+## What It Is
 
-> 数字生命应该有自驱力。
+lingzhou is not a chat wrapper. It is an event-driven runtime with:
 
-灵舟不是被动等待指令的聊天机器人。它拥有**好奇心引擎**（基于 Active Inference + Intrinsic Motivation），在空闲时自主探索知识、改进自身代码、整理记忆。
+- a perception → self-drive → judgment → execution → reflection loop
+- persistent memory across working, episodic, semantic, and task storage
+- multi-model routing for reader / reasoner / repair roles
+- hot-reload evolution for tools, prompts, and runtime behavior
+- 56 built-in tools for files, shell, tasks, memory, web, browser, probes, and media
 
-## 快速开始
+## Quick Start
 
 ```bash
-# 安装
-git clone https://cnb.cool/xiaolanplan/lingzhou.git
-cd lingzhou && pip install -e .
+git clone https://github.com/suuugeee/lingzhou-agent.git
+cd lingzhou-agent
+pip install -e .
 
-# 配置
+mkdir -p ~/.lingzhou
 cp lingzhou.json.example ~/.lingzhou/lingzhou.json
-# 编辑 ~/.lingzhou/lingzhou.json 设置 API keys
-# 创建 ~/.lingzhou/.env 写入 DASHSCOPE_API_KEY / DEEPSEEK_API_KEY
+# edit ~/.lingzhou/lingzhou.json
+# create ~/.lingzhou/.env with provider keys
 
-# 启动
-lingzhou gateway start -d          # 后台运行（默认微信通道）
-lingzhou gateway start --channel local  # 仅终端
-
-# 管理
-lingzhou gateway logs tail -f      # 实时日志
-lingzhou gateway logs stats        # 统计概览
-lingzhou gateway restart           # 重启
-lingzhou stop                      # 停止
+lingzhou gateway start -d
+lingzhou gateway start --channel local
 ```
 
-运行时目录规则：所有 runtime data 一律写入 `~/.lingzhou/`，包括 `state/`、`memory/`、`workspace/`、日志和临时产物。源码仓目录只放代码、配置样例和文档，不承载运行期文件。
+Runtime data is always stored under `~/.lingzhou/`, including `state/`, `memory/`, `workspace/`, logs, and temporary artifacts. The repository itself only stores source code, sample config, and documentation.
 
-### 系统服务（推荐）
+### System Service
 
 ```bash
 sudo cp scripts/lingzhou.service /etc/systemd/system/
 sudo systemctl enable --now lingzhou
 ```
 
-## 架构
+## Architecture
 
+```text
+Perception  ->  Self-Drive
+     |              |
+     v              v
+Judgment   <-  Model Routing
+     |
+     v
+Execution  ->  Built-in Tools
+     |
+     v
+Reflection ->  Evolution
 ```
-感知层 (Perception)  →  好奇心引擎 (Self-Drive)
-         ↓                        ↓
-    判断层 (Judgment)  ←  LLM 多模型路由
-         ↓
-    执行层 (Execution) → 46 个工具
-         ↓
-    反思层 (Reflection) → 进化引擎 (Evolution)
-```
 
-- [架构详解](docs/ARCHITECTURE.md)
-- [自驱力理论](docs/SELF_DRIVE.md)
+## Documentation
 
-## 工具 (46 个)
+Most in-depth design documents are currently written in Chinese.
 
-### 文件 · Shell · 进程
-`file.read` `file.write` `file.edit` `file.list` · `shell.run` · `process.*` (5)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Self-Drive](docs/SELF_DRIVE.md)
+- [Tool Catalog](docs/TOOLS.md)
+- [Configuration Reference](docs/CONFIG.md)
+- [Probe Guide](docs/PROBE.md)
+- [Plugin Guide](docs/PLUGIN.md)
+- [Deviation Review](docs/DEVIATION_REVIEW.md)
 
-### 记忆 · 任务 · 计划
-`memory.*` (6) · `task.*` (9 含 `task.plan`) · `schedule.*` (4)
+## Built-In Tool Surface
 
-### Web · 浏览器
-`web.fetch` `web.search` · `browser.*` (5: navigate/snapshot/click/type/scroll)
+lingzhou currently ships 56 built-in tool endpoints across these groups:
 
-### 媒体
-`image.analyze` `image.generate` `tts.speak`
+- file and config: `file.*` + `config.*`
+- shell and process control: `shell.run`, `shell.capabilities`, `exec`, `process.*`
+- tasks, planning, and scheduling: `task.*`, `task.ask`, `task.plan`, `schedule.*`
+- memory and reflection: `memory.*`, `reflect.structural`, `failure.dismiss`
+- web, browser, and media: `web.*`, `browser.*`, `image.*`, `tts.speak`
+- skills, probes, and notifications: `skill.*`, `probe.*`, `wechat.send`
 
-### 元能力
-`config.get` `config.set` · `skill.*` · `reflect.structural` · `plugin`
+See [docs/TOOLS.md](docs/TOOLS.md) for the grouped catalog and capability tags.
 
-[完整工具目录](docs/TOOLS.md)
-
-## 特性
-
-- **🧠 自驱力引擎** — Active Inference + Intrinsic Motivation，空闲时自主探索
-- **🔧 自进化** — 检测失败模式，LLM 生成修复代码，语法验证后用热加载生效
-- **📋 任务管理** — 完整的 add→advance→complete→fail 生命周期
-- **💬 微信 Bot** — iLink long-poll 接入，图片消息可落地后进入多模态分析链路
-- **🌐 Web 能力** — 网页搜索、网页抓取、headless 浏览器
-- **🔌 插件系统** — discover→load→register→start 生命周期
-- **♻️ 配置热加载** — 修改 lingzhou.json 无需重启
-- **🛡️ 安全** — workspace 沙箱、路径穿越检测、原子写入
-
-## 配置
+## Configuration
 
 ```jsonc
 // ~/.lingzhou/lingzhou.json
 {
-  "model": "deepseek/deepseek-v4-flash",
-  "loop": { "max_idle_gap": 45, "act": true },
-  "evolution": { "enabled": true },
+  "model": "bailian/qwen3.6-plus",
+  "routing": {
+    "reader": "bailian/qwen-plus",
+    "reasoner": "copilot/gpt-5.4"
+  },
+  "loop": { "act": true, "max_idle_gap": 60 },
   "gateway": { "default_channel": "wechat" }
 }
 ```
 
-LLM 可通过 `config.get` / `config.set` 工具在运行时自主调参。[完整配置参考](docs/CONFIG.md)
+The runtime can inspect and adjust config through `config.get` and `config.set`. Full details are in [docs/CONFIG.md](docs/CONFIG.md).
 
-## 插件开发
+## Repository Layout
 
-```python
-# plugins/my-plugin/plugin.json
-{"id": "my-plugin", "name": "My Plugin", "version": "0.1.0"}
-
-# plugins/my-plugin/__init__.py
-def register(ctx):
-    # 注册工具或通道
-    pass
+```text
+lingzhou-agent/
+├── channels/   # external channels such as wechat
+├── cli/        # chat, gateway, auth, logs, bootstrap
+├── core/       # cognition loop, judgment, execution, evolution
+├── docs/       # design and operator docs
+├── memory/     # memory system facade
+├── plugins/    # plugin workspace
+├── provider/   # model providers
+├── store/      # persistence helpers
+├── tests/      # smoke and behavior tests
+└── tools/      # built-in tool implementations
 ```
 
-[插件开发指南](docs/PLUGIN.md)
+## Contributing
 
-## 项目结构
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```
-lingzhou/
-├── core/           # 认知核心 (loop/judgment/perception/evolution/self_drive)
-├── channels/       # 外部消息通道 (wechat 等)
-├── cli/            # 命令行入口 (gateway/chat/config/logs/plugin)
-├── tools/          # 46 个工具
-├── store/          # 持久化主线 (auth + memory/)
-├── memory/         # 记忆系统 façade (WM/episodic/semantic/task_store)
-├── provider/       # LLM 接入层
-├── plugins/        # 插件目录
-├── docs/           # 文档
-└── scripts/        # systemd wrapper / watchdog
-```
-
-## 贡献
-
-见 [CONTRIBUTING.md](CONTRIBUTING.md)
-
-## 致谢
-
-灵舟的理论基础：
-- **Active Inference** — Karl Friston (2013)
-- **Intrinsic Motivation** — Oudeyer & Kaplan (2007)
-- **Self-Regulated Learning** — Zimmerman (2000)
-- **Open-Ended Learning** — Wang et al. (2019, POET)
-
-灵舟参考的是通用认知架构、事件驱动通道和可热加载运行时的设计思路，而不是复刻单一外部项目。
-
-## 许可证
+## License
 
 MIT

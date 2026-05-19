@@ -1,13 +1,13 @@
 # 蓝图偏差审查 (2026-05-18)
 
-基于 ROADMAP-2026.5.15.md 蓝图与当前实现（ARCHITECTURE.md + core/ 目录观察）的偏差对比。
+基于早期 roadmap 蓝图与当前实现（ARCHITECTURE.md + core/ 目录观察）的偏差对比。
 
 ## P0：必须先做
 
 | ID | 蓝图要求 | 当前状态 | 偏差评估 |
 |----|----------|----------|----------|
 | P0-1 | 视觉/多模态能力 | `image.analyze` 工具已存在，但感知层是否深度集成多模态尚不确定 | 工具可用，但可能尚未打通多模态感知→判断的完整链路 |
-| P0-2 | 自主循环内环（无用户消息时可连续工具调用） | ARCHITECTURE 称执行层有"内层 continue 循环"，但 ROADMAP 指出实际仍一跳一停 | 🔴 关键偏差：内环尚未完全实现，自主任务依赖于单 tick 单动作模式 |
+| P0-2 | 自主循环内环（无用户消息时可连续工具调用） | ARCHITECTURE 称执行层有"内层 continue 循环"，但早期蓝图评审指出当时实际仍一跳一停 | 🔴 关键偏差：内环尚未完全实现，自主任务依赖于单 tick 单动作模式 |
 | P0-3 | Task-level model routing（task 级 tier 锁定） | 仅有 tick 级 next_phase_tier 和 tool_tier_mapping，无 task 持久路由 | 🔴 未实现 |
 
 ## P1：核心结构升级
