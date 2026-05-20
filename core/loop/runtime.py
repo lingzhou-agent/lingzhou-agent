@@ -269,7 +269,7 @@ class CognitionLoop:
                 try:
                     await _rp.close()
                 except Exception:
-                    pass
+                    _log.exception("[loop] 关闭 routing provider 失败")
             # 干净退出：更新 survival.json 的 exit_type，下次启动不触发崩溃注入
             try:
                 import json as _json

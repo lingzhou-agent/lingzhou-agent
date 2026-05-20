@@ -12,6 +12,7 @@ LLM 可对 probe.run 返回结果自行决定如何处置。
 """
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 from datetime import UTC, datetime
@@ -35,12 +36,32 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+_SAFE_ALERT_NODES = (
+    ast.Expression, ast.BoolOp, ast.UnaryOp, ast.Compare,
+    ast.And, ast.Or, ast.Not, ast.In, ast.NotIn,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.Constant, ast.Name, ast.Load,
+)
+
+
+def _safe_eval_alert(expr: str, output: str) -> bool:
+    """仅允许纯比较/成员/布尔表达式，拒绝 Attribute/Call/函数调用等危险节点。"""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, _SAFE_ALERT_NODES):
+            raise ValueError(f"alert_expr 含不允许的节点: {type(node).__name__}")
+    return bool(eval(compile(tree, "<alert_expr>", "eval"), {"output": output}, {}))  # noqa: S307
+
+
 def _evaluate_alert(cfg: ProbeConfig, output: str) -> tuple[bool, str]:
     """执行 alert_expr，返回 (triggered, detail)。"""
     if not cfg.alert_expr:
         return False, ""
     try:
-        triggered = bool(eval(cfg.alert_expr, {"output": output, "__builtins__": {}}))  # noqa: S307
+        triggered = _safe_eval_alert(cfg.alert_expr, output)
         if triggered:
             msg = (cfg.alert_message or f"[探针告警] {cfg.name}: {output[:200]}").replace(
                 "{output}", output[:500]

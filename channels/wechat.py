@@ -157,14 +157,6 @@ class WechatChannel:
         self._stop = threading.Event()
         self._replied: set[int] = set()
         self._user_msg_ids: dict[str, int] = {}
-        self._conn = None
-
-    def _get_db(self):
-        import sqlite3
-
-        if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        return self._conn
 
     def run_poll(self) -> None:
         if not self._cfg.poll_base_url:
