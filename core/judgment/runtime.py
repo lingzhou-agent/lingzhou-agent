@@ -1170,34 +1170,8 @@ class JudgmentLayer:
         soul_section = _fmt_soul(axioms_val, ethos_val)
 
         _wm_items = wm.get_top(15)
-        # 包含 WM 里的行为/错误信号，以及最近失败的错误文本，让 skill 辨别具体场景
-        _wm_signals = " ".join(
-            item.content for item in _wm_items
-            if getattr(item, "kind", "") in {"self_awareness", "tool_error", "error", "read_loop"}
-        )[:300]
-        _failure_texts = " ".join(
-            f"{f.kind} {getattr(f, 'error', '') or ''}" for f in failures[:3]
-        )
-        skill_context_text = "\n".join(x for x in [
-            task.goal if task else "",
-            task.title if task else "",
-            user_message or "",
-            _failure_texts,
-            emotion_label,
-            _wm_signals,
-        ] if x)
         all_skills = self._skills.all_skills()
-        skills = self._skills.match_for_context(
-            wm_pressure=wm.pressure,
-            has_active_task=task is not None,
-            has_next_step=bool(task and task.next_step),
-            failure_count=len(failures),
-            high_error_streak=perception_replay.high_error_streak if perception_replay else 0,
-            context_text=skill_context_text,
-            failure_threshold=self._cfg.thresholds.skill_failure_threshold,
-            wm_pressure_threshold=self._cfg.thresholds.skill_wm_pressure_threshold,
-            max_inject=self._cfg.thresholds.skill_max_inject,
-        )
+        skills = self._skills.match_for_context()
         primary_skill = skills[0] if skills else None
         secondary_skills = skills[1:] if primary_skill else skills
         self._last_selected_skills = list(skills)
