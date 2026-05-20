@@ -255,7 +255,7 @@ class JudgmentOutput:
                 text = stripped.strip()
         # 如果清理后文本为空或不含 JSON，提前返回避免无谓的 parse 尝试
         if not text or ("{" not in text and "decision" not in text):
-            return cls.wait(reason=f"LLM 输出非 JSON 且无法提取: {original[:120]}")
+            return cls(decision="pause", rationale=f"LLM 输出解析失败（非JSON）: {original[:120]}")
         # 裸代码检测：LLM 直接输出 bash/python 脚本时提前标记
         _CODE_PREFIXES = ("#!/", "```bash", "```python", "```sh", "```shell", "# -*-")
         _is_raw_code = any(text.lstrip().startswith(p) for p in _CODE_PREFIXES)
@@ -284,7 +284,7 @@ class JudgmentOutput:
                     next_step="",
                     model_strategy={},
                 )
-            return cls.wait(reason=f"LLM 输出解析失败: {text}")
+            return cls(decision="pause", rationale=f"LLM 输出解析失败: {text}")
 
         return cls(
             decision=cls._coerce_text(data.get("decision", "wait")).lower(),
@@ -869,7 +869,11 @@ class JudgmentLayer:
         if output.decision not in ("act", "pause", "wait"):
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
         if output.decision == "act" and not output.chosen_action_id:
-            output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+            repaired = await self._repair_output(context_text, raw)
+            if repaired is not None and repaired.decision == "act" and repaired.chosen_action_id:
+                output = repaired
+            else:
+                output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
         _log.info(
             "[judgment] phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s rationale=%s",

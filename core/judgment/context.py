@@ -353,7 +353,8 @@ def _fmt_tools(manifests: "list[ToolManifest]") -> str:
     lines: list[str] = []
     for manifest in manifests:
         params_str = ", ".join(
-            f"{param.name}({'*' if param.required else '?'})" for param in manifest.params
+            f"{param.name}({'*' if param.required else '?'}): {param.description}"
+            for param in manifest.params
         )
         lines.append(f"- `{manifest.name}`: {manifest.description}  参数: [{params_str}]")
     return "\n".join(lines)
@@ -371,7 +372,7 @@ def _fmt_shell_capabilities() -> str:
         "sandbox": False,
         "network_policy": "inherits-host-environment",
         "default_timeout_sec": 30,
-        "default_output_preview_chars": 500,
+        "default_output_preview_chars": 2000,
         "shell": os.environ.get("SHELL") or "/bin/sh",
         "cwd": os.getcwd(),
         "available_commands": available,

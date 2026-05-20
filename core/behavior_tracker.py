@@ -125,7 +125,7 @@ class BehaviorTracker:
             and len(set(self._recent_actions)) == 1
             and tool_id
         ):
-            _log.warning("[self-awareness] 连续 3 次相同行为: %s %s", tool_id, key_param)
+            _log.info("[self-awareness] 连续 3 次相同行为: %s %s", tool_id, key_param)
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 3 次均执行了 ({tool_id}, {key_param or '相同参数'})。",
@@ -168,7 +168,7 @@ class BehaviorTracker:
 
         # 层 1：同内容重复
         if len(self._recent_read_fps) == 3 and len(set(self._recent_read_fps)) == 1:
-            _log.warning("[self-awareness] 连续 3 次读取相同内容: %s", path)
+            _log.info("[self-awareness] 连续 3 次读取相同内容: %s", path)
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 3 次均读取了相同内容 ({path})，MD5 一致。",
@@ -199,7 +199,7 @@ class BehaviorTracker:
                 and not self._seq_window_warned
             ):
                 self._seq_window_warned = True
-                _log.warning(
+                _log.info(
                     "[self-awareness] 同文件连续 %d 次窗口探测: %s",
                     self._seq_window_count, path,
                 )
@@ -232,7 +232,7 @@ class BehaviorTracker:
 
         items: list[WMItem] = []
         if len(self._recent_list_fps) == 3 and len(set(self._recent_list_fps)) == 1:
-            _log.warning("[self-awareness] 连续 3 次列出相同目录结果: %s", path)
+            _log.info("[self-awareness] 连续 3 次列出相同目录结果: %s", path)
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 3 次均列出了相同目录结果 ({path})，结果指纹一致。",
@@ -309,7 +309,7 @@ class BehaviorTracker:
             and not self._belief_stale_warned
         ):
             self._belief_stale_warned = True
-            _log.warning(
+            _log.info(
                 "[self-awareness] rationale 指纹连续 %d 次相同 (fp=%s)，可能存在信念固化",
                 self._belief_stale_count, fp,
             )
