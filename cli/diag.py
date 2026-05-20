@@ -147,7 +147,32 @@ def doctor(
     else:
         console.print(f"  {warn_mark} 数据库: 跳过（配置文件不可用）")
 
-    # ── 6. 工具注册 ────────────────────────────────────────────────────
+    # ── 6. 配置 schema 兼容性 ──────────────────────────────────────────
+    # 检测 core/config.py 与当前 runtime 代码是否对齐（防止部分 git pull 后字段缺失）
+    _REQUIRED_LOOP_FIELDS: list[str] = [
+        "max_consecutive_errors",
+        "active_idle_gap",
+        "skill_max_inject",
+        "skill_failure_threshold",
+        "skill_wm_pressure_threshold",
+        "skill_min_budget_tokens",
+    ]
+    try:
+        from core.config import LoopConfig as _LoopConfig
+        _instance = _LoopConfig()
+        _missing_fields = [f for f in _REQUIRED_LOOP_FIELDS if not hasattr(_instance, f)]
+        if _missing_fields:
+            console.print(f"  {fail_mark} LoopConfig schema 不兼容，缺少字段: {_missing_fields}")
+            issues.append(
+                f"core/config.py 版本过旧，缺少: {_missing_fields} — 请完整 git pull 更新全部代码"
+            )
+        else:
+            console.print(f"  {ok_mark} LoopConfig schema 兼容  [dim]({len(_REQUIRED_LOOP_FIELDS)} 个关键字段均存在)[/dim]")
+    except Exception as e:
+        console.print(f"  {fail_mark} LoopConfig schema 检查失败: {e}")
+        issues.append(f"LoopConfig 无法导入: {e}")
+
+    # ── 7. 工具注册 ────────────────────────────────────────────────────
     try:
         from tools.registry import ToolRegistry
         reg = ToolRegistry()

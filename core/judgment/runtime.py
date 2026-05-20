@@ -1319,7 +1319,7 @@ class JudgmentLayer:
         all_skills = self._skills.all_skills()
         skills = self._skills.match_for_context(
             last_applied=self._last_applied_skill_names,
-            max_inject=self._cfg.loop.skill_max_inject,
+            max_inject=getattr(self._cfg.loop, "skill_max_inject", 3),
         )
         self._last_selected_skills = list(skills)
         if skills:
