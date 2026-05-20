@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json as _json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -20,6 +22,39 @@ from cli.logs import logs_tail, logs_errors, logs_crash, logs_wechat, logs_stats
 from cli.plugin import plugin_app
 
 _PID_FILE = Path("~/.lingzhou/lingzhou.pid").expanduser()
+_LOCK_FILE = Path("~/.lingzhou/lingzhou.lock").expanduser()
+_LOCK_FD = None  # 保持打开的锁文件描述符，进程退出时自动释放锁
+
+
+def _ensure_singleton() -> None:
+    """保证唯一实例。通过 flock 独占锁，与 wrapper.sh 共用同一个锁文件。
+    
+    如果已有实例持有锁，立即退出并提示。
+    锁会在进程退出时自动释放（无论正常退出还是崩溃）。
+    """
+    global _LOCK_FD
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _LOCK_FD = open(_LOCK_FILE, "w")
+        fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # 写入当前 PID 到锁文件（调试用）
+        _LOCK_FD.write(str(os.getpid()) + "\n")
+        _LOCK_FD.flush()
+    except BlockingIOError:
+        try:
+            # 读取占用锁的 PID
+            _LOCK_FD.seek(0)
+            holder = _LOCK_FD.read().strip()
+        except Exception:
+            holder = "未知"
+        console.print(f"[red]✗ lingzhou 已在运行[/red]  （锁文件: {_LOCK_FILE}）")
+        if holder:
+            console.print(f"  [dim]占用进程 PID: {holder}[/dim]")
+        console.print(f"  [dim]停止: lingzhou gateway stop[/dim]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red] 获取锁失败: {e}[/red]")
+        raise typer.Exit(1)
 
 
 def _configure_lingzhou_logging(
@@ -304,6 +339,45 @@ def gateway_status() -> None:
     console.print(f"  重启: [dim]lingzhou gateway restart[/dim]")
 
 
+def _is_systemd_managed() -> bool:
+    """检查 lingzhou 是否由 systemd 管理。
+    
+    不仅检查 active 状态，还检查是否 enabled。
+    这样即使服务正在重启或失败，也能检测到 systemd 管理。
+    """
+    try:
+        # 先检查是否 enabled（持久配置）
+        r = subprocess.run(
+            ["systemctl", "is-enabled", "lingzhou.service"],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.stdout.strip() in ("enabled", "static"):
+            return True
+        # 再检查 active 状态（即使没 enabled，正在运行也算）
+        r = subprocess.run(
+            ["systemctl", "is-active", "lingzhou.service"],
+            capture_output=True, text=True, timeout=5
+        )
+        return r.stdout.strip() in ("active", "activating")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _restart_via_systemd() -> bool:
+    """通过 systemd 重启 lingzhou。返回 True 表示成功。
+    
+    systemd 本身保证 restart 的原子性，不需要额外的 flock。
+    """
+    try:
+        console.print("[dim]检测到 systemd 管理，通过 systemctl 重启...[/dim]")
+        subprocess.run(["systemctl", "restart", "lingzhou.service"], check=True, timeout=10)
+        console.print("[green]✓ systemd 重启成功[/green]")
+        return True
+    except Exception as e:
+        console.print(f"[yellow]systemd 重启失败: {e}，回退到 PID 文件模式[/yellow]")
+        return False
+
+
 @gateway_app.command("restart")
 def gateway_restart(
     channel: Annotated[Optional[str], typer.Option("--channel", "-ch", help="消息渠道（默认从 lingzhou.json gateway.default_channel 读取）")] = None,
@@ -311,7 +385,15 @@ def gateway_restart(
     debug: Annotated[Optional[bool], typer.Option("--debug/--no-debug")] = None,
     dry_run: Annotated[Optional[bool], typer.Option("--dry-run/--act")] = None,
 ) -> None:
-    """重启认知循环（stop + start）。"""
+    """重启认知循环（stop + start）。
+    
+    优先通过 systemd 重启（如果 lingzhou 由 systemd 管理），
+    避免 systemd 与 PID 文件双管理导致多实例竞争。
+    """
+    if _is_systemd_managed():
+        if _restart_via_systemd():
+            return  # systemd 已接管，不需要后续操作
+    # 非 systemd 管理：使用原有的 PID 文件模式
     _kill_existing_loop(quiet=False)
     gateway_start(channel=channel, config=config, debug=debug, dry_run=dry_run, daemon=True)
 
@@ -330,7 +412,18 @@ def gateway_start(
     webhook  — HTTP 接入，loop 与 webhook server 并行
     wechat   — 微信 iLink 通道
     telegram — Telegram Bot（开发中）
+    
+    如果检测到 systemd 管理且非 wrapper 调用，自动重定向到 systemctl restart。
     """
+    # 检测是否在 wrapper 内调用（避免 wrapper → start → systemctl restart 无限循环）
+    is_inside_wrapper = os.environ.get("LINGZHOU_WRAPPER", "") == "1"
+    
+    # 如果 systemd 在管理且非 wrapper 调用，重定向到 systemctl
+    if daemon and _is_systemd_managed() and not is_inside_wrapper:
+        console.print("[dim]检测到 systemd 管理，使用 systemctl restart...[/dim]")
+        _restart_via_systemd()
+        return
+    
     # 从 config 读取默认渠道（直接读 JSON，避免 Pydantic 模型不包含 gateway 字段）
     if channel is None:
         try:
@@ -344,13 +437,15 @@ def gateway_start(
         raise typer.Exit(1)
 
     if daemon and hasattr(os, "fork"):
-        # 启动前先杀掉旧进程，避免两个 loop 同时运行
+        # 后台模式：先杀旧进程（释放锁），再获取锁 fork
         _kill_existing_loop(quiet=False)
+        _ensure_singleton()
         _daemonize(sys.argv)
         # 子进程从这里继续执行（父进程已退出）
     else:
-        # 前台模式：检测是否有旧进程，有则拒绝启动
+        # 前台模式：先杀旧进程，再获取锁
         _kill_existing_loop(quiet=True)
+        _ensure_singleton()
         # 前台模式也写 PID，防止并发启动
         _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
         _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
