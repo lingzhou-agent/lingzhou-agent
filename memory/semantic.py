@@ -163,6 +163,9 @@ class SemanticMemory:
             if "embedding" not in existing:
                 self._conn.execute("ALTER TABLE nodes ADD COLUMN embedding TEXT")
                 self._conn.commit()
+            if "source" not in existing:
+                self._conn.execute("ALTER TABLE nodes ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+                self._conn.commit()
         except Exception:
             pass  # 迁移失败静默跳过，不影响现有功能
         try:
