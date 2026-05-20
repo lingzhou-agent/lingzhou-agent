@@ -1137,7 +1137,11 @@ class JudgmentLayer:
             failures = await task_store.list_failures(self._cfg.memory.failure_limit)
 
         task_id_str = str(task.id) if task else None
-        episodic_text = episodic.load_for_context(task_id_str, self._cfg.memory.episodic_max_chars)
+        _el = asyncio.get_running_loop()
+        # episodic/semantic 使用同步 sqlite3，需经 executor 層驱动，避免阻塞事件循环
+        episodic_text = await _el.run_in_executor(
+            None, episodic.load_for_context, task_id_str, self._cfg.memory.episodic_max_chars
+        )
         recent_runs = await task_store.list_runs(task_id=task.id, limit=6) if task else []
         waiting_tasks = await task_store.list_tasks(status="waiting", limit=5)
         durable_failure_snapshot = await _load_durable_failure_snapshot(task_store)
@@ -1145,7 +1149,10 @@ class JudgmentLayer:
         probes = await self._probe_manager.list_probes() if self._probe_manager else []
 
         search_query = (task.goal or task.title) if task else user_message
-        episodic_search = episodic.search(search_query, max_chars=16000) if search_query else ""
+        episodic_search = (
+            await _el.run_in_executor(None, episodic.search, search_query, 16000)
+            if search_query else ""
+        )
         if episodic_search and episodic_search not in episodic_text:
             episodic_text = episodic_text + "\n\n[跨任务检索命中]\n" + episodic_search
         _log.info("[context] episodic search=%r cross_task_hit=%s",
@@ -1167,7 +1174,9 @@ class JudgmentLayer:
             anchors.append(failures[0].kind)
         emotion_label = _emotion_label(emotion, self._cfg)
         anchors.append(emotion_label)
-        memories = semantic.retrieve_multi_anchor(anchors, self._cfg.memory.semantic_top_k)
+        memories = await _el.run_in_executor(
+            None, semantic.retrieve_multi_anchor, anchors, self._cfg.memory.semantic_top_k
+        )
         _log.info("[context] semantic hits=%d anchors=%r",
                   len(memories), [a[:40] for a in anchors[:3]])
 
@@ -1235,14 +1244,10 @@ class JudgmentLayer:
             "current_time_section": _fmt_current_time(),
             "user_message": user_message or "",
         }
-        # 注入近期对话历史，让 LLM 可感知之前的回复，避免重复内容
-        _task_chat_id = ""
-        if task:
-            _task_chat_id, _ = await task_store.get_fact(f"task:{task.id}:chat_id")
-        if not _task_chat_id:
-            _task_chat_id, _ = await task_store.get_fact("chat:last_chat_id")
-        recent_chat_msgs = await task_store.get_recent_chat_messages(3, chat_id=_task_chat_id)
-        ctx["chat_history_section"] = _fmt_chat_history(recent_chat_msgs)
+        # STM 对话缓冲：源自情节记忆（narrative 表 role=user/assistant_reply）
+        # 不走原始 chat_messages 表，记忆系统本身就是正确的历史源。
+        recent_turns = await _el.run_in_executor(None, episodic.get_recent_turns, task_id_str, 3)
+        ctx["chat_history_section"] = _fmt_chat_history(recent_turns)
         _validate_context_schema(ctx)
         ctx = apply_context_budget(
             ctx,

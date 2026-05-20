@@ -251,6 +251,56 @@ class EpisodicMemory:
         """任务叙事模式（Ricoeur 1984）：跨 chat 读取该任务的完整情节流。"""
         return self.load_for_context(task_id, max_chars)
 
+    def get_recent_turns(
+        self,
+        task_id: str | None,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """从 narrative 表返回最近 limit 条对话轮次（用户消息 + 智能体回复）。
+
+        这是 STM 对话缓冲的正确来源——基于情节记忆而非原始 chat_messages 表，
+        保留了 Tulving (1983) 四元素绑定中的时间标签和情感状态。
+
+        返回列表按时间升序（最旧→最新），字段:
+            role: "user" | "assistant_reply"
+            content: str
+            ts: str (UTC)
+            affect: dict | None  {"valence": float, "arousal": float}
+        """
+        try:
+            if task_id:
+                sql = (
+                    "SELECT role, content, ts, affect FROM narrative "
+                    "WHERE task_id = ? AND role IN ('user', 'assistant_reply') "
+                    "ORDER BY id DESC LIMIT ?"
+                )
+                rows = self._conn.execute(sql, (task_id, limit)).fetchall()
+            else:
+                sql = (
+                    "SELECT role, content, ts, affect FROM narrative "
+                    "WHERE role IN ('user', 'assistant_reply') "
+                    "ORDER BY id DESC LIMIT ?"
+                )
+                rows = self._conn.execute(sql, (limit,)).fetchall()
+        except Exception as e:
+            _log.warning("[episodic] get_recent_turns 失败: %s", e)
+            return []
+        result: list[dict[str, Any]] = []
+        for r in reversed(rows):
+            affect: dict[str, Any] | None = None
+            if r["affect"]:
+                try:
+                    affect = json.loads(r["affect"])
+                except Exception:
+                    pass
+            result.append({
+                "role": r["role"],
+                "content": r["content"] or "",
+                "ts": r["ts"] or "",
+                "affect": affect,
+            })
+        return result
+
     def list_tasks(self) -> list[str]:
         """返回已有情节记忆的任务 ID 列表。"""
         return [p.stem.removeprefix("task-") for p in self._dir.glob("task-*.md")]
