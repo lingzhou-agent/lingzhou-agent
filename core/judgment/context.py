@@ -353,7 +353,8 @@ def _fmt_tools(manifests: "list[ToolManifest]") -> str:
     lines: list[str] = []
     for manifest in manifests:
         params_str = ", ".join(
-            f"{param.name}({'*' if param.required else '?'})" for param in manifest.params
+            f"{param.name}({'*' if param.required else '?'}): {param.description}"
+            for param in manifest.params
         )
         lines.append(f"- `{manifest.name}`: {manifest.description}  参数: [{params_str}]")
     return "\n".join(lines)
@@ -371,7 +372,7 @@ def _fmt_shell_capabilities() -> str:
         "sandbox": False,
         "network_policy": "inherits-host-environment",
         "default_timeout_sec": 30,
-        "default_output_preview_chars": 500,
+        "default_output_preview_chars": None,
         "shell": os.environ.get("SHELL") or "/bin/sh",
         "cwd": os.getcwd(),
         "available_commands": available,
@@ -683,8 +684,10 @@ def _fmt_primary_skill(skill: "Skill | None") -> str:
 
 def _fmt_skills(skills: "list[Skill]") -> str:
     if not skills:
-        return "（除主技能外，本轮无其他补充技能；如判断受阻，可参考上方 skill catalog 或调用 skill.search/skill.list）"
-    parts: list[str] = ["（以下为本轮的补充技能，与主技能同等运用，主技能优先级略高）"]
+        return "（未加载任何技能指南）"
+    parts: list[str] = [
+        "以下是全部可用的认知框架（技能）。请根据当前情境自行判断适用哪些，多个技能可同时运用。",
+    ]
     for skill in skills:
         origin = "builtin" if not getattr(skill, "source_path", "") else skill.source_path
         guidance = getattr(skill, "guidance", "") or ""

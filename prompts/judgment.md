@@ -95,11 +95,9 @@
 ### 可用 skills 摘要目录（active catalog）
 {{skills_catalog_section}}
 
-### 本轮主技能（若命中，优先遵守）
 {{primary_skill_section}}
-> 若本轮已命中主技能：默认先按主技能框架思考与执行；只有当它与当前任务事实明显不匹配，或更高优先级边界（Hard Boundaries / 工具真相 / 运行时事实）冲突时，才偏离，并在 reflection 中说明原因。
 
-### 当前激活的认知框架
+### 可用的认知框架（根据当前情境自行选用）
 {{skills_section}}
 
 ---
@@ -138,6 +136,7 @@
   "params": {},
   "rationale": "内部推理过程，尽量控制在 1-2 句",
   "reflection": "从最近经历中提炼的一句话洞察（可为空）",
+  "applied_skills": ["本轮实际依据了哪些技能名称（未使用可留空列表 []）"],
   "reply_to_user": "对用户的直接回复，尽量简短（有 user_message 时必填；无 user_message 时可留空）",
   "next_step": "执行后的下一步计划，尽量控制在 1 句",
   "model_strategy": {

@@ -259,7 +259,7 @@ async def task_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(ToolManifest(
     name="task.update",
-    description="更新当前活跃任务的 next_step 或状态",
+    description="更新当前活跃任务的 next_step 或状态。仅在有实质状态变更时调用，不用于记录思考进度。",
     progress_category="mutation",
     capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
         params=[
@@ -275,6 +275,13 @@ async def task_update(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not task:
         return ToolResult(summary="无活跃任务", skipped=True)
     status = params.get("status") or task.status
+    # 保护 waiting 状态：不允许用 task.update 将 waiting 降级，必须用 task.resume
+    _downgrade_statuses = {"pending", "in_progress", "ready", "resumed"}
+    if task.status == "waiting" and status in _downgrade_statuses:
+        return ToolResult(
+            summary=f"任务 [{task.id}] 当前处于 waiting，不能直接降级为 {status}，请使用 task.resume 恢复",
+            skipped=True,
+        )
     next_step = str(params.get("next_step") or "").strip() if "next_step" in params else task.next_step
     current_step = str(params.get("current_step") or "").strip() if "current_step" in params else task.current_step
     model_tier = str(params.get("model_tier") or "").strip() if "model_tier" in params else task.model_tier

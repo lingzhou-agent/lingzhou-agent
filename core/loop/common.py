@@ -19,14 +19,6 @@ _EVENT_APPEND_CHARS = 8000
 _EVENT_BODY_MAX_CHARS = 40000
 _EVENT_NEW_BODY_CHARS = 16000
 
-_USER_MESSAGE_EVIDENCE_TOOLS = frozenset({
-    "file.list",
-    "file.read",
-    "memory.get_fact",
-    "memory.search",
-    "task.list",
-})
-
 _VALENCE_POS = frozenset(["完成", "成功", "理解", "学到", "进步", "有效", "清晰", "好", "正确", "解决", "突破"])
 _VALENCE_NEG = frozenset(["失败", "错误", "困惑", "卡住", "无法", "问题", "不对", "不清", "循环", "重复", "卡顿"])
 
@@ -82,13 +74,11 @@ def _should_continue_within_tick(
     user_message: str = "",
     has_active_task: bool = False,
 ) -> bool:
-    """有新用户消息且本轮进入前已存在活跃任务时,不让旧任务在同一 tick 里继续插队。"""
+    """task.complete/fail 后不续计；其余情况交由 LLM 在 continue 判断中自行决策。"""
     if action.decision != "act":
         return False
     if (action.chosen_action_id or "") in {"task.complete", "task.fail"}:
         return False
-    if user_message and has_active_task:
-        return (action.chosen_action_id or "") in _USER_MESSAGE_EVIDENCE_TOOLS
     return True
 
 

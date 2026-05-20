@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-_log = logging.getLogger(__name__)
+_log = logging.getLogger("lingzhou.skill")
 
 
 @dataclass
@@ -291,89 +291,11 @@ class SkillRegistry:
     def all_skills(self) -> list[Skill]:
         return list(self._skills)
 
-    def match_for_context(
-        self,
-        *,
-        wm_pressure: float,
-        has_active_task: bool,
-        has_next_step: bool,
-        failure_count: int,
-        high_error_streak: int,
-        context_text: str = "",
-        failure_threshold: int = 3,
-        wm_pressure_threshold: float = 0.4,
-        max_inject: int = 3,
-    ) -> list[Skill]:
-        """按当前情境挑选最相关的技能护栏。"""
-        scored: list[tuple[float, Skill]] = []
-        diagnostics: list[dict[str, Any]] = []
-        for skill in self._skills:
-            score: float = 0.0
-            reasons: list[str] = []
-            tags = set(skill.tags)
+    def match_for_context(self, **_kwargs: Any) -> list[Skill]:
+        """返回全部已注册技能，交由 LLM 自行判断适用哪些。
 
-            if skill.name == "runtime.bootstrap" and not has_active_task and failure_count == 0:
-                score += 5.0
-                reasons.append("bootstrap")
-            if skill.name == "task.continuity" and has_active_task and has_next_step:
-                score += 5.0
-                reasons.append("task+next_step")
-            if skill.name == "failure.reflection":
-                intensity = min((failure_count + high_error_streak) / max(failure_threshold * 2, 1), 1.0)
-                score += intensity * 6.0
-                if intensity > 0:
-                    reasons.append(f"failure_intensity={intensity:.2f}")
-            if skill.name == "evidence-first-change":
-                score += min(wm_pressure / max(wm_pressure_threshold, 0.01), 1.0) * 2.0
-                if wm_pressure > 0:
-                    reasons.append(f"wm={wm_pressure:.2f}")
-            if skill.name == "provider.integration" and failure_count > 0:
-                score += min(failure_count / max(failure_threshold, 1), 1.0) * 2.0
-                reasons.append(f"provider_failure={failure_count}")
-
-            if not has_active_task and "bootstrap" in tags:
-                score += 2.0
-                reasons.append("tag:bootstrap")
-            if has_next_step and "continuity" in tags:
-                score += 1.0
-                reasons.append("tag:continuity")
-            if failure_count > 0 and "failure" in tags:
-                score += 2.0
-                reasons.append("tag:failure")
-            if wm_pressure >= wm_pressure_threshold and "verification" in tags:
-                score += 1.0
-                reasons.append("tag:verification")
-
-            context_bonus = _context_score(skill, context_text)
-            score += context_bonus
-            if context_bonus > 0:
-                reasons.append(f"context={context_bonus:.2f}")
-            if skill.source_path and context_bonus >= 0.5:
-                score += 1.0
-                reasons.append("custom_source_boost")
-
-            if score > 0:
-                scored.append((score, skill))
-                diagnostics.append({
-                    "name": skill.name,
-                    "score": score,
-                    "reasons": reasons,
-                })
-
-        scored.sort(key=lambda item: (-item[0], item[1].name))
-        selected = [skill for _, skill in scored[:max_inject]]
-        if not selected and not has_active_task:
-            bootstrap = next((s for s in self._skills if s.name == "runtime.bootstrap"), None)
-            if bootstrap:
-                selected = [bootstrap]
-        selected_names = {skill.name for skill in selected}
-        selected_debug = [item for item in diagnostics if item["name"] in selected_names]
-        if selected_debug:
-            summary = "; ".join(
-                f"{item['name']}(score={float(item['score']):.2f}, reasons={','.join(item['reasons'][:4]) or '-'})"
-                for item in selected_debug
-            )
-            _log.info("[skill.match] selected=%s", summary)
-        else:
-            _log.info("[skill.match] selected=none")
-        return selected
+        Python 层不再打分/排序/截断——机械式评分与误导无异。
+        """
+        skills = list(self._skills)
+        _log.debug("[skill.match] injecting=%d: %s", len(skills), [s.name for s in skills])
+        return skills

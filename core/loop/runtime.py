@@ -379,10 +379,11 @@ class CognitionLoop:
         self._self_drive.generate_exploration_task(signal.suggested_domain or "self_evolution")
 
         _log.info(
-            "[self_drive] C=%.2f domain=%s idle=%d",
+            "[self_drive] 探索触发 C=%.2f domain=%s idle=%d rationale=%s",
             signal.curiosity_score,
             signal.suggested_domain,
             self._behavior.wait_streak,
+            signal.rationale,
         )
 
     async def _post_tick_memory(
@@ -469,7 +470,7 @@ class CognitionLoop:
             and getattr(t, "status", "done") not in ("done", "failed")
         ]
         self._last_curiosity_signal_idle_cycle = self._idle_cycles
-        _log.info(
+        _log.debug(
             "[curiosity] idle=%d curiosity=%.2f pending_tasks=%d",
             self._idle_cycles, curiosity, len(pending_curiosity),
         )

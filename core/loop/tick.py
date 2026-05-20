@@ -125,11 +125,17 @@ def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
         return
     if active_task is not None:
         content = (
-            "[初始化未完成] BOOTSTRAP.md 仍然存在，初始化步骤尚未全部完成。当前有活跃任务。"
+            "[初始化未完成] BOOTSTRAP.md 仍然存在，初始化步骤尚未全部完成并确认。"
+            "当前有活跃任务，可在任务完成后处理初始化，"
+            "或在本轮穿插完成初始化步骤（逐项确认 IDENTITY/SOUL/USER/TOOLS 内容是否落实），"
+            "完成后用 file.delete 删除 BOOTSTRAP.md 以结束引导阶段。"
         )
     else:
         content = (
-            "[初始化待完成] BOOTSTRAP.md 仍然存在，初始化检查项尚未全部完成。当前无活跃任务。"
+            "[初始化待完成] BOOTSTRAP.md 仍然存在，说明初始化检查项尚未全部完成并确认。"
+            "当前无活跃任务，这是推进初始化的自然时机："
+            "逐项确认 IDENTITY / SOUL / USER / TOOLS 的内容是否已具体落实，"
+            "完成后用 file.delete 删除 BOOTSTRAP.md 以结束引导阶段。"
         )
     loop._wm.add(WMItem(
         kind="bootstrap",
@@ -324,6 +330,16 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         "care": ethos_state.values.care,
     }))
 
+    _log.debug(
+        "[tick] emotion=%s v=%.2f a=%.2f | ethos truth=%.2f caution=%.2f curiosity=%.2f",
+        loop._emotion.dominant,
+        loop._emotion.valence,
+        loop._emotion.arousal,
+        ethos_state.values.truth,
+        ethos_state.values.caution,
+        ethos_state.values.curiosity,
+    )
+
     signals = compute_judgment_signals(
         failure_count=len(failures_recent),
         high_error_streak=perception_replay.high_error_streak,
@@ -443,7 +459,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         tool_id = action.chosen_action_id or ""
         key_param = action_key_param(action.params)
         current_task_id = str(active_task.id) if active_task else None
-        for item in loop._behavior.on_act(tool_id, key_param, current_task_id):
+        for item in loop._behavior.on_act(tool_id, key_param, current_task_id, action.params):
             loop._wm.add(item)
     else:
         for item in loop._behavior.on_wait(action.decision, active_task is not None):
@@ -453,6 +469,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     tool_history: list[dict[str, Any]] = []
     if action.decision == "act":
         tool_history.append(_tool_history_entry(action, result))
+        loop._behavior.on_act_result(action.chosen_action_id or "", result.summary or "")
 
     if action.decision == "act" and not result.error:
         tool = action.chosen_action_id or ""
@@ -502,7 +519,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
             if cont.decision == "act":
                 tool_name = cont.chosen_action_id or ""
                 key_param = action_key_param(cont.params)
-                for behavior_item in loop._behavior.on_act(tool_name, key_param, str(active_task.id) if active_task else None):
+                for behavior_item in loop._behavior.on_act(tool_name, key_param, str(active_task.id) if active_task else None, cont.params):
                     loop._wm.add(behavior_item)
                 loop._behavior.apply_cognitive_probe(cognitive_signals)
             cont_result = await loop._execution.dispatch(cont, ctx)
@@ -526,6 +543,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
                 if cont_result.error and "oldtextnotfound" in (cont_result.error or "").lower():
                     for behavior_item in loop._behavior.on_edit_failure(cont_result.error or ""):
                         loop._wm.add(behavior_item)
+                loop._behavior.on_act_result(cont.chosen_action_id or "", cont_result.summary or "")
                 tool_history.append(_tool_history_entry(cont, cont_result))
 
             action = cont

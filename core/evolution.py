@@ -534,24 +534,21 @@ class EvolutionEngine:
 
                 _log.info("[evolution] 工具 %r 已进化并热加载（尝试 %d）", tool_name, attempt + 1)
 
-                # 后进化验证：AST 解析全部 Python 文件
+                # 后进化验证：AST 解析全部 Python 文件（纯 Python，无子进程）
+                import ast as _ast
                 from pathlib import Path
                 _root = Path(__file__).parent.parent
                 _all_ok = True
                 _errors = []
                 for _py in sorted(_root.rglob("*.py")):
                     _rp = str(_py.relative_to(_root))
-                    if "__pycache__" in _rp or ".py.bak" in _rp:
+                    if "__pycache__" in _rp or ".py.bak" in _rp or ".lingzhou-backup" in _rp:
                         continue
                     try:
-                        _chk = os.popen(
-                            "cd " + str(_root) + " && python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' " + str(_py) + " 2>&1"
-                        ).read()
-                        if "Error" in _chk or "Traceback" in _chk:
-                            _all_ok = False
-                            _errors.append(_rp + ": " + _chk[:100])
-                    except Exception:
-                        pass
+                        _ast.parse(_py.read_text(encoding="utf-8", errors="replace"))
+                    except SyntaxError as _e:
+                        _all_ok = False
+                        _errors.append(f"{_rp}: {_e}")
                 if not _all_ok:
                     _log.warning("[evolution] post-evolution check failed (%d files), rolling back: %s", len(_errors), _errors[:3])
                     if tool_path.exists() and current_src:

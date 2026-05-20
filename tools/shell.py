@@ -11,7 +11,7 @@ from typing import Any
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool
 
 _DEFAULT_TIMEOUT = 30.0
-_DEFAULT_PREVIEW_CHARS = 500
+_DEFAULT_PREVIEW_CHARS = 0  # 0 = 不限制输出长度
 
 _MANIFEST = ToolManifest(
     name="shell.run",
@@ -25,7 +25,7 @@ _MANIFEST = ToolManifest(
         ToolParam("command", "string", "要执行的 bash 命令", required=True),
         ToolParam("timeout", "number", "超时秒数，默认 30", required=False),
         ToolParam("workdir", "string", "工作目录，默认项目根目录", required=False),
-        ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认 500", required=False),
+        ToolParam("max_output_chars", "number", "返回摘要最大字符数，默认不限制（0=不限制，传正整数截断）", required=False),
     ],
 )
 
@@ -49,8 +49,8 @@ def _threshold_value(ctx: ToolContext, attr: str, default: Any) -> Any:
 
 
 def _truncate_text(text: str, limit: int) -> str:
-    if limit <= 0:
-        return ""
+    if limit <= 0:  # 0 或负数 = 不限制
+        return text
     if len(text) <= limit:
         return text
     if limit <= 3:

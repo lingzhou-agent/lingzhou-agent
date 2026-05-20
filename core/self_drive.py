@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 import time
@@ -22,6 +23,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+_log = logging.getLogger("lingzhou.self_drive")
 
 
 @dataclass
@@ -213,11 +216,16 @@ class SelfDriveEngine:
                 suggested_domain = random.choice(ranked[1:])[0]
             rationale_parts.append(f"探索领域: {suggested_domain}")
 
+        rationale = "; ".join(rationale_parts) if rationale_parts else "好奇心未达阈值"
+        _log.debug(
+            "[self_drive] C=%.3f idle=%d has_task=%s explore=%s domain=%s | %s",
+            C, idle_ticks, has_active_task, should_explore, suggested_domain, rationale,
+        )
         return DriveSignal(
             should_explore=should_explore,
             curiosity_score=C,
             suggested_domain=suggested_domain,
-            rationale="; ".join(rationale_parts) if rationale_parts else "好奇心未达阈值",
+            rationale=rationale,
         )
 
     def generate_exploration_task(self, domain: str) -> dict:

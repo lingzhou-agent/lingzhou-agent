@@ -68,6 +68,8 @@ async def _prepare_runtime_run_impl(loop: Any) -> tuple[Config, str]:
     loop._judgment.self_model.record_start(name="lingzhou")
     loop._judgment.self_model.set_routing(cfg)
     await _restore_self_model_impl(loop)
+    # 探针系统：从 probes.json 加载（已在 ProbeManager.__init__ 同步完成），启动调度 Task
+    await loop._probe_manager.start(loop._wm, loop_ref=loop)
     await _restore_state_from_db_impl(loop)
     return cfg, _routing_summary_text(cfg, loop._routing_providers)
 

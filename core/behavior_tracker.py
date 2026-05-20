@@ -61,8 +61,8 @@ class BehaviorTracker:
         self._rationale_hashes: deque[str] = deque(maxlen=_BELIEF_WINDOW)
         self._belief_stale_hash: str | None = None
         self._belief_stale_count: int = 0
-        self._belief_stale_warned: bool = False
-
+        self._belief_stale_warned: bool = False        # 上次 act 结果指纹（用于 on_act_result 折回调用）
+        self._last_act_result_fp: str = ""
     @property
     def wait_streak(self) -> int:
         """公开接口：连续 wait/pause 决策次数。"""
@@ -95,11 +95,12 @@ class BehaviorTracker:
         tool_id: str,
         key_param: str,
         task_id: str | None,
+        params: dict | None = None,
     ) -> list["WMItem"]:
         """追踪 act 行为（file.read 和非 file.read 均需调用）。
 
         - action streak：非 file.read / file.list 工具连续相同时返回 WMItem
-        （file.read 的内容去重由 on_read 处理，file.list 的结果去重由 on_list 处理）
+          对 file.edit / file.write 使用内容指纹尺化 key，避免同文件不同内容的导致假阳性。
 
         返回需注入 WM 的条目列表（通常为空或 1 项）。
         """
@@ -110,8 +111,17 @@ class BehaviorTracker:
         if tool_id in {"file.read", "file.list"}:
             return items  # file.read / file.list streak 由结果感知处理
 
+        # 对编辑类工具，把内容指纹混入 key，避免同文件不同内容的连续误判为循环
+        _effective_key = key_param
+        if tool_id in {"file.edit", "file.write"} and params:
+            _p = params or {}
+            _content_sig = str(_p.get("old_text") or _p.get("content") or "")[:80]
+            if _content_sig:
+                _fp = hashlib.md5(_content_sig.encode("utf-8", errors="replace")).hexdigest()[:8]
+                _effective_key = f"{key_param}#{_fp}"
+
         # action streak 检测（非 file.read）
-        _sig = (tool_id, key_param)
+        _sig = (tool_id, _effective_key)
         self._recent_actions.append(_sig)
         if self._action_streak_sig == _sig:
             self._action_streak_count += 1
@@ -125,13 +135,26 @@ class BehaviorTracker:
             and len(set(self._recent_actions)) == 1
             and tool_id
         ):
-            _log.warning("[self-awareness] 连续 3 次相同行为: %s %s", tool_id, key_param)
+            _log.info("[self-awareness] 连续 3 次相同行为: %s %s", tool_id, key_param)
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 3 次均执行了 ({tool_id}, {key_param or '相同参数'})。",
                 priority=0.95,
             ))
         return items
+
+    def on_act_result(self, tool_id: str, result_summary: str) -> None:
+        """act 执行后修正 streak：如果本次结果与上次不同，说明有实质进展，将 streak 折回 1。
+
+        未防止属于 file.read / file.list （它们由各自的 on_read / on_list 处理）。
+        """
+        if tool_id in {"file.read", "file.list"}:
+            return
+        fp = hashlib.md5((result_summary or "").encode("utf-8", errors="replace")).hexdigest()[:12]
+        if fp and fp != self._last_act_result_fp:
+            # 结果发生变化 → 实际有进展，将 streak 计数折回 1
+            self._action_streak_count = 1
+        self._last_act_result_fp = fp
 
     def on_read(
         self,
@@ -168,7 +191,7 @@ class BehaviorTracker:
 
         # 层 1：同内容重复
         if len(self._recent_read_fps) == 3 and len(set(self._recent_read_fps)) == 1:
-            _log.warning("[self-awareness] 连续 3 次读取相同内容: %s", path)
+            _log.info("[self-awareness] 连续 3 次读取相同内容: %s", path)
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 3 次均读取了相同内容 ({path})，MD5 一致。",
@@ -199,7 +222,7 @@ class BehaviorTracker:
                 and not self._seq_window_warned
             ):
                 self._seq_window_warned = True
-                _log.warning(
+                _log.info(
                     "[self-awareness] 同文件连续 %d 次窗口探测: %s",
                     self._seq_window_count, path,
                 )
@@ -232,7 +255,7 @@ class BehaviorTracker:
 
         items: list[WMItem] = []
         if len(self._recent_list_fps) == 3 and len(set(self._recent_list_fps)) == 1:
-            _log.warning("[self-awareness] 连续 3 次列出相同目录结果: %s", path)
+            _log.info("[self-awareness] 连续 3 次列出相同目录结果: %s", path)
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 3 次均列出了相同目录结果 ({path})，结果指纹一致。",
@@ -309,7 +332,7 @@ class BehaviorTracker:
             and not self._belief_stale_warned
         ):
             self._belief_stale_warned = True
-            _log.warning(
+            _log.info(
                 "[self-awareness] rationale 指纹连续 %d 次相同 (fp=%s)，可能存在信念固化",
                 self._belief_stale_count, fp,
             )

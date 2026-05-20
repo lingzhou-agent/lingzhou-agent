@@ -12,13 +12,24 @@ from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, too
 
 _log = logging.getLogger("lingzhou.tools.file")
 
-# 核心文件列表 — 修改这些文件需要额外验证
-_CORE_FILES = frozenset({
-    "core/loop/__init__.py", "core/loop/runtime.py", "core/loop/logging.py", "core/loop/progress.py", "core/loop/postprocess.py", "core/judgment/__init__.py", "core/judgment/runtime.py", "core/judgment/context.py", "core/execution.py",
-    "core/perception.py", "core/config.py", "core/evolution.py",
-    "memory/task_store.py", "memory/working.py", "memory/episodic.py",
-    "provider/openai_compat.py", "tools/registry.py",
-})
+# 核心目录/文件检测 — 基于路径模式，无需维护静态列表
+_CORE_DIRS = frozenset({"core", "memory", "provider"})
+_CORE_EXTRA = frozenset({"tools/registry.py"})
+
+
+def _is_core_file(path: Path) -> bool:
+    """检测是否为核心 .py 文件（按路径模式，新增文件自动覆盖）。"""
+    if path.suffix != ".py":
+        return False
+    try:
+        rel = path.relative_to(_repo_root())
+    except ValueError:
+        return False
+    if rel.parts[0] in _CORE_DIRS:
+        return True
+    if str(rel) in _CORE_EXTRA:
+        return True
+    return False
 
 # 文件大小限制
 MAX_READ_CHARS = 100_000
@@ -129,11 +140,11 @@ def _safety_guard(path: Path, operation: str) -> tuple[str, str | None]:
             pass  # 备份失败不阻断
     
     # 2. 核心文件警告
-    try:
-        rel = str(path.relative_to(_repo_root()))
-    except ValueError:
-        rel = str(path)
-    if rel in _CORE_FILES:
+    if _is_core_file(path):
+        try:
+            rel = str(path.relative_to(_repo_root()))
+        except ValueError:
+            rel = str(path)
         warnings.append(
             f"⚠️ 正在修改核心文件 {rel}。请修改后立即用 shell.run 验证系统可正常导入/启动。"
         )
@@ -465,15 +476,20 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             )
         
         path.parent.mkdir(parents=True, exist_ok=True)
+        # 写前语法验证（.py 文件）：语法错误直接阻断，不写入损坏文件
+        if path.suffix == ".py":
+            syntax_error = _verify_python_syntax(path, text)
+            if syntax_error:
+                return ToolResult(
+                    summary=f"拒绝写入: {path}\n{syntax_error}\n备份（若有）: {path.with_suffix('.py.lingzhou-backup')}",
+                    error="PythonSyntaxError",
+                    skipped=True,
+                )
         # 原子写入：先写临时文件，成功后再 rename
         tmp_path = path.with_suffix(path.suffix + ".lingzhou-tmp")
         tmp_path.write_text(text, encoding="utf-8")
         tmp_path.replace(path)  # 原子 rename
-        # 语法验证
-        syntax_error = _verify_python_syntax(path, text)
         summary = f"写入成功: {path} ({len(text)} 字符)"
-        if syntax_error:
-            summary += f"\n⚠️ {syntax_error}（文件已写入但可能无法运行）"
         if guard_warning:
             summary += f"\n{guard_warning}"
         return ToolResult(
@@ -481,8 +497,8 @@ async def file_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             resource_key=str(path),
             fingerprint=f"write:{hashlib.md5(text.encode('utf-8', errors='replace')).hexdigest()[:12]}",
             artifact_paths=[str(path)],
-            state_delta={"file": "written", "chars": len(text), "syntax_ok": syntax_error is None},
-            metadata={"path": str(path), "chars": len(text), "syntax_ok": syntax_error is None},
+            state_delta={"file": "written", "chars": len(text), "syntax_ok": True},
+            metadata={"path": str(path), "chars": len(text), "syntax_ok": True},
         )
     except Exception as e:
         _log.exception("写入文件失败: %s", path)
@@ -628,20 +644,25 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if content == original:
             return ToolResult(summary=f"编辑未产生变化: {path}", error="NoChange", skipped=True)
 
+        # 写前语法验证（.py 文件）：语法错误直接阻断，不写入损坏文件
+        if path.suffix == ".py":
+            syntax_error = _verify_python_syntax(path, content)
+            if syntax_error:
+                return ToolResult(
+                    summary=f"拒绝编辑: {path}\n{syntax_error}\n备份（若有）: {path.with_suffix('.py.lingzhou-backup')}",
+                    error="PythonSyntaxError",
+                    skipped=True,
+                )
         # 原子写入
         tmp_path = path.with_suffix(path.suffix + ".lingzhou-tmp")
         tmp_path.write_text(content, encoding="utf-8")
         tmp_path.replace(path)
-        # 语法验证
-        syntax_error = _verify_python_syntax(path, content)
         applied.reverse()
         applied_summary = "\n".join(
             f"  [{a['index']}] {a['old_preview']} → {a['new_preview']}"
             for a in applied
         )
         summary = f"编辑成功: {path}（{changes_made} 处替换）\n{applied_summary}"
-        if syntax_error:
-            summary += f"\n⚠️ {syntax_error}（文件已修改但可能无法运行）"
         if guard_warning:
             summary += f"\n{guard_warning}"
         payload = {"path": str(path), "changes": changes_made, "applied": applied}
@@ -651,8 +672,8 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             resource_key=str(path),
             fingerprint=f"edit:{hashlib.md5(content.encode('utf-8', errors='replace')).hexdigest()[:12]}",
             artifact_paths=[str(path)],
-            state_delta={"file": "edited", "changes": changes_made, "syntax_ok": syntax_error is None},
-            metadata={**payload, "syntax_ok": syntax_error is None},
+            state_delta={"file": "edited", "changes": changes_made, "syntax_ok": True},
+            metadata={**payload, "syntax_ok": True},
         )
     except Exception as e:
         _log.exception("编辑文件失败: %s", path)

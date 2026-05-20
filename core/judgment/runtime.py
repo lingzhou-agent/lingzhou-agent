@@ -226,6 +226,7 @@ class JudgmentOutput:
     reply_to_user: str = ""             # 对人类的外部回复（与 rationale 明确分离）
     next_step: str = ""
     model_strategy: dict[str, Any] = field(default_factory=dict)
+    applied_skills: list[str] = field(default_factory=list)  # LLM 实际应用的技能名单
 
     @classmethod
     def wait(cls, reason: str = "") -> "JudgmentOutput":
@@ -256,7 +257,7 @@ class JudgmentOutput:
                 text = stripped.strip()
         # 如果清理后文本为空或不含 JSON，提前返回避免无谓的 parse 尝试
         if not text or ("{" not in text and "decision" not in text):
-            return cls.wait(reason=f"LLM 输出非 JSON 且无法提取: {original[:120]}")
+            return cls(decision="pause", rationale=f"LLM 输出解析失败（非JSON）: {original[:120]}")
         # 裸代码检测：LLM 直接输出 bash/python 脚本时提前标记
         _CODE_PREFIXES = ("#!/", "```bash", "```python", "```sh", "```shell", "# -*-")
         _is_raw_code = any(text.lstrip().startswith(p) for p in _CODE_PREFIXES)
@@ -273,7 +274,7 @@ class JudgmentOutput:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # Fallback 1: 尝试修复常见 JSON 格式错误（单引号转双引号、移除尾随逗号）后重试
+            # Fallback 1: 尝试修复常见 JSON 格式错误（单引号→双引号、移除尾随逗号）后重试
             fixed = text.replace("'", '"')
             fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
             try:
@@ -291,7 +292,7 @@ class JudgmentOutput:
                         next_step="",
                         model_strategy={},
                     )
-                return cls.wait(reason=f"LLM 输出解析失败: {text}")
+                return cls(decision="pause", rationale=f"LLM 输出解析失败: {text}")
 
         return cls(
             decision=cls._coerce_text(data.get("decision", "wait")).lower(),
@@ -302,6 +303,7 @@ class JudgmentOutput:
             reply_to_user=cls._coerce_text(data.get("reply_to_user", "")),
             next_step=cls._coerce_text(data.get("next_step", "")),
             model_strategy=dict(data.get("model_strategy") or {}),
+            applied_skills=[str(s) for s in (data.get("applied_skills") or []) if s],
         )
 
 
@@ -876,12 +878,17 @@ class JudgmentLayer:
         if output.decision not in ("act", "pause", "wait"):
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
         if output.decision == "act" and not output.chosen_action_id:
-            output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+            repaired = await self._repair_output(context_text, raw)
+            if repaired is not None and repaired.decision == "act" and repaired.chosen_action_id:
+                output = repaired
+            else:
+                output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
 
+        _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
         _log.info(
-            "[judgment] phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s rationale=%s",
+            "[judgment] phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s rationale=%s",
             selection.phase, selection.tier, selection.model_ref, selection.thinking,
-            self._last_call_meta.get("skills") or "none",
+            _applied,
             output.decision, output.chosen_action_id, output.rationale or "",
         )
 
@@ -1032,10 +1039,11 @@ class JudgmentLayer:
                     model_strategy=dict(output.model_strategy or {}),
                 )
 
+        _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
         _log.info(
-            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s skills=%s decision=%s action=%s",
+            "[judgment.continue] round=%d phase=%s tier=%s model=%s thinking=%s applied_skills=%s decision=%s action=%s",
             len(tool_history), selection.phase, selection.tier, selection.model_ref,
-            self._last_call_meta["thinking"], self._last_call_meta.get("skills") or "none",
+            self._last_call_meta["thinking"], _applied,
             output.decision, output.chosen_action_id,
         )
         return output
@@ -1167,39 +1175,15 @@ class JudgmentLayer:
         soul_section = _fmt_soul(axioms_val, ethos_val)
 
         _wm_items = wm.get_top(15)
-        skill_context_text = "\n".join(x for x in [
-            task.goal if task else "",
-            task.title if task else "",
-            user_message or "",
-            failures[0].kind if failures else "",
-            emotion_label,
-        ] if x)
         all_skills = self._skills.all_skills()
-        skills = self._skills.match_for_context(
-            wm_pressure=wm.pressure,
-            has_active_task=task is not None,
-            has_next_step=bool(task and task.next_step),
-            failure_count=len(failures),
-            high_error_streak=perception_replay.high_error_streak if perception_replay else 0,
-            context_text=skill_context_text,
-            failure_threshold=self._cfg.thresholds.skill_failure_threshold,
-            wm_pressure_threshold=self._cfg.thresholds.skill_wm_pressure_threshold,
-            max_inject=self._cfg.thresholds.skill_max_inject,
-        )
+        skills = self._skills.match_for_context()
         primary_skill = skills[0] if skills else None
         secondary_skills = skills[1:] if primary_skill else skills
         self._last_selected_skills = list(skills)
         if skills:
-            _log.info(
-                "[skill] 命中 %d 个: %s",
-                len(skills),
-                " | ".join(
-                    f"{s.name}(guidance={'yes' if getattr(s, 'guidance', None) else 'no'})"
-                    for s in skills
-                ),
-            )
+            _log.debug("[skill] 本轮注入 %d 个技能", len(skills))
         else:
-            _log.debug("[skill] 本轮无命中")
+            _log.info("[skill] 本轮无可用技能")
 
         ctx = {
             "task_section": _fmt_task(task),
@@ -1232,8 +1216,8 @@ class JudgmentLayer:
             "hard_boundaries_section": _fmt_hard_boundaries(hard_boundaries),
             "perception_replay_section": _fmt_perception_replay(perception_replay),
             "skills_catalog_section": _fmt_skill_catalog(all_skills),
-            "primary_skill_section": _fmt_primary_skill(primary_skill),
-            "skills_section": _fmt_skills(secondary_skills),
+            "primary_skill_section": "",
+            "skills_section": _fmt_skills(skills),
             "cognitive_signals_section": _fmt_cognitive_signals(cognitive_signals),
             "probe_sensors_section": _fmt_probe_sensors(probes),
             "blind_spot_section": _fmt_blind_spots(probes, self.self_model.total_tokens),
