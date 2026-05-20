@@ -1176,11 +1176,7 @@ class JudgmentLayer:
         secondary_skills = skills[1:] if primary_skill else skills
         self._last_selected_skills = list(skills)
         if skills:
-            _log.info(
-                "[skill] 全量 %d 个属上权限： %s",
-                len(skills),
-                " | ".join(s.name for s in skills),
-            )
+            _log.debug("[skill] 本轮注入 %d 个技能", len(skills))
         else:
             _log.info("[skill] 本轮无可用技能")
 
