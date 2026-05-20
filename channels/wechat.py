@@ -167,7 +167,11 @@ class WechatChannel:
         return self._conn
 
     def run_poll(self) -> None:
-        poll_url = self._cfg.poll_base_url or self._cfg.base_url
+        if not self._cfg.poll_base_url:
+            log.error("[wechat] 未配置 poll_base_url，为避免与 hermesclaw 竞争直连 iLink，已禁用本地轮询。请在配置中设置 hermesclaw 代理地址。")
+            self._stop.set()
+            return
+        poll_url = self._cfg.poll_base_url
         log.info("[wechat] poll 启动 poll_url=%s", poll_url)
         buf = ""
         fails = 0

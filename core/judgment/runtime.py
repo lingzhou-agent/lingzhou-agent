@@ -272,19 +272,25 @@ class JudgmentOutput:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # 裸代码兜底：将代码内容封装到 reply_to_user，不丢失产出
-            if _is_raw_code:
-                return cls(
-                    decision="pause",
-                    chosen_action_id="",
-                    params={},
-                    rationale="[auto-wrap] LLM 输出了裸代码，已封装为 reply_to_user",
-                    reflection="格式错误：代码应放入 reply_to_user 或 params 字段，不能直接输出",
-                    reply_to_user=original,
-                    next_step="",
-                    model_strategy={},
-                )
-            return cls(decision="pause", rationale=f"LLM 输出解析失败: {text}")
+            # Fallback 1: 尝试修复常见 JSON 格式错误（单引号→双引号、移除尾随逗号）后重试
+            fixed = text.replace("'", '"')
+            fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+            try:
+                data = json.loads(fixed)
+            except json.JSONDecodeError:
+                # 裸代码兜底：将代码内容封装到 reply_to_user，不丢失产出
+                if _is_raw_code:
+                    return cls(
+                        decision="pause",
+                        chosen_action_id="",
+                        params={},
+                        rationale="[auto-wrap] LLM 输出了裸代码，已封装为 reply_to_user",
+                        reflection="格式错误：代码应放入 reply_to_user 或 params 字段，不能直接输出",
+                        reply_to_user=original,
+                        next_step="",
+                        model_strategy={},
+                    )
+                return cls(decision="pause", rationale=f"LLM 输出解析失败: {text}")
 
         return cls(
             decision=cls._coerce_text(data.get("decision", "wait")).lower(),

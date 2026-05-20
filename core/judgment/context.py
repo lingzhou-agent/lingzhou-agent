@@ -372,7 +372,7 @@ def _fmt_shell_capabilities() -> str:
         "sandbox": False,
         "network_policy": "inherits-host-environment",
         "default_timeout_sec": 30,
-        "default_output_preview_chars": 2000,
+        "default_output_preview_chars": None,
         "shell": os.environ.get("SHELL") or "/bin/sh",
         "cwd": os.getcwd(),
         "available_commands": available,
