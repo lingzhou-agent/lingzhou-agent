@@ -152,7 +152,8 @@ class SelfDriveEngine:
         self._save()
 
     def compute_signal(self, *, idle_ticks: int = 0, has_user_message: bool = False,
-                       has_active_task: bool = False, tick: int = 0) -> DriveSignal:
+                       has_active_task: bool = False, tick: int = 0,
+                       force_explore_idle: int = 3) -> DriveSignal:
         """计算当前自驱力信号。
 
         参数:
@@ -175,7 +176,7 @@ class SelfDriveEngine:
 
         # 自适应阈值：首次运行更敏感，后续逐步提高
         EXPLORE_THRESHOLD = 0.35 if tick < 5 else 0.45
-        FORCE_EXPLORE_IDLE = 3  # 降低：空闲 3 轮就强制探索
+        FORCE_EXPLORE_IDLE = force_explore_idle  # 来自 ThresholdsConfig.curiosity_idle_min_cycles
 
         should_explore = False
         suggested_domain = None

@@ -347,7 +347,7 @@ class CognitionLoop:
         if tokens > 8_000_000:
             _log.debug("[budget] 今日 token=%.1fM", tokens / 1e6)
 
-    def _maybe_inject_self_drive(self) -> None:
+    async def _maybe_inject_self_drive(self) -> None:
         """自驱力引擎：空闲或探索卡住时注入自主探索目标到 WM。
 
         基于 Active Inference + Intrinsic Motivation:
@@ -362,22 +362,33 @@ class CognitionLoop:
             and not self._last_action_tool.startswith("task.update")
         )
 
-        # 检查是否探索卡住 — 从 behavior tracker 获取重复探针信号
+        # 检查是否探索卡住（streak 超过窗口大小 + 2，使用公开属性）
+        _stuck_gate = self._cfg.loop.behavior_streak_threshold + 2
         explore_stuck = (
-            hasattr(self._behavior, '_list_streak_count') and self._behavior._list_streak_count >= 5
-            or hasattr(self._behavior, '_read_streak_count') and self._behavior._read_streak_count >= 5
+            self._behavior.list_streak_count >= _stuck_gate
+            or self._behavior.read_streak_count >= _stuck_gate
         )
-        
+
         signal = self._self_drive.compute_signal(
             idle_ticks=self._behavior.wait_streak,
             has_user_message=False,
             has_active_task=bool(has_real_work and not explore_stuck),
             tick=self._judgment.self_model.tick_count,
+            force_explore_idle=self._cfg.thresholds.curiosity_idle_min_cycles,
         )
         if not signal.should_explore:
             return
 
-        self._self_drive.generate_exploration_task(signal.suggested_domain or "self_evolution")
+        task_template = self._self_drive.generate_exploration_task(
+            signal.suggested_domain or "self_evolution"
+        )
+        await self._task_store.add_task(
+            title=task_template["title"],
+            goal=task_template["goal"],
+            next_step=task_template.get("next_step", ""),
+            source="self_drive",
+            priority="low",
+        )
 
         _log.info(
             "[self_drive] 探索触发 C=%.2f domain=%s idle=%d rationale=%s",

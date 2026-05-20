@@ -73,6 +73,16 @@ class BehaviorTracker:
         """公开接口：连续 wait/pause 决策次数。"""
         return self._wait_streak
 
+    @property
+    def read_streak_count(self) -> int:
+        """公开接口：连续读取相同内容的次数。"""
+        return self._read_streak_count
+
+    @property
+    def list_streak_count(self) -> int:
+        """公开接口：连续列出相同目录结果的次数。"""
+        return self._list_streak_count
+
     # ── 状态接口 ──────────────────────────────────────────────────────────────
 
     def apply_cognitive_probe(self, signals: Any) -> None:

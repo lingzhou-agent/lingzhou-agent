@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -36,8 +37,11 @@ def _find_browser() -> Optional[str]:
         return "agent-browser"
     # npx 后备
     try:
-        result = os.popen("npx agent-browser --version 2>/dev/null").read()
-        if result.strip():
+        r = subprocess.run(
+            ["npx", "agent-browser", "--version"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if r.stdout.strip():
             return "npx agent-browser"
     except Exception:
         pass

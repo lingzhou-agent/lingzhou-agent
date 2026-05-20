@@ -395,6 +395,7 @@ class EvolutionEngine:
         _DIMS = ("truth", "caution", "continuity", "curiosity", "care")
         _max_delta = self._cfg.evolution.ethos_max_delta
         validated: dict[str, float] = {}
+        clamped_dims: list[str] = []
         for dim in _DIMS:
             if dim not in proposed:
                 return EvolutionResult(success=False, target="ethos_baseline",
@@ -405,18 +406,23 @@ class EvolutionEngine:
                                        reason=f"{dim}={new_val} 超出 [0,1]")
             old_val = current_baseline.get(dim, 0.5)
             if abs(new_val - old_val) > _max_delta:
-                # 超幅则夹住
-                new_val = old_val + _max_delta * (1 if new_val > old_val else -1)
+                # 超幅则夹住，并记录以便 LLM 感知
+                clamped_val = old_val + _max_delta * (1 if new_val > old_val else -1)
+                clamped_dims.append(f"{dim}: {new_val:.3f}→{clamped_val:.3f}")
+                new_val = clamped_val
             # hard_axioms：若某 hard axiom 关键词出现在维度名中，则不允许降低
             if any(dim in ax.lower() for ax in hard_axioms) and new_val < old_val:
                 new_val = old_val  # 保持不降
             validated[dim] = round(max(0.0, min(1.0, new_val)), 4)
 
         await ctx.task_store.set_fact("soul:ethos_baseline", json.dumps(validated))
+        if clamped_dims:
+            _log.info("[evolution] ethos_baseline 夹幅修正（超过 ±%.2f）: %s", _max_delta, clamped_dims)
         _log.info("[evolution] ethos_baseline 已更新: %s", validated)
         await self._update_dreams(f"价值观微调：{validated}")
+        clamp_note = f"夹幅修正: {'; '.join(clamped_dims)}" if clamped_dims else ""
         return EvolutionResult(success=True, target="ethos_baseline",
-                               new_code=json.dumps(validated))
+                               new_code=json.dumps(validated), reason=clamp_note)
 
     async def evolve_prompt(self, prompt_key: str, feedback: str) -> EvolutionResult:
         """根据解析失败反馈改进提示词模板（无需语法编译，最安全的进化路径）。"""

@@ -166,7 +166,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     await _bind_chat_id(loop, active_task, chat_id)
 
     if not user_message:
-        loop._maybe_inject_self_drive()
+        await loop._maybe_inject_self_drive()
         _maybe_inject_bootstrap_signal(loop, active_task)
     loop._wm.clear(kinds={"run_monitor"})
     if running_updates:
