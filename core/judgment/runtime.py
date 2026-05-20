@@ -989,9 +989,12 @@ class JudgmentLayer:
 
         if output.decision not in ("act", "pause", "wait"):
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
-        if output.decision == "act" and not output.chosen_action_id:
+        if output.decision == "act" and not output.chosen_action_id \
+                and not output.parallel_actions and not output.delegate_tasks:
             repaired = await self._repair_output(context_text, raw)
-            if repaired is not None and repaired.decision == "act" and repaired.chosen_action_id:
+            if repaired is not None and repaired.decision == "act" and (
+                repaired.chosen_action_id or repaired.parallel_actions or repaired.delegate_tasks
+            ):
                 output = repaired
             else:
                 output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
@@ -1136,7 +1139,8 @@ class JudgmentLayer:
         output = JudgmentOutput.from_llm(raw)
         if output.decision not in ("act", "pause", "wait"):
             output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
-        if output.decision == "act" and not output.chosen_action_id:
+        if output.decision == "act" and not output.chosen_action_id \
+                and not output.parallel_actions and not output.delegate_tasks:
             output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
         if reply_only:
             if not output.reply_to_user.strip():
