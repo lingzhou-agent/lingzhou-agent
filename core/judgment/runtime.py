@@ -13,12 +13,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
-import shutil
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -41,7 +38,6 @@ from .context import (
     _fmt_memory_system,
     _fmt_perception_replay,
     _fmt_percept,
-    _fmt_primary_skill,
     _fmt_probe_sensors,
     _fmt_blind_spots,
     _fmt_recent_runs,
@@ -208,10 +204,10 @@ if TYPE_CHECKING:
     )
     from core.skill import Skill
     from memory.working import WorkingMemory
-    from memory.task_store import Task, TaskStore, Failure, Run
+    from memory.task_store import TaskStore
     from memory.episodic import EpisodicMemory
     from memory.semantic import SemanticMemory
-    from tools.registry import ToolRegistry, ToolManifest
+    from tools.registry import ToolRegistry
     from provider.base import Provider
 
 
@@ -623,7 +619,6 @@ class JudgmentLayer:
         route_tiers: list[str] = ["reader", "reasoner", "repair"]
         available_models: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
-        primary_health = self._get_health(self._cfg.model)
         for tier in route_tiers:
             _, model_ref = self._resolve_tier_model(tier)
             key = (tier, model_ref)
@@ -1187,8 +1182,6 @@ class JudgmentLayer:
         _wm_items = wm.get_top(15)
         all_skills = self._skills.all_skills()
         skills = self._skills.match_for_context()
-        primary_skill = skills[0] if skills else None
-        secondary_skills = skills[1:] if primary_skill else skills
         self._last_selected_skills = list(skills)
         if skills:
             _log.debug("[skill] 本轮注入 %d 个技能", len(skills))

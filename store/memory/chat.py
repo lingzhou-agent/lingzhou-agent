@@ -145,5 +145,5 @@ class ChatMessageStore:
         async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
         # 反转为时间升序
-        rows = list(reversed(rows))
+        rows = rows[::-1]
         return [{"id": r[0], "role": r[1], "content": r[2], "created_at": r[3]} for r in rows]
