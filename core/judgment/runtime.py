@@ -1,4 +1,4 @@
-"""core/judgment/runtime.py — 判断层。
+"""core/judgment/runtime.py — 判断层（JudgmentLayer 核心类）。
 
 职责：
 1. 组装 bundle（运行时状态 → 结构化 context）
@@ -6,6 +6,7 @@
 3. 调用 LLM provider
 4. 解析 JSON 输出 → JudgmentOutput
 
+数据模型 / 工具常量 / 前置改写函数 → output.py
 解耦原则：此模块不知道工具如何执行，只负责"决定做什么"。
 """
 from __future__ import annotations
@@ -13,15 +14,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from provider.catalog import lookup_model
 from core.self_model import SelfModel, fmt_self_model
 from tools.registry import tool_has_capability
+from .output import (
+    JudgmentOutput,
+    ModelHealth,
+    ModelSelection,
+    READER_TOOLS,
+    _READER_TOOLS,
+    _REASONER_TOOLS,
+    _TOOL_TIER_MAPPING,
+    _ASK_EVIDENCE_BUDGET,
+    _rewrite_task_ask_to_evidence,
+    _rewrite_complex_act_to_task_plan,
+    _structured_tool_history_window,
+    _build_team_view_from_cfg,
+    tool_tier,
+)
 from .context import (
     _emotion_label,
     _fill_template,
@@ -57,234 +71,6 @@ from .context import (
 
 _log = logging.getLogger("lingzhou.judgment")
 
-# 低成本读取/枚举类工具 → reader tier（也被 loop.py 用于自动 tier 推断）
-_READER_TOOLS = frozenset({
-    "file.list", "file.read",
-    "memory.get_fact", "memory.search",
-    "schedule.list", "schedule.ack", "schedule.cancel",
-    "shell.capabilities",
-    "task.list",
-    "failure.dismiss",
-    # 探针：只读列举，不触发执行
-    "probe.list",
-})
-READER_TOOLS = _READER_TOOLS  # 公开别名，供外部模块引用
-# 写入/推理/高风险工具 → reasoner tier
-_REASONER_TOOLS = frozenset({
-    "shell.run",
-    "file.write",
-    "task.add", "task.update", "task.advance", "task.complete", "task.fail",
-    "memory.add_wm", "memory.add_semantic", "memory.set_fact", "memory.snapshot",
-    "reflect.structural",
-    "schedule.add",
-    # 探针：安装/拆除/执行/启停均有副作用
-    "probe.install", "probe.remove", "probe.run", "probe.enable", "probe.disable",
-})
-
-_TOOL_TIER_MAPPING = {
-    "reader": sorted(_READER_TOOLS),
-    "reasoner": sorted(_REASONER_TOOLS),
-    "repair": [],
-}
-
-# ── 续判前置改写：证据预算门 ────────────────────────────────────────────────────
-
-_ASK_EVIDENCE_BUDGET = 2  # task.ask 前须有至少 2 次有效证据工具调用
-
-def _rewrite_task_ask_to_evidence(
-    action: "JudgmentOutput",
-    *,
-    user_message: str = "",
-    tool_history: "list[dict[str, Any]] | None" = None,
-    registry: "Any | None" = None,
-) -> "JudgmentOutput":
-    """若 task.ask 前证据不足，改写为先调用 task.list 收集证据。"""
-    # 计算历史中已有的证据工具命中数
-    hits = 0
-    for item in tool_history or []:
-        tool_id = str(item.get("tool") or "")
-        result = str(item.get("result") or "").strip()
-        if not result or result.startswith("ERROR["):
-            continue
-        if registry is not None and tool_has_capability(registry, tool_id, "ask_evidence"):
-            hits += 1
-    if hits >= _ASK_EVIDENCE_BUDGET:
-        return action
-    # 证据不足：改写为先做 task.list
-    from core.judgment import JudgmentOutput as _JO
-    return _JO(
-        decision="act",
-        chosen_action_id="task.list",
-        params={"status": "all", "limit": 10},
-        rationale=f"证据预算 {hits}/{_ASK_EVIDENCE_BUDGET}，先收集任务列表作为佐证再提问。",
-        reflection=action.reflection,
-        reply_to_user="",
-        next_step=action.next_step,
-        model_strategy={"next_phase_tier": "reasoner"},
-        applied_skills=list(action.applied_skills or []),
-    )
-
-
-# ── 续判前置改写：复杂 mutation → task.plan ─────────────────────────────────────
-
-def _rewrite_complex_act_to_task_plan(
-    action: "JudgmentOutput",
-    *,
-    user_message: str = "",
-    active_task: "Any | None" = None,
-    registry: "Any | None" = None,
-) -> "JudgmentOutput":
-    """若 LLM 对复杂请求直接输出 mutation 且有 next_step，先拆为 task.plan。
-
-    只对非读取类工具生效；file.read / memory.search 等读取工具直接透传。
-    任务管理类工具（task.complete/advance/update/fail/add）是状态转换动作，不改写。
-    """
-    tool_id = action.chosen_action_id or ""
-    if tool_id in _READER_TOOLS:
-        return action
-    # 任务管理类工具直接透传，不改写为 task.plan（它们本身就是任务执行步骤）
-    if tool_id.startswith("task."):
-        return action
-    if active_task is None:
-        return action
-    next_step = (action.next_step or "").strip()
-    if not next_step:
-        return action
-    # 构建两步计划：当前 action 为第一步（in_progress），next_step 为第二步（pending）
-    step1_desc = f"执行 {tool_id}"
-    params = action.params or {}
-    for key in ("command", "path", "title", "query"):
-        if key in params:
-            snippet = str(params[key])[:40]
-            step1_desc = f"执行 {tool_id}（{snippet}）"
-            break
-    plan = [
-        {"step": step1_desc, "status": "in_progress"},
-        {"step": next_step, "status": "pending"},
-    ]
-    from core.judgment import JudgmentOutput as _JO
-    return _JO(
-        decision="act",
-        chosen_action_id="task.plan",
-        params={"task_id": active_task.id, "plan": plan},
-        rationale=action.rationale,
-        reflection=action.reflection,
-        reply_to_user="",
-        next_step="",
-        model_strategy=dict(action.model_strategy or {}),
-        applied_skills=list(action.applied_skills or []),
-    )
-
-
-def _structured_tool_history_window(tool_history: list[dict[str, Any]]) -> tuple[str, str]:
-    history_parts: list[str] = []
-    structured_window: list[dict[str, Any]] = []
-    start_index = max(0, len(tool_history) - 6)
-    for index, item in enumerate(tool_history[start_index:], start=start_index + 1):
-        raw_params = item.get("params")
-        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
-        status = str(item.get("status") or "").strip() or (
-            "error" if str(item.get("error") or "").strip() else ("skipped" if item.get("skipped") else "ok")
-        )
-        summary = str(item.get("summary") or item.get("result") or "").strip()
-        error = str(item.get("error") or "").strip()
-        state_delta = item.get("state_delta") if isinstance(item.get("state_delta"), dict) else {}
-        key = (
-            params.get("path")
-            or params.get("name")
-            or params.get("title")
-            or params.get("key")
-            or str(params.get("id") or "")
-            or params.get("command")
-            or params.get("query")
-            or ""
-        )
-        structured_window.append({
-            "index": index,
-            "tool": str(item.get("tool") or ""),
-            "status": status,
-            "key": str(key),
-            "summary": summary[:400],
-            "error": error[:240],
-            "error_category": str(item.get("error_category") or ""),
-            "state_delta": state_delta,
-        })
-        parts = [f"[{index}] tool={item.get('tool', '')} status={status}"]
-        if key:
-            parts.append(f"key={key}")
-        if summary:
-            parts.append(f"summary={summary[:240]}")
-        if error:
-            parts.append(f"error={error[:180]}")
-        if state_delta:
-            try:
-                state_text = json.dumps(state_delta, ensure_ascii=False, sort_keys=True)
-            except Exception:
-                state_text = str(state_delta)
-            parts.append(f"state_delta={state_text[:200]}")
-        history_parts.append(" | ".join(parts))
-    return (
-        json.dumps(structured_window, ensure_ascii=False, indent=2),
-        "\n".join(history_parts),
-    )
-
-
-def _build_team_view_from_cfg(cfg) -> str:
-    """从配置构建思考模型的团队视图（不依赖运行时 model list）。"""
-    routing = getattr(cfg, "routing", {}) or {}
-    lines = ["## 团队架构（你作为思考模型，统筹以下资源）"]
-    for tier in ("reader", "reasoner", "repair"):
-        model = routing.get(tier, cfg.model)
-        role = {
-            "reader": "操作层 — 快速/低成本，适合 file.read/task.list/memory.search 等轻量查询",
-            "reasoner": "思考层 — 你本人，深度推理，适合复杂决策/代码修改/用户交互",
-            "repair": "修复层 — 格式修复/小修小补",
-        }.get(tier, tier)
-        lines.append(f"- {tier}: {model}")
-        lines.append(f"  {role}")
-    lines.append("")
-    lines.append("调度规则:")
-    lines.append("- 你是 reasoner（思考层），负责复杂决策。简单操作应委派给 reader")
-    lines.append("- 委派方式: 在 model_strategy 中设置 next_phase_tier='reader'")
-    lines.append("- reader 的操作层模型成本低速度快，不要在 reasoner 上做纯查询")
-    lines.append("- 关键决策、代码修改、用户交互必须由你亲自处理")
-    return "\n".join(lines)
-
-
-def tool_tier(tool_id: str, registry = None) -> str:
-    """判断工具应该用哪个 tier。
-
-    优先级：manifest.prefer_tier → 硬编码集合 → 默认 reasoner。
-    数据驱动的工具可以声明 prefer_tier，无需改此处。
-    """
-    # 从注册表读取 manifest
-    if registry is not None and tool_id:
-        entry = registry.get(tool_id)
-        if entry and entry.manifest.prefer_tier:
-            return entry.manifest.prefer_tier
-    # 回退到硬编码集合
-    if tool_id in _READER_TOOLS:
-        return "reader"
-    if tool_id in _REASONER_TOOLS:
-        return "reasoner"
-    return "reasoner"
-
-
-@dataclass
-class ModelSelection:
-    phase: str
-    tier: str
-    model_ref: str
-    thinking: str
-
-
-@dataclass
-class ModelHealth:
-    cooldown_until: float = 0.0
-    failure_streak: int = 0
-    last_error: str = ""
-    last_code: str = ""
-
 if TYPE_CHECKING:
     from core.config import Config
     from core.perception import (
@@ -300,115 +86,8 @@ if TYPE_CHECKING:
     from provider.base import Provider
 
 
-# ── 判断输出 ───────────────────────────────────────────────────────────────────
-
-@dataclass
-class JudgmentOutput:
-    decision: str = "wait"              # act | pause | wait
-    chosen_action_id: str = ""          # 工具名称
-    params: dict[str, Any] = field(default_factory=lambda: {})  # type: ignore[assignment]
-    rationale: str = ""                 # 内部推理过程（内部独白）
-    reflection: str = ""                # 对最近经历的后验反思（写入语义记忆）
-    reply_to_user: str = ""             # 对人类的外部回复（与 rationale 明确分离）
-    next_step: str = ""
-    model_strategy: dict[str, Any] = field(default_factory=dict)
-    applied_skills: list[str] = field(default_factory=list)  # LLM 实际应用的技能名单
-    parallel_actions: list[dict[str, Any]] = field(default_factory=list)  # [{"action_id": str, "params": dict}, ...] 非空时 gather 并行执行
-    delegate_tasks: list[dict[str, Any]] = field(default_factory=list)    # [{"id", "goal", "tools", "max_rounds", "params"}, ...] 非空时委派并行 Task
-
-    @classmethod
-    def wait(cls, reason: str = "") -> "JudgmentOutput":
-        return cls(decision="wait", rationale=reason, reply_to_user="")
-
-    @staticmethod
-    def _coerce_text(value: Any) -> str:
-        if value is None:
-            return ""
-        return str(value)
-
-    @classmethod
-    def from_llm(cls, text: str) -> "JudgmentOutput":
-        """从 LLM 输出文本解析 JudgmentOutput，容错处理。"""
-        original = text.strip()
-        text = original
-        # 防御：剥离 <think>...</think> 块（provider 层已处理，此处兜底）
-        text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
-        # 防御：剥离 LLM 混入的非 JSON 内容（markdown 树形图等）
-        # 模式：以路径/目录树开头的行（如 "provider/\n├── __init__.py"）
-        if not text.startswith("{") and not text.startswith("```"):
-            stripped = re.sub(
-                r"(?:^|\n)(?:[\w./_-]+/\s*\n)?(?:[│├└──+|\\]+[ \t]+[\w.+/_-]+[ \t]*(?:#.*)?\n)+",
-                "\n",
-                text,
-            )
-            if stripped != text:
-                text = stripped.strip()
-        # 如果清理后文本为空或不含 JSON，提前返回避免无谓的 parse 尝试
-        if not text or ("{" not in text and "decision" not in text):
-            return cls(decision="pause", rationale=f"LLM 输出解析失败（非JSON）: {original[:120]}")
-        # 裸代码检测：LLM 直接输出 bash/python 脚本时提前标记
-        _CODE_PREFIXES = ("#!/", "```bash", "```python", "```sh", "```shell", "# -*-")
-        _is_raw_code = any(text.lstrip().startswith(p) for p in _CODE_PREFIXES)
-        # 提取 JSON 块（支持 ```json ... ``` 或裸 JSON）
-        match = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
-        if match:
-            text = match.group(1).strip()
-        else:
-            # 尝试找第一个 { ... }
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1:
-                text = text[start:end + 1]
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            # Fallback 1: 尝试修复常见 JSON 格式错误（单引号→双引号、移除尾随逗号）后重试
-            fixed = text.replace("'", '"')
-            fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-            try:
-                data = json.loads(fixed)
-            except json.JSONDecodeError:
-                # 裸代码兜底：将代码内容封装到 reply_to_user，不丢失产出
-                if _is_raw_code:
-                    return cls(
-                        decision="pause",
-                        chosen_action_id="",
-                        params={},
-                        rationale="[auto-wrap] LLM 输出了裸代码，已封装为 reply_to_user",
-                        reflection="格式错误：代码应放入 reply_to_user 或 params 字段，不能直接输出",
-                        reply_to_user=original,
-                        next_step="",
-                        model_strategy={},
-                    )
-                return cls(decision="pause", rationale=f"LLM 输出解析失败: {text}")
-
-        return cls(
-            decision=cls._coerce_text(data.get("decision", "wait")).lower(),
-            chosen_action_id=cls._coerce_text(data.get("chosen_action_id", "")),
-            params=dict(data.get("params") or {}),
-            rationale=cls._coerce_text(data.get("rationale", "")),
-            reflection=cls._coerce_text(data.get("reflection", "")),
-            reply_to_user=cls._coerce_text(data.get("reply_to_user", "")),
-            next_step=cls._coerce_text(data.get("next_step", "")),
-            model_strategy=dict(data.get("model_strategy") or {}),
-            applied_skills=[str(s) for s in (data.get("applied_skills") or []) if s],
-            parallel_actions=[
-                item for item in (data.get("parallel_actions") or [])
-                if isinstance(item, dict) and isinstance(item.get("action_id"), str) and item["action_id"]
-            ],
-            delegate_tasks=[
-                item for item in (data.get("delegate_tasks") or [])
-                if isinstance(item, dict) and item.get("id") and item.get("goal")
-            ],
-        )
-
-
 # ── 判断层 ─────────────────────────────────────────────────────────────────────
 
-# Note (P2): JudgmentLayer is 1684 lines. Future refactoring could extract:
-# - _build_routing_prompt → separate routing module
-# - _parse_action → action parser module
-# - _select_tool → tool selector module
 class JudgmentLayer:
     def __init__(
         self,
@@ -1287,7 +966,7 @@ class JudgmentLayer:
         context_facts = await _load_context_facts_snapshot(task_store, task)
         probes = await self._probe_manager.list_probes() if self._probe_manager else []
 
-        search_query = (task.goal or task.title) if task else user_message
+        search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
         episodic_search = (
             await _el.run_in_executor(None, episodic.search, search_query, 16000, task_id_str)
             if search_query else ""
@@ -1302,7 +981,7 @@ class JudgmentLayer:
 
         anchors: list[str] = []
         if task:
-            anchors.append(task.goal or task.title)
+            anchors.append(task.next_step or task.goal or task.title)
             # 来源身份锚：wechat/chat 用户 ID 作为额外检索锚，让已存储的用户身份节点可被命中
             task_source = str(getattr(task, "source", "") or "")
             if task_source and task_source not in anchors:

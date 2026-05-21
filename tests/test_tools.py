@@ -161,7 +161,7 @@ async def _process_kill():
     ctx = _tool_ctx()
 
     res = await exec_run({"command": "sleep 60", "background": True, "timeout": 60}, ctx)
-    sid = json.loads(res.evidence)["session_id"]
+    sid = json.loads(res.evidence)["process_id"]
 
     # 确认进程存在
     poll1 = await process_poll({"session_id": sid}, ctx)
@@ -196,7 +196,7 @@ async def _process_list():
 
     # 启动一个后台进程
     res = await exec_run({"command": "sleep 5", "background": True, "timeout": 10}, ctx)
-    sid = json.loads(res.evidence)["session_id"]
+    sid = json.loads(res.evidence)["process_id"]
 
     r2 = await process_list({"state": "running"}, ctx)
     assert sid in r2.summary
@@ -218,7 +218,7 @@ async def _process_write_to_finished():
 
     # 前台进程不在 _MANAGER 中，所以写一个短命令后台
     res2 = await exec_run({"command": "echo hi", "background": True, "timeout": 2}, ctx)
-    sid = json.loads(res2.evidence)["session_id"]
+    sid = json.loads(res2.evidence)["process_id"]
     await asyncio.sleep(0.5)  # 等待完成
 
     # 写入已结束进程

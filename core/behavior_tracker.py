@@ -41,6 +41,7 @@ class BehaviorTracker:
         self,
         wait_streak_notify: list[int] | None = None,
         streak_threshold: int = 3,
+        wm_priorities: dict[str, float] | None = None,
     ) -> None:
         # wait-streak 通知阈值（升序，来自配置；None → 使用默认 [3, 6]）
         self._wait_notify_thresholds: list[int] = sorted(wait_streak_notify) if wait_streak_notify else [3, 6]
@@ -66,8 +67,15 @@ class BehaviorTracker:
         self._rationale_hashes: deque[str] = deque(maxlen=_BELIEF_WINDOW)
         self._belief_stale_hash: str | None = None
         self._belief_stale_count: int = 0
-        self._belief_stale_warned: bool = False        # 上次 act 结果指纹（用于 on_act_result 折回调用）
+        self._belief_stale_warned: bool = False
+        # 上次 act 结果指纹（用于 on_act_result 折回调用）
         self._last_act_result_fp: str = ""
+        self._edit_fail_count: int = 0
+        # WM 优先级（可由外部通过 wm_priorities 注入，确保所有值来自 ThresholdsConfig）
+        _pri = wm_priorities or {}
+        self._pri_behavior_loop: float = float(_pri.get("behavior_loop", 0.95))
+        self._pri_edit_caution: float = float(_pri.get("edit_caution", 0.93))
+        self._pri_belief_stale: float = float(_pri.get("belief_stale", 0.96))
     @property
     def wait_streak(self) -> int:
         """公开接口：连续 wait/pause 决策次数。"""
@@ -174,7 +182,7 @@ class BehaviorTracker:
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 {_n} 次均执行了 ({tool_id}, {key_param or '相同参数'})。",
-                priority=0.95,
+                priority=self._pri_behavior_loop,
             ))
         return items
 
@@ -231,7 +239,7 @@ class BehaviorTracker:
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 {_n} 次均读取了相同内容 ({path})，MD5 一致。",
-                priority=0.95,
+                priority=self._pri_behavior_loop,
             ))
 
         # 层 2：同文件顺序窗口探测（不同窗口但模式为连续扫描）
@@ -265,7 +273,7 @@ class BehaviorTracker:
                 items.append(WMItem(
                     kind="self_awareness",
                     content=f"[行为信号] 已连续 {self._seq_window_count} 次按窗口分段读取 ({path})。",
-                    priority=0.93,
+                    priority=self._pri_edit_caution,
                 ))
 
         return items
@@ -296,7 +304,7 @@ class BehaviorTracker:
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[行为信号] 过去 {_n} 次均列出了相同目录结果 ({path})，结果指纹一致。",
-                priority=0.95,
+                priority=self._pri_behavior_loop,
             ))
         return items
 
@@ -376,7 +384,7 @@ class BehaviorTracker:
             items.append(WMItem(
                 kind="self_awareness",
                 content=f"[认知信号] 推理结论已连续 {self._belief_stale_count} 轮基本相同（指纹 {fp}）。",
-                priority=0.96,
+                priority=self._pri_belief_stale,
             ))
         return items
 
@@ -387,12 +395,12 @@ class BehaviorTracker:
         """
         from memory.working import WMItem
         if "OldTextNotFound" in (error or ""):
-            self._edit_fail_count = getattr(self, '_edit_fail_count', 0) + 1
+            self._edit_fail_count += 1
             if self._edit_fail_count >= 2:
                 return [WMItem(
                     kind="behavior_sense",
                     content=f"[感知] file.edit 已连续 {self._edit_fail_count} 次因 oldText 不匹配而失败。",
-                    priority=0.80,
+                    priority=self._pri_edit_caution,
                 )]
         else:
             self._edit_fail_count = 0

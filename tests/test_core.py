@@ -1172,17 +1172,17 @@ async def _exec_process_write_pipe_roundtrip():
         "background": True,
         "timeout": 2,
     }, ctx)
-    sid = json.loads(res.evidence)["session_id"]
-    await process_write({"session_id": sid, "data": "hello\\n", "eof": True}, ctx)
+    sid = json.loads(res.evidence)["process_id"]
+    await process_write({"process_id": sid, "data": "hello\\n", "eof": True}, ctx)
 
     for _ in range(40):
-        poll = await process_poll({"session_id": sid}, ctx)
+        poll = await process_poll({"process_id": sid}, ctx)
         status = json.loads(poll.summary)
         if status["status"] == "finished":
             break
         await asyncio.sleep(0.05)
 
-    log = await process_log({"session_id": sid, "offset": 0, "limit": 200}, ctx)
+    log = await process_log({"process_id": sid, "offset": 0, "limit": 200}, ctx)
     assert "hello" in log.summary
 
 
@@ -1202,11 +1202,11 @@ async def _exec_process_timeout_background():
         "background": True,
         "timeout": 0.2,
     }, ctx)
-    sid = json.loads(res.evidence)["session_id"]
+    sid = json.loads(res.evidence)["process_id"]
 
     timed_out = False
     for _ in range(60):
-        poll = await process_poll({"session_id": sid}, ctx)
+        poll = await process_poll({"process_id": sid}, ctx)
         status = json.loads(poll.summary)
         if status["status"] == "finished":
             timed_out = bool(status["timed_out"])
@@ -2052,7 +2052,7 @@ async def _execution_background_run_does_not_record_completion_early():
         node = semantic.get(f"run-result-{run_id}")
         assert node is None
 
-        await process_kill({"session_id": str(result.metadata["session_id"] or "")}, _tool_ctx())
+        await process_kill({"process_id": str(result.metadata["process_id"] or "")}, _tool_ctx())
         await store.close()
 
 
@@ -2076,17 +2076,17 @@ async def main():
         "pty": True,
         "timeout": 5,
     }, ctx)
-    sid = json.loads(res.evidence)["session_id"]
+    sid = json.loads(res.evidence)["process_id"]
     await asyncio.sleep(0.2)
-    await process_write({"session_id": sid, "data": "hi\\n"}, ctx)
+    await process_write({"process_id": sid, "data": "hi\\n"}, ctx)
     for _ in range(60):
-        poll = await process_poll({"session_id": sid}, ctx)
+        poll = await process_poll({"process_id": sid}, ctx)
         status = json.loads(poll.summary)
         if status["status"] == "finished":
             break
         await asyncio.sleep(0.1)
     await asyncio.sleep(0.1)
-    log = await process_log({"session_id": sid, "offset": 0, "limit": 400}, ctx)
+    log = await process_log({"process_id": sid, "offset": 0, "limit": 400}, ctx)
     print(log.summary)
 
 asyncio.run(main())

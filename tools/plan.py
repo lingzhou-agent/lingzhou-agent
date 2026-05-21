@@ -81,6 +81,23 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             skipped=True,
         )
 
+    # 幂等检查：结构不变（步骤数 + 已完成数 + 已有 in_progress）就拒绝，引导 LLM 直接执行
+    # 注：不用精确文本比较 —— LLM 会微变描述逃过精json匹配，结构匹配更鲁棒
+    existing_plan = (task.extras or {}).get("plan") or []
+    if existing_plan and isinstance(existing_plan, list):
+        existing_done = sum(1 for s in existing_plan if isinstance(s, dict) and s.get("status") == "completed")
+        existing_in_progress = next(
+            (s.get("step", "") for s in existing_plan if isinstance(s, dict) and s.get("status") == "in_progress"),
+            None,
+        )
+        if len(existing_plan) == len(clean_plan) and existing_done == done and existing_in_progress is not None:
+            hint = f"，请直接执行：{existing_in_progress}" if existing_in_progress else "，请直接执行计划中的下一步骤"
+            return ToolResult(
+                summary=f"计划结构未变（{len(clean_plan)} 步，{done} 步已完成）{hint}",
+                error="PlanUnchanged",
+                skipped=True,
+            )
+
     # 持久化 plan 到任务 extras
     await ctx.task_store.update_task_data(task.id, {"plan": clean_plan})
 

@@ -38,9 +38,29 @@ CREATE TABLE IF NOT EXISTS nodes (
     valence     REAL NOT NULL DEFAULT 0.5,
     tags        TEXT NOT NULL DEFAULT '[]',
     source      TEXT NOT NULL DEFAULT '',
+    embedding   TEXT,
     created_at  TEXT NOT NULL
 );
 """
+
+
+def _parse_table_cols(ddl: str) -> dict[str, str]:
+    """从 CREATE TABLE DDL 中提取列名 → 定义的映射，用于 schema reconciler。"""
+    m = re.search(r'CREATE TABLE[^(]*\((.*?)\);', ddl, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return {}
+    cols: dict[str, str] = {}
+    for line in m.group(1).split(','):
+        line = line.strip()
+        if not line:
+            continue
+        # 跳过表级约束（UNIQUE、CHECK、FOREIGN KEY 等；PRIMARY KEY 内联列上）
+        if re.match(r'(PRIMARY\s+KEY|UNIQUE|CHECK|FOREIGN\s+KEY)\b', line, re.IGNORECASE):
+            continue
+        col_m = re.match(r'^(\w+)\s+(.*)', line)
+        if col_m:
+            cols[col_m.group(1)] = col_m.group(2).strip()
+    return cols
 
 # FTS5 虚拟表：用于 retrieve/retrieve_multi_anchor 的候选集预过滤（O(log n) 代替 O(n)）
 # 独立表（非 content table），通过 _db_upsert 手动同步
@@ -151,20 +171,19 @@ class SemanticMemory:
             return conn
 
     def _migrate(self) -> None:
-        """幂等 schema 迁移：只 ADD COLUMN，永不 DROP。
+        """幂等 schema 迁移：以 _DDL 为权威 schema，ADD COLUMN 补齐老 DB 缺失列，永不 DROP。
 
-        新列清单：
-          embedding TEXT  — JSON float array，向量混合检索用
-        索引清单：
-          idx_nodes_kind — 按 kind 过滤的 O(log n) 扫描（person/event/... 检索用）
+        新增列只需在 _DDL 中声明，无需手动修改此方法。
         """
         try:
+            desired = _parse_table_cols(_DDL)
             existing = {row[1] for row in self._conn.execute("PRAGMA table_info(nodes)")}
-            if "embedding" not in existing:
-                self._conn.execute("ALTER TABLE nodes ADD COLUMN embedding TEXT")
-                self._conn.commit()
-            if "source" not in existing:
-                self._conn.execute("ALTER TABLE nodes ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+            changed = False
+            for col, definition in desired.items():
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE nodes ADD COLUMN {col} {definition}")
+                    changed = True
+            if changed:
                 self._conn.commit()
         except Exception:
             pass  # 迁移失败静默跳过，不影响现有功能

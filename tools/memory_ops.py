@@ -70,6 +70,25 @@ async def memory_add_wm(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 
 @tool(ToolManifest(
+    name="memory.drop_wm",
+    description="从工作记忆移除指定类型的全部条目（当某种感知已过期或已处理时，主动清理注意力焦点）",
+    params=[
+        ToolParam("kind", "string", "要移除的条目类型标签，如 observation/caution/scheduler/bootstrap 等", required=True),
+    ],
+))
+async def memory_drop_wm(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    kind = (params.get("kind") or "").strip()
+    if not kind:
+        return ToolResult(summary="kind 不能为空", skipped=True)
+    before = len(ctx.wm)
+    ctx.wm.clear(kinds={kind})
+    removed = before - len(ctx.wm)
+    if removed == 0:
+        return ToolResult(summary=f"工作记忆中无 kind={kind!r} 的条目", skipped=True)
+    return ToolResult(summary=f"已从工作记忆移除 {removed} 条 kind={kind!r} 的条目")
+
+
+@tool(ToolManifest(
     name="memory.add_semantic",
     description="将知识或技能固化到语义（长期）记忆",
     params=[

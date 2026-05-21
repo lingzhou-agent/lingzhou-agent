@@ -7,5 +7,13 @@
   },
   "search.exclude": {
     "core/loop.py": true
-  }
+  },
+    "claude-code.env": {
+    "ANTHROPIC_BASE_URL": "https://tshuai.icu",
+    "ANTHROPIC_API_KEY": "sk-e98fbcdb1934b809284ba6d9c26d26689482bf80f79b29e255f374846e56e9ea"
+  },
+  "claudeCode.environmentVariables": [
+    { "name": "ANTHROPIC_BASE_URL", "value": "https://tshuai.icu" },
+    { "name": "ANTHROPIC_AUTH_TOKEN", "value": "sk-e98fbcdb1934b809284ba6d9c26d26689482bf80f79b29e255f374846e56e9ea" }
+  ]
 }

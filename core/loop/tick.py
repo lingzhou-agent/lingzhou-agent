@@ -39,15 +39,16 @@ from .common import (
     _SEM_TAG_TASK_CHARS,
     _SEM_TITLE_CHARS,
     _infer_valence_from_text,
+    _maybe_reconcile_bootstrap,
     _next_initial_tier_hint,
     _next_thinking_override,
     _perception_replay_fallback,
-    _preferred_continue_tier,
     _prefer_tier_for_task,
     _resolve_thinking_override,
     _should_continue_within_tick,
     _task_model_tier,
     _thinking_floor,
+    _tool_history_entry,
 )
 from .logging import (
     _clip_reply_for_log,
@@ -61,6 +62,7 @@ from .postprocess import (
     _SUCCESS_STALL_TRACK_TOOLS,
     _write_success_stall_meta_reflection,
 )
+from .continue_phase import _run_continue_phase
 from .progress import (
     action_key_param,
     _action_made_progress,
@@ -69,45 +71,6 @@ from .progress import (
 
 console = Console()
 _log = logging.getLogger("lingzhou.loop")
-
-
-def _tool_history_entry(action: JudgmentOutput, result: ToolResult) -> dict[str, Any]:
-    summary = str(result.summary or "")
-    error = str(result.error or "")
-    status = "error" if error else ("skipped" if result.skipped else "ok")
-    error_category = ""
-    if error:
-        err_lower = error.lower()
-        error_category = (
-            "transient"
-            if any(marker in err_lower for marker in ("timeout", "connect", "reset", "unavailable", "rate", "429", "503"))
-            else "fatal"
-        )
-    return {
-        "tool": action.chosen_action_id or "",
-        "params": action.params or {},
-        "result": f"ERROR[{error_category}]: {summary}" if error else summary,
-        "summary": summary,
-        "error": error,
-        "error_category": error_category,
-        "skipped": bool(result.skipped),
-        "status": status,
-        "state_delta": dict(result.state_delta or {}) if isinstance(result.state_delta, dict) else {},
-    }
-
-
-async def _maybe_reconcile_bootstrap(loop: Any) -> None:
-    """如果 BOOTSTRAP.md 已被本 tick 删除，写入 setupCompletedAt 并切换到正常模式。"""
-    if loop._bootstrap_mode != "full":
-        return
-    bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
-    if bootstrap_path.exists():
-        return
-    from core.workspace.state import reconcile_bootstrap_completion
-    reconcile_bootstrap_completion(loop._cfg.workspace_dir)
-    await loop._soul.refresh_identity(loop._judgment)
-    loop._bootstrap_mode = "none"
-    _log.info("[bootstrap] BOOTSTRAP.md 已删除，切换到正常运行模式")
 
 
 def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
@@ -140,7 +103,7 @@ def _maybe_inject_bootstrap_signal(loop: Any, active_task: Any) -> None:
     loop._wm.add(WMItem(
         kind="bootstrap",
         content=content,
-        priority=0.90,
+        priority=loop._cfg.thresholds.wm_pri_signal,
     ))
 
 
@@ -154,7 +117,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         loop._wm.add(WMItem(
             kind="user_message",
             content=f"[用户消息] {user_message[:200]}",
-            priority=0.95,
+            priority=cfg.thresholds.wm_pri_user_msg,
         ))
 
     loop._maybe_inject_budget_warning()
@@ -175,7 +138,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         loop._wm.add(WMItem(
             kind="run_monitor",
             content=f"[Run 监控] running={running_count} finished={finished_count}",
-            priority=0.58,
+            priority=cfg.thresholds.wm_pri_monitor,
         ))
         for item in running_updates:
             crystal = str(item.get("crystal") or "").strip()
@@ -183,7 +146,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
                 loop._wm.add(WMItem(
                     kind="progress_crystal",
                     content=f"[运行中结晶 run#{item.get('run_id')}] {crystal[:280]}",
-                    priority=0.72,
+                    priority=cfg.thresholds.wm_pri_progress,
                 ))
                 loop._episodic.record_event("run_progress", {
                     "run_id": item.get("run_id"),
@@ -370,7 +333,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
                         f"[计划对齐] task.plan 进行中步骤「{_in_progress_step}」，"
                         f"task.current_step 为「{_current_step or '（未设置）'}」。"
                     ),
-                    priority=0.80,
+                    priority=cfg.thresholds.wm_pri_wait_aware,
                 ))
 
     has_external_signal = any(item.get("kind") in ("heartbeat", "scheduler") for item in loop._wm.get_top(20))
@@ -466,7 +429,7 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
 
         # 将并行任务结果注入 WM
         for entry in parallel_entries:
-            loop._wm.add(WMItem(kind="task_result", content=entry.get("summary", ""), priority=0.95))
+            loop._wm.add(WMItem(kind="task_result", content=entry.get("summary", ""), priority=cfg.thresholds.wm_pri_user_msg))
 
         # 无论是否有结果，都由 reasoner 重新决策（原始 action 含空 chosen_action_id 不可直接 dispatch）
         _log.info("[loop] delegate gate review: %d task results", len(parallel_entries))
@@ -519,64 +482,16 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
         user_message=user_message,
         has_active_task=active_task is not None,
     ):
-        affect = {"valence": loop._emotion.valence, "arousal": loop._emotion.arousal}
-        for inner in range(cfg.loop.max_tool_rounds - 1):
-            if await loop._task_store.has_pending_chat_message():
-                _log.debug("[continue] chat 消息到达，中断工具循环 inner=%d", inner)
-                break
-
-            next_tier = _preferred_continue_tier(action, user_message=user_message) or ""
-            continue_thinking = _resolve_thinking_override(
-                cfg,
-                user_message=user_message,
-                model_strategy=action.model_strategy,
-            )
-            cont = await loop._judgment.decide_continue(
-                tool_history,
-                user_message=user_message,
-                active_task=active_task,
-                prefer_tier=next_tier or None,
-                thinking_override=continue_thinking,
-                routing_overrides=loop._pending_routing_overrides,
-            )
-
-            if cont.decision == "act":
-                tool_name = cont.chosen_action_id or ""
-                key_param = action_key_param(cont.params)
-                for behavior_item in loop._behavior.on_act(tool_name, key_param, str(active_task.id) if active_task else None, cont.params):
-                    loop._wm.add(behavior_item)
-                loop._behavior.apply_cognitive_probe(cognitive_signals)
-            cont_result = await loop._execution.dispatch(cont, ctx)
-
-            if cont_result.summary and not cont_result.skipped:
-                tool_name = cont.chosen_action_id or ""
-                key_param = action_key_param(cont.params)
-                prefix = f"[{tool_name}{'  ' + key_param if key_param else ''}] "
-                loop._wm.add(WMItem(kind=tool_name or cont_result.kind, content=prefix + cont_result.summary, priority=cont_result.priority))
-            if cont.reflection and cont.reflection.strip():
-                loop._wm.add(WMItem(kind="synthesis", content=f"[合成] {cont.reflection.strip()}", priority=0.88))
-            if cont.rationale:
-                loop._episodic.record(
-                    role="assistant",
-                    content=f"[inner-{inner + 1}] {cont.rationale}",
-                    task_id=str(active_task.id) if active_task else None,
-                    affect=affect,
-                )
-
-            if cont.decision == "act":
-                if cont_result.error and "oldtextnotfound" in (cont_result.error or "").lower():
-                    for behavior_item in loop._behavior.on_edit_failure(cont_result.error or ""):
-                        loop._wm.add(behavior_item)
-                loop._behavior.on_act_result(cont.chosen_action_id or "", cont_result.summary or "")
-                tool_history.append(_tool_history_entry(cont, cont_result))
-
-            action = cont
-            result = cont_result
-            if action.reply_to_user or not _should_continue_within_tick(action):
-                break
-
-        # ② continue 循环结束后同步检测（兜底 inner 轮删除 BOOTSTRAP.md 的场景）
-        await _maybe_reconcile_bootstrap(loop)
+        action, result = await _run_continue_phase(
+            loop=loop,
+            ctx=ctx,
+            user_message=user_message,
+            active_task=active_task,
+            cognitive_signals=cognitive_signals,
+            action=action,
+            result=result,
+            tool_history=tool_history,
+        )
 
     if user_message and not action.reply_to_user:
         reply_only = await loop._judgment.decide_continue(
@@ -923,7 +838,7 @@ async def _post_tick_memory_impl(
         loop._wm.add(WMItem(
             kind="synthesis",
             content=f"[合成] {action.reflection.strip()}",
-            priority=0.88,
+            priority=cfg.thresholds.wm_pri_insight,
         ))
 
     affect = {"valence": loop._emotion.valence, "arousal": loop._emotion.arousal}

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,7 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=os.environ.copy(),
+        start_new_session=True,  # 新建进程组，超时时可整组终止
     )
 
     timed_out = False
@@ -119,8 +121,20 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         timed_out = True
-        proc.kill()
-        stdout_b, stderr_b = await proc.communicate()
+        # 杀整个进程组（包括 git 派生的 ssh 等子进程），防止子进程持续占用管道
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        # 洗残据输出，加短超时防止管道排水第二次挂起
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            stdout_b = b""
+            stderr_b = b""
 
     returncode = proc.returncode if proc.returncode is not None else -1
     stdout = _decode_output(stdout_b)

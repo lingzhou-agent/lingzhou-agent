@@ -269,7 +269,7 @@ def _fmt_wm(
     anti_loop = [item for item in items if item.get("kind") == "self_awareness"]
     rest = [item for item in items if item.get("kind") != "self_awareness"]
     ordered = anti_loop + rest
-    lines = [header] + [f"- [{item['kind']}] {item['content']}" for item in ordered]
+    lines = [header] + [f"- [{item['kind']}|p={item.get('priority', 0):.2f}] {item['content']}" for item in ordered]
     return "\n".join(lines)
 
 

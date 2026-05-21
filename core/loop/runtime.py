@@ -94,7 +94,24 @@ class CognitionLoop:
         # 分层路由 providers({"simple": p1, "complex": p2},由 open() 注入 JudgmentLayer)
         self._routing_providers: dict[str, Any] = {}
         # embedding 混合检索(embed_fn=None 则纯关键词模式)
-        _embed_fn = getattr(self._provider, "embed", None) if cfg.memory.embedding_model else None
+        _embed_fn = None
+        if cfg.memory.local_embed_model:
+            try:
+                import os as _os
+                _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+                _os.environ.setdefault("HF_HUB_OFFLINE", "1")
+                from sentence_transformers import SentenceTransformer as _ST
+                _st_kwargs: dict = {}
+                if cfg.memory.local_embed_cache_dir:
+                    _st_kwargs["cache_folder"] = cfg.memory.local_embed_cache_dir
+                _local_st = _ST(cfg.memory.local_embed_model, **_st_kwargs)
+                _embed_fn = lambda texts: _local_st.encode(texts, normalize_embeddings=True).tolist()
+            except Exception as _e:
+                import logging as _lg
+                _lg.getLogger("lingzhou.loop").warning("[loop] 本地 embedding 模型加载失败，回退到 API: %s", _e)
+                _embed_fn = getattr(self._provider, "embed", None) if cfg.memory.embedding_model else None
+        elif cfg.memory.embedding_model:
+            _embed_fn = getattr(self._provider, "embed", None)
         self._semantic = SemanticMemory(
             cfg.memory_dir,
             decay_lambda=cfg.memory.semantic_decay_lambda,
@@ -107,6 +124,11 @@ class CognitionLoop:
         self._behavior = BehaviorTracker(
             wait_streak_notify=list(cfg.loop.wait_streak_notify),
             streak_threshold=cfg.loop.behavior_streak_threshold,
+            wm_priorities={
+                "behavior_loop": cfg.thresholds.wm_pri_user_msg,
+                "edit_caution": cfg.thresholds.wm_pri_self_aware,
+                "belief_stale": cfg.thresholds.wm_pri_critical,
+            },
         )
 
         # 自驱力引擎 (Active Inference + Intrinsic Motivation)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from core.config import Config
@@ -9,6 +10,7 @@ from core.judgment import JudgmentOutput, READER_TOOLS
 from core.perception import PerceptionReplaySummary
 from core.task_runtime import VALID_MODEL_TIERS
 from memory.task_store import Task
+from tools.registry import ToolResult
 
 # 上下文截断具名常量(语义记忆 & 日志截断阈值;调整后重启即生效,不影响已存数据)
 _LOG_RATIONALE_CHARS = 120
@@ -117,3 +119,45 @@ def _prefer_tier_for_task(pending_tier: str | None, task: Task | None) -> str | 
 def _perception_replay_fallback() -> PerceptionReplaySummary:
     """感知回放的兜底默认值，防止 build_perception_replay 异常导致 NameError。"""
     return PerceptionReplaySummary()
+
+_log = logging.getLogger("lingzhou.loop")
+
+
+def _tool_history_entry(action: JudgmentOutput, result: ToolResult) -> dict[str, Any]:
+    summary = str(result.summary or "")
+    error = str(result.error or "")
+    status = "ok" if not error and not result.skipped else ("skipped" if result.skipped else "error")
+    if error:
+        err_lower = error.lower()
+        error_category = (
+            "transient"
+            if any(marker in err_lower for marker in ("timeout", "connect", "reset", "unavailable", "rate", "429", "503"))
+            else "fatal"
+        )
+    else:
+        error_category = ""
+    return {
+        "tool": action.chosen_action_id or "",
+        "params": action.params or {},
+        "result": f"ERROR[{error_category}]: {summary}" if error else summary,
+        "summary": summary,
+        "error": error,
+        "error_category": error_category,
+        "skipped": bool(result.skipped),
+        "status": status,
+        "state_delta": dict(result.state_delta or {}) if isinstance(result.state_delta, dict) else {},
+    }
+
+
+async def _maybe_reconcile_bootstrap(loop: Any) -> None:
+    """如果 BOOTSTRAP.md 已被本 tick 删除，写入 setupCompletedAt 并切换到正常模式。"""
+    if loop._bootstrap_mode != "full":
+        return
+    bootstrap_path = loop._cfg.workspace_dir / "BOOTSTRAP.md"
+    if bootstrap_path.exists():
+        return
+    from core.workspace.state import reconcile_bootstrap_completion
+    reconcile_bootstrap_completion(loop._cfg.workspace_dir)
+    await loop._soul.refresh_identity(loop._judgment)
+    loop._bootstrap_mode = "none"
+    _log.info("[bootstrap] BOOTSTRAP.md 已删除，切换到正常运行模式")

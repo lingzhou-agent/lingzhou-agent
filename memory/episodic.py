@@ -81,6 +81,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS narrative_fts USING fts5(
     content,
     tokenize='unicode61'
 );
+-- 查询索引（幂等，DDL 统一管理）
+CREATE INDEX IF NOT EXISTS idx_narrative_task_id ON narrative(task_id);
+CREATE INDEX IF NOT EXISTS idx_narrative_ts ON narrative(ts);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 """
 
 
@@ -91,7 +95,6 @@ class EpisodicMemory:
         self._max_events = max_events
         self._db_path = memory_dir / "episodic.db"
         self._conn = self._open_db()
-        self._migrate_schema()       # 幂等索引补丁
         self._migrate_from_jsonl()  # 一次性历史数据导入
 
     @property
@@ -100,29 +103,6 @@ class EpisodicMemory:
         return self._max_events
 
     # ── DB 初始化 & 迁移 ─────────────────────────────────────────────────────
-
-    def _migrate_schema(self) -> None:
-        """幂等索引补全。
-
-        新增索引：
-          idx_narrative_task_id — load_for_context 按 task_id 过滤
-          idx_narrative_ts      — query_recent_narrative 时间窗查询
-          idx_events_ts         — 按时间范围查询事件
-        """
-        ddl_indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_narrative_task_id ON narrative(task_id)",
-            "CREATE INDEX IF NOT EXISTS idx_narrative_ts ON narrative(ts)",
-            "CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)",
-        ]
-        for ddl in ddl_indexes:
-            try:
-                self._conn.execute(ddl)
-            except Exception:
-                pass
-        try:
-            self._conn.commit()
-        except Exception:
-            pass
 
     def _open_db(self) -> sqlite3.Connection:
         """打开 DB；损坏时自动删除并重建（_migrate_from_jsonl 重新导入历史）。"""

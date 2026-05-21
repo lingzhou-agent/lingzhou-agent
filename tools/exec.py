@@ -344,8 +344,8 @@ _EXEC_MANIFEST = ToolManifest(
     description=(
         "启动 shell 命令。支持前台阻塞执行或后台运行。"
         "前台模式：等待命令完成，返回完整输出（受 timeout 限制）。"
-        "后台模式：立即返回 session_id，后续通过 process 工具管理。"
-        "支持 pty=true 运行需要 TTY 的程序。"
+        "后台模式：立即返回 process_id，后续通过 process.poll/log/write/kill 管理。"
+        "支持 pty=true 运行需要 TTY 的交互式程序（如 python -i、vim）。"
     ),
     params=[
         ToolParam("command", "string", "要执行的 shell 命令", required=True),
@@ -411,7 +411,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             if background:
                 info.watch_task = asyncio.create_task(_watch_pty_process(info))
                 payload = {
-                    "session_id": session_id,
+                    "process_id": session_id,
                     "pid": proc.pid,
                     "command": command[:200],
                     "timeout": timeout,
@@ -420,7 +420,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     "pty": True,
                 }
                 return ToolResult(
-                    summary=f"后台 PTY 进程已启动: session_id={session_id}, pid={proc.pid}",
+                    summary=f"后台 PTY 进程已启动: process_id={session_id}, pid={proc.pid}",
                     evidence=json.dumps(payload, ensure_ascii=False),
                     resource_key=session_id,
                     artifact_paths=[info.meta_path, info.log_path],
@@ -442,7 +442,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             if background:
                 info.watch_task = asyncio.create_task(_watch_pipe_process(info))
                 payload = {
-                    "session_id": session_id,
+                    "process_id": session_id,
                     "pid": proc.pid,
                     "command": command[:200],
                     "timeout": timeout,
@@ -451,7 +451,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     "pty": False,
                 }
                 return ToolResult(
-                    summary=f"后台进程已启动: session_id={session_id}, pid={proc.pid}",
+                    summary=f"后台进程已启动: process_id={session_id}, pid={proc.pid}",
                     evidence=json.dumps(payload, ensure_ascii=False),
                     resource_key=session_id,
                     artifact_paths=[info.meta_path, info.log_path],
@@ -468,7 +468,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 "workdir": workdir,
                 "timed_out": True,
                 "pty": use_pty,
-                "session_id": session_id,
+                "process_id": session_id,
             }
             return ToolResult(
                 summary=f"执行超时（{timeout}s）: {command[:100]}",
@@ -493,7 +493,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             "pty": use_pty,
         }, ensure_ascii=False)
         payload = json.loads(evidence)
-        payload.update({"session_id": session_id, "meta_path": info.meta_path, "log_path": info.log_path})
+        payload.update({"process_id": session_id, "meta_path": info.meta_path, "log_path": info.log_path})
         if info.return_code == 0:
             return ToolResult(
                 summary=f"执行成功:\n{truncated}",
@@ -525,7 +525,7 @@ async def exec_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             resource_key=session_id,
             artifact_paths=[info.meta_path, info.log_path] if info.meta_path or info.log_path else [],
             state_delta={"process": "failed_to_start"},
-            metadata={"session_id": session_id, "command": command[:200], "workdir": workdir},
+            metadata={"process_id": session_id, "command": command[:200], "workdir": workdir},
         )
 
 
@@ -666,14 +666,14 @@ _PROCESS_MANIFEST_LIST = ToolManifest(
 _PROCESS_MANIFEST_POLL = ToolManifest(
     name="process.poll",
     description="检查指定进程的状态。返回是否已完成、退出码、运行时间等。",
-    params=[ToolParam("session_id", "string", "exec 启动时返回的 session_id", required=True)],
+    params=[ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True)],
 )
 
 _PROCESS_MANIFEST_LOG = ToolManifest(
     name="process.log",
-    description="获取指定进程的标准输出。支持 offset/limit 分段读取。",
+    description="获取指定进程的标准输出。支持 offset/limit 分段读取（首次不传 offset 就是从头读）。",
     params=[
-        ToolParam("session_id", "string", "exec 启动时返回的 session_id", required=True),
+        ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True),
         ToolParam("offset", "number", "从第几个字符开始读，默认 0", required=False),
         ToolParam("limit", "number", "最多读多少字符，默认 2000", required=False),
     ],
@@ -683,7 +683,7 @@ _PROCESS_MANIFEST_WRITE = ToolManifest(
     name="process.write",
     description="向后台进程写入 stdin / PTY 输入。可选 eof=true 关闭输入。",
     params=[
-        ToolParam("session_id", "string", "exec 启动时返回的 session_id", required=True),
+        ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True),
         ToolParam("data", "string", "要写入的文本", required=False),
         ToolParam("eof", "boolean", "写入后是否关闭输入（默认 false）", required=False),
     ],
@@ -692,7 +692,7 @@ _PROCESS_MANIFEST_WRITE = ToolManifest(
 _PROCESS_MANIFEST_KILL = ToolManifest(
     name="process.kill",
     description="强制终止指定进程。",
-    params=[ToolParam("session_id", "string", "exec 启动时返回的 session_id", required=True)],
+    params=[ToolParam("process_id", "string", "exec 后台启动时返回的 process_id", required=True)],
 )
 
 
@@ -720,7 +720,7 @@ async def process_list(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(_PROCESS_MANIFEST_POLL)
 async def process_poll(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    session_id = params.get("session_id", "")
+    session_id = params.get("process_id") or params.get("session_id", "")
     info = _MANAGER.get(session_id)
     if not info:
         return ToolResult(summary=f"进程不存在: {session_id}", error="ProcessNotFound")
@@ -758,7 +758,7 @@ async def process_poll(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(_PROCESS_MANIFEST_LOG)
 async def process_log(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    session_id = params.get("session_id", "")
+    session_id = params.get("process_id") or params.get("session_id", "")
     info = _MANAGER.get(session_id)
     if not info:
         return ToolResult(summary=f"进程不存在: {session_id}", error="ProcessNotFound")
@@ -772,6 +772,11 @@ async def process_log(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             output = info.stdout
     else:
         output = info.stdout
+    if not output:
+        return ToolResult(
+            summary=f"进程 {session_id} 暂无输出（进程可能刚启动或尚未产生日志）",
+            metadata={"session_id": session_id, "total_output_chars": 0},
+        )
     if offset >= len(output):
         return ToolResult(summary=f"输出总长 {len(output)} 字符，offset={offset} 超出范围", skipped=True)
     chunk = output[offset:offset + limit]
@@ -797,7 +802,7 @@ async def process_log(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(_PROCESS_MANIFEST_WRITE)
 async def process_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    session_id = params.get("session_id", "")
+    session_id = params.get("process_id") or params.get("session_id", "")
     data = str(params.get("data") or "")
     eof = bool(params.get("eof", False))
     info = _MANAGER.get(session_id)
@@ -847,7 +852,7 @@ async def process_write(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
 @tool(_PROCESS_MANIFEST_KILL)
 async def process_kill(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
-    session_id = params.get("session_id", "")
+    session_id = params.get("process_id") or params.get("session_id", "")
     info = _MANAGER.get(session_id)
     if not info:
         return ToolResult(summary=f"进程不存在: {session_id}", error="ProcessNotFound")

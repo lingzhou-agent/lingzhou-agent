@@ -285,6 +285,20 @@ class MemoryConfig(BaseModel):
         default=0.3, ge=0.0, le=1.0,
         description="向量得分权重；(1-weight) 为 FTS5/关键词权重（仅 embedding_model 非 None 时生效）",
     )
+    local_embed_model: str | None = Field(
+        default=None,
+        description=(
+            "本地 SentenceTransformer 模型名（如 'BAAI/bge-m3'）；"
+            "设置后优先于 API embedding_model，需安装 sentence-transformers；None=不使用本地模型"
+        ),
+    )
+    local_embed_cache_dir: str | None = Field(
+        default=None,
+        description=(
+            "本地模型 HuggingFace 缓存目录（如 '/root/.cache/huggingface/hub'）；"
+            "None=使用系统默认 ~/.cache"
+        ),
+    )
     chat_crystallize_every: int = Field(
         default=20, ge=1,
         description="对话轮数结晶间隔：每 N 轮 reflection 蒸馏一次 event 节点写入语义记忆",
@@ -413,6 +427,15 @@ class ThresholdsConfig(BaseModel):
     wm_pri_history: float = Field(default=0.88, ge=0.0, le=1.0, description="近期对话历史的 WM 优先级")
     wm_pri_identity: float = Field(default=0.85, ge=0.0, le=1.0, description="身份/Soul 文件的 WM 优先级（bootstrap_identity 类型）")
     wm_pri_error: float = Field(default=0.30, ge=0.0, le=1.0, description="工具失败结果的 WM 优先级")
+    # 注意力层级（attention tiers）——从最紧急到最低——LLM 可通过配置文件调节
+    wm_pri_critical: float = Field(default=0.98, ge=0.0, le=1.0, description="强制中断 / 信念固化硬边界（plan 死锁、belief_stale 警告）的 WM 优先级")
+    wm_pri_user_msg: float = Field(default=0.95, ge=0.0, le=1.0, description="用户消息、任务结果、行为循环感知（loop）的 WM 优先级")
+    wm_pri_self_aware: float = Field(default=0.93, ge=0.0, le=1.0, description="行为探测感知（edit_caution、顺序窗口探测）的 WM 优先级")
+    wm_pri_insight: float = Field(default=0.88, ge=0.0, le=1.0, description="洞察合成（synthesis、reflection 碎片）的 WM 优先级")
+    wm_pri_task_state: float = Field(default=0.82, ge=0.0, le=1.0, description="任务状态变化（advance / rollback / hint）的 WM 优先级")
+    wm_pri_wait_aware: float = Field(default=0.80, ge=0.0, le=1.0, description="等待感知（wait_streak、计划对齐偏差）的 WM 优先级")
+    wm_pri_progress: float = Field(default=0.72, ge=0.0, le=1.0, description="运行进度结晶（progress_crystal）的 WM 优先级")
+    wm_pri_monitor: float = Field(default=0.58, ge=0.0, le=1.0, description="后台监控状态摘要（run_monitor）的 WM 优先级")
 
 
 class Config(BaseModel):
