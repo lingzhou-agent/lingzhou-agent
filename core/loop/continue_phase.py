@@ -71,7 +71,9 @@ async def _run_continue_phase(
             # task.plan 连续调用防死锁：连续 ≥2 次强制跳出 continue loop
             if tool_name == "task.plan":
                 _continue_plan_streak += 1
-                if _continue_plan_streak >= 2:
+                # 本 tick 内已出现过 task.plan（无论是否 skip）→ continue 阶段不再允许重复 plan
+                already_planned = any(item.get("tool") == "task.plan" for item in tool_history)
+                if already_planned or _continue_plan_streak >= 2:
                     _log.warning(
                         "[continue] task.plan 连续 %d 次，强制中断 continue 循环",
                         _continue_plan_streak,

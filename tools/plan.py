@@ -85,8 +85,8 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
     done = sum(1 for s in clean_plan if s["status"] == "completed")
     pending = sum(1 for s in clean_plan if s["status"] == "pending")
 
-    # 幂等检查：结构不变（步骤数 + 已完成数 + in_progress 步骤名相同）就拒绝，引导 LLM 直接执行
-    # 注：不用精确文本比较 —— LLM 会微变描述逃过精json匹配，结构匹配更鲁棒
+    # 幂等检查：已有 in_progress 步骤且新 plan 无进度提升 → 拒绝，引导 LLM 直接执行。
+    # 不比较步骤文本——LLM 会微变描述绕过精确匹配；只看进度是否推进即可。
     existing_plan = (task.extras or {}).get("plan") or []
     if existing_plan and isinstance(existing_plan, list):
         existing_done = sum(1 for s in existing_plan if isinstance(s, dict) and s.get("status") == "completed")
@@ -94,19 +94,14 @@ async def task_plan(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             (s.get("step", "") for s in existing_plan if isinstance(s, dict) and s.get("status") == "in_progress"),
             None,
         )
-        new_in_progress = next(
-            (s.get("step", "") for s in clean_plan if s.get("status") == "in_progress"),
-            None,
-        )
         if (
-            len(existing_plan) == len(clean_plan)
-            and existing_done == done
-            and existing_in_progress is not None
-            and existing_in_progress == new_in_progress
+            existing_in_progress is not None
+            and len(clean_plan) <= len(existing_plan)
+            and done <= existing_done
         ):
-            hint = f"，请直接执行：{existing_in_progress}" if existing_in_progress else "，请直接执行计划中的下一步骤"
+            hint = f"，请立即执行当前步骤：{existing_in_progress}" if existing_in_progress else "，请直接执行计划中的下一步骤"
             return ToolResult(
-                summary=f"计划结构未变（{len(clean_plan)} 步，{done} 步已完成）{hint}",
+                summary=f"计划已有进行中步骤，无需重新规划（{len(existing_plan)} 步，{existing_done}✅）{hint}",
                 error="PlanUnchanged",
                 skipped=True,
             )
