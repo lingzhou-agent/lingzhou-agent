@@ -107,6 +107,7 @@ def _resolve_multimodal_model_ref(
 @tool(ToolManifest(
     name="image.analyze",
     description="分析一张或多张图片，支持本地文件、远程 URL 或 data URL。",
+    capabilities=("multimodal",),
     params=[
         ToolParam("prompt", "string", "分析提示词；不传则使用默认描述请求", required=False),
         ToolParam("path", "string", "单张本地图片路径或远程图片 URL", required=False),

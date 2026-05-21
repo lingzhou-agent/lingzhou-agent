@@ -17,7 +17,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from core.worker import WorkerLayer
-from tools.registry import ToolResult, ToolContext, tool_has_capability
+from tools.registry import ToolResult, ToolContext, tool_has_capability, tool_name_has_capability
 
 _log = logging.getLogger("lingzhou.execution")
 
@@ -32,9 +32,6 @@ if TYPE_CHECKING:
 _DURABLE_FAILURE_TTL_SEC = 7200
 _DURABLE_FAILURE_THRESHOLD = 3
 _LOG_TEXT_CHARS = 240
-
-_EXEC_RUN_TOOLS = frozenset({"exec", "process.write", "process.poll", "process.log", "process.kill", "process.list"})
-_MULTIMODAL_RUN_TOOLS = frozenset({"image.analyze"})
 
 
 def _default_durable_failure_policy() -> dict[str, int]:
@@ -128,9 +125,9 @@ def _infer_run_profile(tool_name: str, params: dict[str, Any] | None = None) -> 
     if p.get("monitor_fact_key") or p.get("status_fact_key"):
         _log.debug("[run-profile] tool=%s classified as llm-worker via fact monitor", tool_name)
         return "llm", "llm-worker"
-    if tool_name in _EXEC_RUN_TOOLS:
+    if tool_name_has_capability(tool_name, "run_spawn"):
         return "exec", "exec-worker"
-    if tool_name in _MULTIMODAL_RUN_TOOLS:
+    if tool_name_has_capability(tool_name, "multimodal"):
         return "multimodal", "multimodal-worker"
     return "tool_chain", "tool-chain-worker"
 

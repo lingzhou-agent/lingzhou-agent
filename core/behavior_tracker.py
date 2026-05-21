@@ -15,6 +15,8 @@ import logging
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
+from tools.registry import tool_name_has_capability
+
 if TYPE_CHECKING:
     from core.judgment import JudgmentOutput
     from memory.working import WMItem
@@ -150,12 +152,12 @@ class BehaviorTracker:
 
         items: list[WMItem] = []
 
-        if tool_id in {"file.read", "file.list"}:
+        if tool_name_has_capability(tool_id, "result_streak_only"):
             return items  # file.read / file.list streak 由结果感知处理
 
         # 对编辑类工具，把内容指纹混入 key，避免同文件不同内容的连续误判为循环
         _effective_key = key_param
-        if tool_id in {"file.edit", "file.write"} and params:
+        if tool_name_has_capability(tool_id, "completion_mutation") and params:
             _p = params or {}
             _content_sig = str(_p.get("old_text") or _p.get("content") or "")[:80]
             if _content_sig:
@@ -191,7 +193,7 @@ class BehaviorTracker:
 
         未防止属于 file.read / file.list （它们由各自的 on_read / on_list 处理）。
         """
-        if tool_id in {"file.read", "file.list"}:
+        if tool_name_has_capability(tool_id, "result_streak_only"):
             return
         fp = hashlib.md5((result_summary or "").encode("utf-8", errors="replace")).hexdigest()[:12]
         if fp and fp != self._last_act_result_fp:
