@@ -101,6 +101,12 @@ def _fmt_task(task: "Task | None") -> str:
             )
             if in_progress_step:
                 lines.append(f"⚠️ 执行指令：步骤 [{in_progress_step}] 正在进行，你的下一个动作必须直接执行它，禁止调用 task.plan。")
+    # inbox_messages：由 task.steer 注入的转向指令，本轮必须优先处理
+    inbox: list = task.extras.get("inbox_messages") or [] if isinstance(task.extras, dict) else []
+    if isinstance(inbox, list) and inbox:
+        lines.append(f"⚠️ 转向指令（inbox {len(inbox)} 条，本轮必须优先处理）:")
+        for i, msg in enumerate(inbox[:5], 1):
+            lines.append(f"  [{i}] {str(msg)[:120]}")
     if last_run_status:
         lines.append(f"最近运行状态: {last_run_status}")
     return "\n".join(lines)
@@ -671,11 +677,19 @@ def _short_skill_desc(desc: str, limit: int = 90) -> str:
 def _fmt_skill_catalog(skills: "list[Skill]") -> str:
     if not skills:
         return "（暂无 skills）"
-    lines = ["你当前可用的 active skills 摘要如下；当当前命中的 skills 不够时，可以据此调整判断或调用 skill.search/skill.list："]
+    lines = [
+        "**SKILL RESOLVER** — 根据当前情境查表选技能；命中后优先遵守对应 primary_skill_section：",
+        "",
+        "| 技能 | 触发信号 | 何时使用 |",
+        "|------|---------|---------|",
+    ]
     for skill in skills:
-        origin = "builtin" if not getattr(skill, "source_path", "") else "workspace"
-        triggers = f" | triggers: {', '.join(skill.triggers[:4])}" if getattr(skill, "triggers", None) else ""
-        lines.append(f"- {skill.name} [{origin}] — {_short_skill_desc(skill.description)}{triggers}")
+        triggers_list = getattr(skill, "triggers", None) or []
+        trigger_str = "、".join(triggers_list[:3]) if triggers_list else "—"
+        desc = _short_skill_desc(skill.description)
+        lines.append(f"| `{skill.name}` | {trigger_str} | {desc} |")
+    lines.append("")
+    lines.append("未命中时按一般判断规则执行；可调用 skill.search/skill.list 查询更多技能。")
     return "\n".join(lines)
 
 

@@ -415,3 +415,34 @@ async def task_resume(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         state_delta={"task_status": status, "current_step": current_step if current_step is not None else task.current_step, "next_step": next_step if next_step is not None else task.next_step},
         metadata={"task_id": task.id, "chain_id": task.chain_id, "status": status},
     )
+
+
+@tool(ToolManifest(
+    name="task.steer",
+    description="向指定任务的 inbox 注入转向指令；下一个 tick 该任务执行时将优先处理 inbox 消息",
+    progress_category="mutation",
+    capabilities=("plan_bootstrap_exempt", "plan_alignment_exempt"),
+    params=[
+        ToolParam("task_id", "number", "目标任务 id；不传则使用当前 active task", required=False),
+        ToolParam("message", "string", "转向指令内容（清晰描述新方向或修正要求）", required=True),
+    ],
+))
+async def task_steer(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    task = await _resolve_task(params.get("task_id"), ctx)
+    if not task:
+        return ToolResult(summary="找不到目标任务", skipped=True)
+    message = (params.get("message") or "").strip()
+    if not message:
+        return ToolResult(summary="转向指令内容不能为空", skipped=True)
+    existing: list = task.extras.get("inbox_messages") or []
+    if not isinstance(existing, list):
+        existing = []
+    existing.append(message)
+    await ctx.task_store.update_task_data(task.id, {"inbox_messages": existing})
+    return ToolResult(
+        summary=f"已向任务 [{task.id}] 注入转向指令（inbox 共 {len(existing)} 条）",
+        evidence=f"task_id={task.id} inbox_count={len(existing)}",
+        resource_key=str(task.id),
+        state_delta={"inbox_messages": len(existing)},
+        metadata={"task_id": task.id, "inbox_count": len(existing)},
+    )

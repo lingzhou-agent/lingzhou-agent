@@ -22,6 +22,31 @@ from .progress import action_key_param
 
 _log = logging.getLogger("lingzhou.loop")
 
+_TOOL_HISTORY_COMPACT_THRESHOLD = 6  # 超过此条数时压缩早期条目
+_TOOL_HISTORY_KEEP_LAST = 3          # 保留最近 N 条完整内容
+
+
+def _compact_tool_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """当 tool_history 条目超过阈值时，将早期条目压缩为单条摘要，避免上下文爆炸。"""
+    if len(history) <= _TOOL_HISTORY_KEEP_LAST:
+        return history
+    older = history[:-_TOOL_HISTORY_KEEP_LAST]
+    recent = history[-_TOOL_HISTORY_KEEP_LAST:]
+    summary_lines = []
+    for entry in older:
+        tool = entry.get("tool", "?")
+        status = entry.get("status", "?")
+        result = str(entry.get("result", "")).strip()[:80]
+        summary_lines.append(f"{tool}[{status}]: {result}")
+    compact: dict[str, Any] = {
+        "tool": "[compacted]",
+        "params": {},
+        "result": f"（早期 {len(older)} 条工具调用已压缩）\n" + "\n".join(summary_lines),
+        "status": "compacted",
+        "error": "",
+    }
+    return [compact] + recent
+
 
 async def _run_continue_phase(
     *,
@@ -48,6 +73,10 @@ async def _run_continue_phase(
         if await loop._task_store.has_pending_chat_message():
             _log.debug("[continue] chat 消息到达，中断工具循环 inner=%d", inner)
             break
+
+        # 工具历史超长时压缩早期条目，避免上下文窗口爆炸
+        if len(tool_history) >= _TOOL_HISTORY_COMPACT_THRESHOLD:
+            tool_history = _compact_tool_history(tool_history)
 
         next_tier = _preferred_continue_tier(action, user_message=user_message) or ""
         continue_thinking = _resolve_thinking_override(
