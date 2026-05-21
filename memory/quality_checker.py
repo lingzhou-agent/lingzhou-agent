@@ -1,7 +1,7 @@
 """memory/quality_checker.py — 语义记忆检索质量评估。
 
 三个核心指标：
-1. 相关度：词缮 Jaccard 相似度（向量嵌入可用时可替换为 cosine 相似度）。
+1. 相关度：字符级 Jaccard 相似度，支持中文（向量嵌入可用时可替换为 cosine 相似度）。
 2. 时间衰减：基于 Ebbinghaus 遗忘曲线的时间衰减因子。
 3. 完整度：检索结果对查询关键词的覆盖率。
 """
@@ -14,16 +14,21 @@ from typing import Any
 
 
 def calculate_relevance(query: str, retrieved_text: str) -> float:
-    """计算相关度分（词缮 Jaccard）。
+    """计算相关度分（字符级 Jaccard 相似度，支持中文）。
 
-    当前为轻量级 token 交集值；向量嵌入可用时可替换为 cosine 相似度。
+    原 \w+ 正则无法分割中文导致相似度恒为 0，已改为字符级集合匹配。
     """
     if not query.strip() or not retrieved_text.strip():
         return 0.0
-    
-    q_tokens = set(re.findall(r"\w+", query.lower()))
-    r_tokens = set(re.findall(r"\w+", retrieved_text.lower()))
-    
+
+    # 使用字符级集合，有效支持中文文本匹配
+    q_tokens = set(query.lower())
+    r_tokens = set(retrieved_text.lower())
+
+    # 过滤空白字符
+    q_tokens.discard(' ')
+    r_tokens.discard(' ')
+
     if not q_tokens or not r_tokens:
         return 0.0
         
@@ -62,7 +67,7 @@ def check_completeness(query: str, retrieved_memories: list[dict[str, Any]]) -> 
         return {"coverage": 1.0, "missing_keywords": []}
 
     # 提取查询中的有效关键词（可按需添加停用词过滤）
-    query_keywords = set(re.findall(r"\w+", query.lower()))
+    query_keywords = set(re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]', query.lower()))
 
     if not query_keywords:
         return {"coverage": 1.0, "missing_keywords": []}
@@ -71,7 +76,7 @@ def check_completeness(query: str, retrieved_memories: list[dict[str, Any]]) -> 
     retrieved_tokens: set[str] = set()
     for mem in retrieved_memories:
         text = f"{mem.get('title', '')} {mem.get('body', '')}"
-        retrieved_tokens.update(re.findall(r"\w+", text.lower()))
+        retrieved_tokens.update(re.findall(r'[\u4e00-\u9fa5a-zA-Z0-9]', text.lower()))
 
     # 计算覆盖率
     covered_keywords = query_keywords & retrieved_tokens
