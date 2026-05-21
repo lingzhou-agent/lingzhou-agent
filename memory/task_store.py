@@ -189,6 +189,8 @@ class Task:
         rid, title, status, priority, created_at, data_raw = row
         try:
             data: dict[str, Any] = json.loads(data_raw or "{}")
+            if not isinstance(data, dict):
+                data = {}
         except Exception:
             data = {}
         goal = data.pop("goal", "")
@@ -264,6 +266,8 @@ class Failure:
         rid, kind, dismissed, created_at, data_raw = row
         try:
             data: dict[str, Any] = json.loads(data_raw or "{}")
+            if not isinstance(data, dict):
+                data = {}
         except Exception:
             data = {}
         summary = data.pop("summary", "")
@@ -306,6 +310,8 @@ class Run:
         rid, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data_raw = row
         try:
             data: dict[str, Any] = json.loads(data_raw or "{}")
+            if not isinstance(data, dict):
+                data = {}
         except Exception:
             data = {}
         input_json = data.pop("input_json", {}) or {}
@@ -372,6 +378,8 @@ class MetaReflection:
         rid, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data_raw = row
         try:
             data: dict[str, Any] = json.loads(data_raw or "{}")
+            if not isinstance(data, dict):
+                data = {}
         except Exception:
             data = {}
         task_id = int(data.pop("task_id", 0) or 0)

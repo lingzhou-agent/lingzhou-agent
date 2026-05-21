@@ -840,7 +840,7 @@ async def _post_tick_memory_impl(
         loop._wm.add(WMItem(
             kind="synthesis",
             content=f"[合成] {action.reflection.strip()}",
-            priority=cfg.thresholds.wm_pri_insight,
+            priority=loop._cfg.thresholds.wm_pri_insight,
         ))
 
     affect = {"valence": loop._emotion.valence, "arousal": loop._emotion.arousal}
