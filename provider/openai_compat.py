@@ -277,9 +277,6 @@ class _CopilotMode(_ModeAdapter):
             payload.update(extra_body)
         return payload
 
-    def embedding_url(self) -> str:
-        return "/embeddings"
-
     # ── Copilot 内部方法 ─────────────────────────────────────────────────
 
     def _copilot_url(self, path: str) -> str:

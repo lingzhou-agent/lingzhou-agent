@@ -108,6 +108,13 @@ def _rewrite_complex_act_to_task_plan(
     next_step = (action.next_step or "").strip()
     if not next_step:
         return action
+    # 豁免：任务已有 plan 且存在 in_progress 步骤 → LLM 正在执行计划中的步骤，无需再次 plan
+    existing_plan = (getattr(active_task, "extras", None) or {}).get("plan") or []
+    if isinstance(existing_plan, list) and any(
+        isinstance(s, dict) and s.get("status") == "in_progress"
+        for s in existing_plan
+    ):
+        return action
     step1_desc = f"执行 {tool_id}"
     params = action.params or {}
     for key in ("command", "path", "title", "query"):
