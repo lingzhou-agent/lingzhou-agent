@@ -68,10 +68,10 @@ async def _run_continue_phase(
         if cont.decision == "act":
             tool_name = cont.chosen_action_id or ""
             key_param = action_key_param(cont.params)
-            # task.plan 连续调用防死锁：连续 ≥3 次强制跳出 continue loop
+            # task.plan 连续调用防死锁：连续 ≥2 次强制跳出 continue loop
             if tool_name == "task.plan":
                 _continue_plan_streak += 1
-                if _continue_plan_streak >= 3:
+                if _continue_plan_streak >= 2:
                     _log.warning(
                         "[continue] task.plan 连续 %d 次，强制中断 continue 循环",
                         _continue_plan_streak,
@@ -137,6 +137,11 @@ async def _run_continue_phase(
         action = cont
         result = cont_result
         if action.reply_to_user or not _should_continue_within_tick(action):
+            break
+        # PlanUnchanged：计划结构没变，继续循环只会死锁；WM 中已有"请直接执行"提示，
+        # 直接跳出 continue 阶段，让下一 tick 感知 WM 后执行具体工具。
+        if cont_result.error == "PlanUnchanged":
+            _log.debug("[continue] PlanUnchanged — 跳出 continue 循环，下一 tick 直接执行")
             break
 
     # ② continue 循环结束后同步检测（兜底 inner 轮删除 BOOTSTRAP.md 的场景）
