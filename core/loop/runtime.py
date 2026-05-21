@@ -490,6 +490,17 @@ class CognitionLoop:
             "[curiosity] idle=%d curiosity=%.2f pending_tasks=%d",
             self._idle_cycles, curiosity, len(pending_curiosity),
         )
+        # 无待处理的好奇心任务时，向 WM 注入信号，让 LLM 感知到好奇心触发并决定是否创建任务
+        if not pending_curiosity:
+            self._wm.add(WMItem(
+                kind="curiosity",
+                content=(
+                    f"[好奇心] 已空闲 {self._idle_cycles} 轮，好奇心 {curiosity:.2f} "
+                    f"> 阈值 {cfg.thresholds.curiosity_idle_task}。"
+                    "建议发起自主探索任务（task.add source=curiosity）或深化当前认知。"
+                ),
+                priority=0.7,
+            ))
 
     async def _consolidate(self, active_task: Task | None) -> None:
         """将 WM 高优先级条目写入情节记忆,然后清空 WM,保留身份锚点。"""

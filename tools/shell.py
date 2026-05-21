@@ -104,12 +104,19 @@ async def shell_run(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     workdir = _resolve_workdir(params.get("workdir"), ctx)
 
+    # 最小化 env：过滤含 API_KEY / TOKEN / SECRET / PASSWORD / CREDENTIAL / AUTH 的变量
+    # 防止提示注入攻击通过 printenv / curl 等命令外泄 API 密钥
+    _SECRET_KWORDS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
+    safe_env = {
+        k: v for k, v in os.environ.items()
+        if not any(kw in k.upper() for kw in _SECRET_KWORDS)
+    }
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(workdir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=os.environ.copy(),
+        env=safe_env,
         start_new_session=True,  # 新建进程组，超时时可整组终止
     )
 

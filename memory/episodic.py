@@ -467,7 +467,7 @@ class EpisodicMemory:
             try:
                 rows = self._conn.execute(
                     "SELECT task_id, role, content FROM narrative_fts"
-                    " WHERE narrative_fts MATCH ? LIMIT 20",
+                    " WHERE narrative_fts MATCH ? LIMIT 50",  # 扩大候选集，补偿 Python 层 exclude_task_id 过滤导致的有效命中减少
                     (fts_query,),
                 ).fetchall()
                 for row in rows:

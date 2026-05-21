@@ -46,7 +46,7 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
 async def _wait_for_event_impl(loop: Any, max_wait: float, before_task: Any) -> None:
     """事件驱动等待: chat 消息、task 状态变化、超时任一发生即唤醒。"""
     cfg = loop._cfg
-    poll = cfg.loop.wake_poll_interval / 1000.0
+    poll = max(cfg.loop.wake_poll_interval / 1000.0, 0.05)  # 最小 50ms，防止 wake_poll_interval=0 导致紧密轮询
     before_sig = (
         before_task.id if before_task else None,
         before_task.status if before_task else None,

@@ -7,13 +7,23 @@ import uuid
 from typing import Any
 
 
-def _resolve_task(task_id: Any, ctx: ToolContext):
+import logging as _logging
+_log_task_ops = _logging.getLogger("lingzhou.task_ops")
+
+async def _resolve_task(task_id: Any, ctx: ToolContext):
+    """解析 task_id -> Task。None 时返回活跃任务；格式/查找错误时记录 warning 并回退。"""
     if task_id is None:
-        return ctx.task_store.get_active()
+        return await ctx.task_store.get_active()
     try:
-        return ctx.task_store.get_task_by_id(int(task_id))
+        tid = int(task_id)
+    except (ValueError, TypeError):
+        _log_task_ops.warning("[task_ops] task_id=%r 格式无效（期望整数），回退到活跃任务", task_id)
+        return await ctx.task_store.get_active()
+    try:
+        return await ctx.task_store.get_task_by_id(tid)
     except Exception:
-        return ctx.task_store.get_active()
+        _log_task_ops.warning("[task_ops] task_id=%d 不存在，回退到活跃任务", tid)
+        return await ctx.task_store.get_active()
 
 from tools.registry import (
     ToolManifest,

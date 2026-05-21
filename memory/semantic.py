@@ -260,11 +260,20 @@ class SemanticMemory:
 
     def _db_upsert(self, node: MemoryNode) -> None:
         tags_json = json.dumps(node.tags, ensure_ascii=False)
-        # 取已有 embedding（若 embed_fn 可用则在 upsert() 上层写入）
+        # INSERT ... ON CONFLICT DO UPDATE：只更新业务字段，不覆盖 embedding 和 created_at
+        # （INSERT OR REPLACE 会先 DELETE 旧行再 INSERT，导致 embedding 列丢失）
         self._conn.execute(
-            """INSERT OR REPLACE INTO nodes
+            """INSERT INTO nodes
                (id, kind, title, body, activation, valence, tags, source, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 kind=excluded.kind,
+                 title=excluded.title,
+                 body=excluded.body,
+                 activation=excluded.activation,
+                 valence=excluded.valence,
+                 tags=excluded.tags,
+                 source=excluded.source""",
             (
                 node.id, node.kind, node.title, node.body,
                 node.activation, node.valence,
@@ -481,7 +490,7 @@ class SemanticMemory:
                     all_ids.append(nid)
         nodes = self._load_by_ids(all_ids) if all_ids else self._load_all()
         if source:
-            nodes = [n for n in nodes if n.get("source") == source]
+            nodes = [n for n in nodes if getattr(n, 'source', '') == source]
         if not nodes:
             return []
 

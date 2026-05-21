@@ -99,10 +99,11 @@ class PerceptionLayer:
     def _workspace_fingerprint(self) -> str:
         """对工作目录浅层文件做轻量哈希，检测是否有变更。"""
         try:
-            cwd = Path.cwd()
+            # 使用 cfg.workspace_dir（配置明确的工作目录），而非进程 cwd（两者可能不同）
+            watch_dir = self._cfg.workspace_dir if self._cfg.workspace_dir.exists() else Path.cwd()
             entries = sorted(
                 (p.name, p.stat().st_mtime)
-                for p in cwd.iterdir()
+                for p in watch_dir.iterdir()
                 if not p.name.startswith(".")
             )
             raw = str(entries).encode()
