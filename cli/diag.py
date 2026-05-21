@@ -216,7 +216,122 @@ def doctor(
         console.print(f"  {fail_mark} ThresholdsConfig schema 检查失败: {e}")
         issues.append(f"ThresholdsConfig 无法导入: {e}")
 
-    # ── 7. 工具注册 ────────────────────────────────────────────────────
+    # ── 7. MemoryConfig schema 兼容性（类比 ThresholdsConfig patch）──────
+    _MEMORY_FIELD_PATCHES: dict[str, str] = {
+        "wm_item_max_tokens": (
+            "    wm_item_max_tokens: int = Field(\n"
+            "        default=300, ge=0,\n"
+            "        description=(\n"
+            "            \"工作记忆单条 content token 上限（估算）；超出时自动截断并追加省略提示。\"\n"
+            "            \"0 = 不限制。调优请在 lingzhou.json 的 memory 区块覆盖，不要修改此处 default 值。\"\n"
+            "        ),\n"
+            "    )\n"
+        ),
+    }
+    try:
+        from core.config import MemoryConfig as _MemoryConfig
+        _m_instance = _MemoryConfig()
+        _missing_mem = [f for f in _MEMORY_FIELD_PATCHES if not hasattr(_m_instance, f)]
+        if _missing_mem:
+            _config_py = PROJECT_ROOT / "core" / "config.py"
+            _patched_mem: list[str] = []
+            if _config_py.exists():
+                _lines = _config_py.read_text(encoding="utf-8").splitlines(keepends=True)
+                _in_mem = False
+                _insert_at = len(_lines)
+                for _i, _line in enumerate(_lines):
+                    if _line.startswith("class MemoryConfig"):
+                        _in_mem = True
+                    elif _in_mem and _line.startswith("class "):
+                        _insert_at = _i
+                        break
+                if _in_mem:
+                    while _insert_at > 0 and not _lines[_insert_at - 1].strip():
+                        _insert_at -= 1
+                    _inject = ["\n"]
+                    for _f in _missing_mem:
+                        _inject.append(_MEMORY_FIELD_PATCHES[_f])
+                        _patched_mem.append(_f)
+                    if _patched_mem:
+                        _lines[_insert_at:_insert_at] = _inject
+                        _config_py.write_text("".join(_lines), encoding="utf-8")
+            if _patched_mem:
+                console.print(f"  {warn_mark} MemoryConfig 缺少字段，已自动注入: {_patched_mem}")
+            else:
+                console.print(f"  {fail_mark} MemoryConfig 缺少字段: {_missing_mem}  [dim](自动注入失败，请手动 git pull)[/dim]")
+                issues.append(f"core/config.py 版本过旧，MemoryConfig 缺少: {_missing_mem}")
+        else:
+            console.print(f"  {ok_mark} MemoryConfig schema 兼容  [dim]({len(_MEMORY_FIELD_PATCHES)} 个关键字段均存在)[/dim]")
+    except Exception as e:
+        console.print(f"  {fail_mark} MemoryConfig schema 检查失败: {e}")
+        issues.append(f"MemoryConfig 无法导入: {e}")
+
+    # ── 8. 目录读写权限 ────────────────────────────────────────────────
+    if cfg is not None:
+        _dirs_to_check = [
+            ("memory_dir", cfg.memory_dir),
+            ("workspace_dir", cfg.workspace_dir),
+            ("db_parent", Path(cfg.db_path).parent),
+        ]
+        for _label, _dpath in _dirs_to_check:
+            _dpath = Path(_dpath).expanduser()
+            if not _dpath.exists():
+                try:
+                    _dpath.mkdir(parents=True, exist_ok=True)
+                    console.print(f"  {warn_mark} {_label}: {_dpath}  [dim]不存在，已创建[/dim]")
+                except Exception as _e:
+                    console.print(f"  {fail_mark} {_label}: {_dpath}  无法创建: {_e}")
+                    issues.append(f"{_label} 无法创建: {_e}")
+            else:
+                import tempfile
+                try:
+                    with tempfile.NamedTemporaryFile(dir=_dpath, delete=True):
+                        pass
+                    console.print(f"  {ok_mark} {_label}: {_dpath}  [dim]可写[/dim]")
+                except Exception:
+                    console.print(f"  {fail_mark} {_label}: {_dpath}  [dim]无写权限[/dim]")
+                    issues.append(f"{_label} 目录无写权限: {_dpath}")
+    else:
+        console.print(f"  {warn_mark} 目录权限: 跳过（配置文件不可用）")
+
+    # ── 9. DB schema 完整性 ────────────────────────────────────────────
+    _REQUIRED_TABLES = {"tasks", "facts", "failures", "task_events", "runs"}
+    if cfg is not None and Path(cfg.db_path).exists():
+        try:
+            import sqlite3 as _sqlite3
+            _conn = _sqlite3.connect(str(cfg.db_path))
+            try:
+                _tables = {r[0] for r in _conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()}
+            finally:
+                _conn.close()
+            _missing_tables = _REQUIRED_TABLES - _tables
+            if _missing_tables:
+                console.print(f"  {warn_mark} DB schema: 缺少表 {sorted(_missing_tables)}  [dim]lingzhou run 首次启动时会自动建表[/dim]")
+            else:
+                console.print(f"  {ok_mark} DB schema: 关键表均存在  [dim]{sorted(_REQUIRED_TABLES)}[/dim]")
+        except Exception as _e:
+            console.print(f"  {fail_mark} DB schema 检查失败: {_e}")
+            issues.append(f"DB schema 异常: {_e}")
+    else:
+        console.print(f"  {warn_mark} DB schema: 跳过（数据库未初始化）")
+
+    # ── 10. 插件状态 ───────────────────────────────────────────────────
+    try:
+        from core.plugin import PluginManager
+        _plugins_dir = PROJECT_ROOT / "plugins"
+        _pm = PluginManager(Path(_plugins_dir).expanduser())
+        _pm.discover()
+        _loaded = _pm.list_plugins()
+        if _loaded:
+            console.print(f"  {ok_mark} 插件: {len(_loaded)} 个已发现  [dim]{', '.join(p['name'] for p in _loaded[:4])}{'...' if len(_loaded) > 4 else ''}[/dim]")
+        else:
+            console.print(f"  {ok_mark} 插件: 无已安装插件  [dim](plugins/ 目录为空)[/dim]")
+    except Exception as _e:
+        console.print(f"  {warn_mark} 插件检查失败: {_e}")
+
+    # ── 11. 工具注册 ───────────────────────────────────────────────────
     try:
         from tools.registry import ToolRegistry
         reg = ToolRegistry()

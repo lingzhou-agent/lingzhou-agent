@@ -619,8 +619,16 @@ async def file_edit(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
                     else:
                         # 完全没找到，返回完整文件内容，让 LLM 自己定位并重建 oldText
                         context = f"\n完整文件内容:\n{original}"
+                    # 模板文件警告：prompts/ 下的文件是 Jinja2 渲染模板，不应以渲染结果作 oldText
+                    template_warning = ""
+                    if "prompts/" in str(path) or (str(path).endswith(".md") and "{" in original):
+                        template_warning = (
+                            "\n⚠️ 模板文件警告：prompts/ 下的文件是 Jinja2 渲染模板，"
+                            "文件实际内容含有 {variable_name} 占位符，与 LLM 每轮看到的已渲染内容完全不同。"
+                            "请用 file.read 读取模板原文后再重试，不要用已渲染数据内容作 oldText。"
+                        )
                     return ToolResult(
-                        summary=f"edits[{i}]: oldText 在文件中未找到。{context}\n请用 file.read 确认完整的当前内容后重试。",
+                        summary=f"edits[{i}]: oldText 在文件中未找到。{template_warning}{context}\n请用 file.read 确认完整的当前内容后重试。",
                         error="OldTextNotFound",
                         skipped=True,
                         metadata={"old_preview": old_text[:80], "partial_match": partial_idx != -1},

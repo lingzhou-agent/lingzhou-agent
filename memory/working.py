@@ -21,6 +21,20 @@ def _estimate_tokens(text: str) -> int:
     return cjk + max(1, ascii_chars // 4) + max(1, other // 2)
 
 
+def _truncate_content(content: str, max_tokens: int) -> str:
+    """按 token 估算截断 content，保持在 max_tokens 以内（二分搜索截断点）。"""
+    if _estimate_tokens(content) <= max_tokens:
+        return content
+    lo, hi = 0, len(content)
+    while lo < hi - 1:
+        mid = (lo + hi) // 2
+        if _estimate_tokens(content[:mid]) <= max_tokens:
+            lo = mid
+        else:
+            hi = mid
+    return content[:lo] + "…（已截断）"
+
+
 @dataclass(order=True)
 class WMItem:
     # heapq 是最小堆；_sort_key 存正优先级，heappop 弹出最小值 = 最低优先级 = 正确驱逐方向
@@ -56,10 +70,12 @@ class WorkingMemory:
     pressure 属性基于 token 估算，比条目数更准确反映对 LLM 上下文的实际占用。
     """
 
-    def __init__(self, capacity: int = 20, token_budget: int = 0) -> None:
+    def __init__(self, capacity: int = 20, token_budget: int = 0, item_max_tokens: int = 0) -> None:
         self._capacity = capacity
         # token_budget=0 表示禁用 token 压力（回退到条目数压力）
         self._token_budget = token_budget
+        # item_max_tokens=0 表示不限制单条 content 大小
+        self._item_max_tokens = item_max_tokens
         self._items: list[WMItem] = []
         self._multi_item_kinds = {"meta_reflection"}
 
@@ -79,6 +95,14 @@ class WorkingMemory:
         """添加条目，若超条目上限或超 token 预算则驱逐优先级最低的。
         若 item.kind 非空，先移除同 kind 旧条目（防御性去重，避免同 kind 条目累积）。
         """
+        # 入队前截断过大条目，防止单条垄断 token 预算
+        if self._item_max_tokens > 0 and item.estimated_tokens > self._item_max_tokens:
+            item = WMItem(
+                kind=item.kind,
+                content=_truncate_content(item.content, self._item_max_tokens),
+                priority=item.priority,
+                created_at=item.created_at,
+            )
         if item.kind and item.kind not in self._multi_item_kinds:
             self._items = [i for i in self._items if i.kind != item.kind]
             heapq.heapify(self._items)  # 修复堆损坏：过滤后重建堆，再 push

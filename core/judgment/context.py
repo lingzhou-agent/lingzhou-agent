@@ -286,6 +286,15 @@ def _fmt_wm(
     rest = [item for item in items if item.get("kind") != "self_awareness"]
     ordered = anti_loop + rest
     lines = [header] + [f"- [{item['kind']}|p={item.get('priority', 0):.2f}] {item['content']}" for item in ordered]
+    # 大条目警告：top-3 超过 100 tokens 的条目，提醒可能坠占预算
+    large_items = sorted(ordered, key=lambda x: _estimate_tokens(x.get("content", "")), reverse=True)[:3]
+    large_items = [x for x in large_items if _estimate_tokens(x.get("content", "")) > 100]
+    if large_items:
+        warnings_str = ", ".join(
+            f"[{x.get('kind')}] ~{_estimate_tokens(x.get('content', ''))} tokens"
+            for x in large_items
+        )
+        lines.append(f"⚠ 大条目（可能坠占预算）: {warnings_str}")
     return "\n".join(lines)
 
 
@@ -505,12 +514,12 @@ def apply_context_budget(
 
     budgeted = dict(ctx)
     priority = [
-        "skills_section",
-        "skills_catalog_section",
+        "skills_catalog_section",  # 工具目录（字典性信息）最先耸
         "memories_section",
         "episodic_section",
-        "wm_section",
-        "tools_section",
+        "skills_section",          # 技能正文次优先
+        "wm_section",              # 实时感知保留到倒数第二
+        "tools_section",           # 工具定义最后耸（agent 必须知道能用什么）
     ]
     minimum_keep = {
         "skills_section": skill_min_tokens,

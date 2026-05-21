@@ -78,7 +78,7 @@ class CognitionLoop:
         _log.info("[plugin] 已加载 %d 个插件", len(self._plugin_manager.list_plugins()))
 
         # 记忆层
-        self._wm = WorkingMemory(capacity=cfg.memory.working_capacity, token_budget=cfg.effective_wm_token_budget())
+        self._wm = WorkingMemory(capacity=cfg.memory.working_capacity, token_budget=cfg.effective_wm_token_budget(), item_max_tokens=cfg.memory.wm_item_max_tokens)
         self._episodic = EpisodicMemory(cfg.memory_dir, max_events=cfg.memory.max_events)
         self._task_store = TaskStore(Path(cfg.db_path))
 

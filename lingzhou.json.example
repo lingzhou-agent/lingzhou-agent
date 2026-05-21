@@ -147,6 +147,7 @@
   "memory": {
     "working_capacity": 20,
     "wm_token_budget_ratio": 0.08,
+    "wm_item_max_tokens": 300,
     "episodic_max_chars": 4000,
     "semantic_top_k": 5,
     "failure_limit": 10,

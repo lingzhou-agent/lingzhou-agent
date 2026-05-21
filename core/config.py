@@ -261,6 +261,11 @@ class PromptsConfig(BaseModel):
 
 
 class MemoryConfig(BaseModel):
+    """记忆层配置。
+
+    运行时调优请在 lingzhou.json 的 memory 区块覆盖，不要直接修改此处的 default 值。
+    自进化机制可以修改 lingzhou.json 配置，但禁止将 Field default 写入源码。
+    """
     working_capacity: int = Field(default=40, ge=1, description="工作记忆最大条目数（条目数上限兑底）")
     wm_token_budget_ratio: float = Field(
         default=0.15, ge=0.001, le=0.5,
@@ -268,6 +273,13 @@ class MemoryConfig(BaseModel):
             "工作记忆 token 预算占 judgment 输入预算的比例（自动随模型 context window 伸缩）。"
             "默认 0.15（15%）：GPT-5.4 400K → ~45K；Qwen3.6-plus 1M → ~112K。"
             "pressure = total_wm_tokens / effective_wm_token_budget()。"
+        ),
+    )
+    wm_item_max_tokens: int = Field(
+        default=300, ge=0,
+        description=(
+            "工作记忆单条 content token 上限（粗估）；超出时自动截断并追加省略提示。"
+            "0 = 不限制。调优请在 lingzhou.json 的 memory 区块覆盖，不要修改此处 default 值。"
         ),
     )
     episodic_max_chars: int = Field(default=80000, ge=100, description="注入 context 的情节记忆字符上限；资源充裕模型可适当增大以保留更多任务历史证据")
