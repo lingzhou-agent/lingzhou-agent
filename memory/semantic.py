@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import logging as _log_sem
-from .quality_checker import evaluate_retrieval_quality
+from .quality_checker import evaluate_retrieval_quality, calculate_recency_decay
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
 
@@ -83,6 +83,7 @@ class MemoryNode:
     body: str
     activation: float = 0.5
     valence: float = 0.5
+    importance: float = 0.5
     tags: list[str] = field(default_factory=list[str])
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -95,7 +96,13 @@ class MemoryNode:
 
 
 def effective_activation(node: "MemoryNode", decay_lambda: float) -> float:
-    """Ebbinghaus forgetting curve: activation x exp(-lambda x days_since_created)."""
+    """分级衰减：高重要性节点衰减更慢，并享有激活度保护下限。
+    
+    衰减公式: activation × exp(-effective_lambda × days)
+    effective_lambda = decay_lambda × (1 - importance)  — 重要性越高，衰减越慢
+    保护机制: imp≥0.9 → 不低于 0.5; imp≥0.7 → 不低于 0.3
+    """
+    importance = getattr(node, 'importance', 0.5)
     if decay_lambda <= 0:
         return node.activation
     try:
@@ -103,7 +110,15 @@ def effective_activation(node: "MemoryNode", decay_lambda: float) -> float:
         if created.tzinfo is None:
             created = created.replace(tzinfo=UTC)
         days = max(0.0, (datetime.now(UTC) - created).total_seconds() / 86400)
-        return node.activation * math.exp(-decay_lambda * days)
+        # 分级衰减: 重要性越高，有效衰减率越低
+        effective_lambda = decay_lambda * (1.0 - importance)
+        raw = node.activation * math.exp(-effective_lambda * days)
+        # 重要性保护下限
+        if importance >= 0.9:
+            raw = max(raw, 0.5)
+        elif importance >= 0.7:
+            raw = max(raw, 0.3)
+        return min(raw, node.activation)  # 不超初始值
     except Exception:
         return node.activation
 
@@ -150,6 +165,8 @@ class SemanticMemory:
         self._migrate()             # 迁移机制：幂等 ALTER TABLE，补齐新列
         # On startup: sync any json nodes missing from DB (idempotent)
         self._sync_from_files()
+        # P1-C: 启动时校验索引健康度，不一致则自动重建，保障连续性
+        self._validate_and_repair_index()
 
     # --- DB init & recovery ---------------------------------------------------
 
@@ -232,6 +249,17 @@ class SemanticMemory:
             self._conn.commit()
         except Exception as exc:
             _log.warning("[semantic] _sync_from_files 失败，回退到文件扫描: %s", exc)
+
+    def _validate_and_repair_index(self) -> None:
+        """校验 DB 节点数与 JSON 源文件数，若差异过大或 FTS5 异常则自动重建。"""
+        try:
+            json_count = sum(1 for _ in self._dir.glob("*.json"))
+            db_count = self._conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+            if json_count > 0 and (db_count == 0 or abs(db_count - json_count) > json_count * 0.2 or not self._fts5_ok):
+                _log.warning("[semantic] 索引不一致或 FTS5 异常 (json=%d, db=%d, fts5=%s)，触发自动重建", json_count, db_count, self._fts5_ok)
+                self.rebuild_index()
+        except Exception as exc:
+            _log.warning("[semantic] 索引校验失败，跳过自动重建: %s", exc)
 
     def rebuild_index(self) -> None:
         """从 nodes/*.json 全量重建数据库索引（手动恢复；也可直接删除 semantic.db 触发自动重建）。"""
@@ -652,7 +680,7 @@ class SemanticMemory:
         如果 query_vec 可用且节点有 embedding，
         使用 cosine similarity 混合评分（embedding_weight 加权）。
         """
-        eff_act = _effective_activation(node, self._decay_lambda)
+        eff_act = calculate_recency_decay(node.created_at, self._decay_lambda, node.activation)
         q_tokens = set(re.findall(r"\w+", query.lower()))
         n_tokens = set(re.findall(r"\w+", (node.title + " " + node.body).lower()))
         if not q_tokens or not n_tokens:

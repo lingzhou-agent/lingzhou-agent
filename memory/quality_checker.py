@@ -38,11 +38,12 @@ def calculate_relevance(query: str, retrieved_text: str) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def calculate_recency_decay(created_at_iso: str, decay_lambda: float = 0.1) -> float:
-    """基于 Ebbinghaus 遗忘曲线计算时间衰减因子。
+def calculate_recency_decay(created_at_iso: str, decay_lambda: float = 0.1, activation: float = 1.0) -> float:
+    """基于改进型双曲线衰减计算时间衰减因子。
 
-    返回 0−1 之间的浮点数，1 = 刚建立，随时间趋近 0。
-    decay_lambda 控制衰减速率（默认 0.1，即约 10 天衰减到 37%）。
+    相比指数衰减，双曲线衰减对长期记忆更友好，保留更多历史重要节点。
+    引入 activation 补偿：高激活/高频访问节点衰减更慢。
+    公式：activation / (1 + decay_lambda * days_since)
     """
     try:
         created = datetime.fromisoformat(created_at_iso)
@@ -52,8 +53,8 @@ def calculate_recency_decay(created_at_iso: str, decay_lambda: float = 0.1) -> f
         now = datetime.now(UTC)
         days_since = max(0.0, (now - created).total_seconds() / 86400)
         
-        # 指数衰减：e^(-lambda * t)
-        return math.exp(-decay_lambda * days_since)
+        # 双曲线衰减 + 激活补偿
+        return activation / (1.0 + decay_lambda * days_since)
     except Exception:
         return 0.5  # 时间格式解析失败时返回中性默认值
 
@@ -97,14 +98,14 @@ def evaluate_retrieval_quality(
     retrieved_memories: list[dict[str, Any]],
     decay_lambda: float = 0.1,
     *,
-    w_rel: float = 0.5,
-    w_comp: float = 0.3,
-    w_rec: float = 0.2,
+    w_rel: float = 0.45,
+    w_comp: float = 0.35,
+    w_rec: float = 0.20,
 ) -> dict[str, Any]:
-    """综合评估检索质量：相关度 + 时间新近度 + 完整度加权合成。
+    """综合评估检索质量：相关度 + 完整度 + 时间新近度加权合成。
 
-    权重默认值：相关度（w_rel=0.5）> 完整度（w_comp=0.3）> 时间新近度（w_rec=0.2）。
-    三个权重之和应为 1.0；调用方可按需传入自定义权重。
+    优化权重：降低纯时间衰减的绝对主导，提升完整度权重以保留上下文。
+    默认：w_rel=0.45, w_comp=0.35, w_rec=0.20。支持动态传入。
     """
     if not retrieved_memories:
         return {
@@ -123,12 +124,13 @@ def evaluate_retrieval_quality(
         relevances.append(rel)
     avg_relevance = sum(relevances) / len(relevances) if relevances else 0.0
 
-    # 2. 时间新近度（衰减因子平均）
+    # 2. 时间新近度（衰减因子平均，引入激活值补偿）
     recencies: list[float] = []
     for mem in retrieved_memories:
         created_at = str(mem.get("created_at", ""))
         if created_at:
-            recencies.append(calculate_recency_decay(created_at, decay_lambda))
+            activation = float(mem.get("activation", 1.0))
+            recencies.append(calculate_recency_decay(created_at, decay_lambda, activation))
     avg_recency = sum(recencies) / len(recencies) if recencies else 0.0
 
     # 3. 完整度

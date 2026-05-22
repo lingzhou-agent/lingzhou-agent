@@ -144,11 +144,13 @@ class EmotionState:
         self.dominant  = feelings[0].name if feelings else ""
 
         # ── 调节策略（Gross 1998）────────────────────────────────────────────
-        if self.arousal > 0.75 or self.valence < 0.30:
-            reason = "高唤醒或低效价" if self.arousal > 0.75 else "持续低效价"
+        if self.arousal > 0.75 or self.valence < 0.30 or (replay_trend == "worsening" and self.valence < 0.45):
+            reason = "高唤醒/低效价或趋势恶化" if self.arousal > 0.75 or self.valence < 0.30 else "趋势恶化预警"
             self.regulation = Regulation("down-regulate", reason)
-        elif recovering and self.valence < 0.55:
-            self.regulation = Regulation("up-regulate", "感知趋势改善中，保持恢复势头")
+        elif (replay_trend == "recovering" and self.valence < 0.55) or (recovering and self.valence < 0.60):
+            self.regulation = Regulation("up-regulate", "趋势改善，保持恢复势头")
+        elif high_error_streak >= 2:
+            self.regulation = Regulation("down-regulate", "连续高预测误差，需切换策略")
         else:
             self.regulation = Regulation("maintain", "")
 
