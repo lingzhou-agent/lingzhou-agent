@@ -536,17 +536,29 @@ class Config(BaseModel):
     _base_dir: Path = Path(".")
 
     @classmethod
-    def load(cls, path: str | Path = "lingzhou.json") -> "Config":
+    def load(cls, path: str | Path = "lingzhou.json", fallback: bool = True) -> "Config":
         path = Path(path).expanduser().resolve()
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        # 去除辅助文档字段
-        data.pop("_doc", None)
-        if isinstance(data.get("thresholds"), dict):
-            data["thresholds"].pop("_doc", None)
-        cfg = cls.model_validate(data)
-        cfg._base_dir = path.parent
-        return cfg
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            # 去除辅助文档字段
+            data.pop("_doc", None)
+            if isinstance(data.get("thresholds"), dict):
+                data["thresholds"].pop("_doc", None)
+            cfg = cls.model_validate(data)
+            cfg._base_dir = path.parent
+            return cfg
+        except Exception as e:
+            if not fallback:
+                raise
+            import logging
+            backup_path = path.with_suffix(path.suffix + ".lingzhou-backup")
+            if backup_path.exists():
+                logging.getLogger("lingzhou.config").warning(
+                    f"配置文件 {path} 加载失败 ({e})，回退至备份 {backup_path}"
+                )
+                return cls.load(backup_path, fallback=False)
+            raise RuntimeError(f"配置文件 {path} 加载失败且无可用备份: {e}") from e
 
     def resolve(self, raw: str) -> Path:
         """解析路径：~ 展开；相对路径以 lingzhou.json 所在目录为基准。"""
