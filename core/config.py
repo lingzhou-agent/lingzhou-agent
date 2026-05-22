@@ -368,6 +368,14 @@ class EvolutionConfig(BaseModel):
             "超过此幅度的请求会被夹住（滹透加速而非生硬跳变），防止 LLM 单轮内激进改写灵魂价値。"
         ),
     )
+    competitive_candidates: int = Field(
+        default=1, ge=1, le=8,
+        description=(
+            "竞争进化时并行生成的候选数量。"
+            "1 = 禁用竞争进化，走单路径 evolve_tool；"
+            ">=2 = 启用竞争进化，并行生成 N 个候选，smoke test 筛选后按静态评分晋升最优。"
+        ),
+    )
 
 class SoulConfig(BaseModel):
     """数字生命种子的初始人格。

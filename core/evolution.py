@@ -387,7 +387,13 @@ print("SMOKE_OK")
             return results
 
         feedback = "\n".join(f"- {f.summary}" for f in recent if f.kind == most_common_tool)
-        result = await self.evolve_tool(most_common_tool, tool_path, feedback, ctx=ctx)
+        num_candidates = self._cfg.evolution.competitive_candidates
+        if num_candidates >= 2:
+            result = await self.competitive_evolve_tool(
+                most_common_tool, tool_path, feedback, num_candidates=num_candidates
+            )
+        else:
+            result = await self.evolve_tool(most_common_tool, tool_path, feedback, ctx=ctx)
         results.append(result)
 
         # ── Ethos 基线进化：尾部追加，不与工具/提示词进化互斥 ────────────────

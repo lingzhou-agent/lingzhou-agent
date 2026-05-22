@@ -690,6 +690,124 @@ description: Workspace-evolved bootstrap skill.
     assert reload_calls == ["reloaded"]
 
 
+def test_score_candidate_returns_positive():
+    from core.evolution import _score_candidate
+
+    # 基础代码应得正分
+    code = "def f():\n    pass\n"
+    score = _score_candidate(code)
+    assert isinstance(score, int)
+    assert score > 0
+
+
+def test_score_candidate_rewards_exception_handling():
+    from core.evolution import _score_candidate
+
+    code_with_except = (
+        "def f():\n"
+        "    try:\n"
+        "        return 1\n"
+        "    except ValueError:\n"
+        "        return 0\n"
+    )
+    code_without = "def f():\n    return 1\n"
+    assert _score_candidate(code_with_except) > _score_candidate(code_without)
+
+
+def test_evolution_config_competitive_candidates_default():
+    from core.config import EvolutionConfig
+
+    cfg = EvolutionConfig()
+    assert cfg.competitive_candidates == 1
+
+
+def test_evolution_config_competitive_candidates_custom():
+    from core.config import Config
+
+    cfg = Config.model_validate({
+        "providers": {"b": {"type": "openai_compat", "base_url": "https://x.invalid/v1", "api_key_env": "K"}},
+        "model": "b/qwen",
+        "temperature": 0.7,
+        "timeout": 30,
+        "loop": {},
+        "evolution": {"competitive_candidates": 3},
+    })
+    assert cfg.evolution.competitive_candidates == 3
+
+
+def test_competitive_evolve_routes_based_on_config():
+    """run() 应按 competitive_candidates 值分支到 competitive_evolve_tool 或 evolve_tool。"""
+    asyncio.run(_competitive_evolve_routes_based_on_config())
+
+
+async def _competitive_evolve_routes_based_on_config():
+    import pathlib, tempfile, types as _types
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from core.config import Config
+    from core.evolution import EvolutionEngine, EvolutionResult
+    from memory.task_store import TaskStore
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return ""
+        async def close(self): pass
+
+    cfg = Config.model_validate({
+        "providers": {"b": {"type": "openai_compat", "base_url": "https://x.invalid/v1", "api_key_env": "K"}},
+        "model": "b/qwen",
+        "temperature": 0.7,
+        "timeout": 30,
+        "loop": {},
+        "evolution": {"competitive_candidates": 2, "trigger_min_failures": 1},
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(pathlib.Path(d) / "db.db")
+        await store.open()
+        task_id = await store.add_task("t", goal="g")
+        await store.record_failure(kind="shell.run", summary="test failure", context="")
+
+        engine = EvolutionEngine(cfg, _DummyProvider(), ToolRegistry())
+
+        # 让 tool_path 存在
+        fake_tool_path = pathlib.Path(d) / "shell.py"
+        fake_tool_path.write_text("# stub", encoding="utf-8")
+        engine._tools_dir = pathlib.Path(d)
+
+        called: list[str] = []
+
+        async def _fake_competitive(tool_name, tool_path, feedback, num_candidates=2):
+            called.append("competitive")
+            return EvolutionResult(success=True, target=tool_name)
+
+        async def _fake_evolve(tool_name, tool_path, feedback, ctx=None):
+            called.append("single")
+            return EvolutionResult(success=True, target=tool_name)
+
+        async def _fake_ethos(ctx):
+            return EvolutionResult(success=False, target="ethos_baseline")
+
+        async def _fake_verif(ctx):
+            return []
+
+        engine.competitive_evolve_tool = _fake_competitive  # type: ignore[method-assign]
+        engine.evolve_tool = _fake_evolve  # type: ignore[method-assign]
+        engine.evolve_ethos = _fake_ethos  # type: ignore[method-assign]
+        engine._maybe_evaluate_verifications = _fake_verif  # type: ignore[method-assign]
+
+        # registry.get() 需返回非 None，直接 mock
+        mock_entry = MagicMock()
+        engine._registry = MagicMock()
+        engine._registry.get.return_value = mock_entry
+
+        ctx_obj = _types.SimpleNamespace(task_store=store, config=cfg)
+        await engine.run(ctx_obj)  # type: ignore[arg-type]
+
+    assert "competitive" in called, f"Expected competitive_evolve_tool called, got: {called}"
+
+
 async def test_refresh_running_runs_updates_finished_exec_runs():
     import os
     import time
