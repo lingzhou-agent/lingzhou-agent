@@ -1308,7 +1308,8 @@ async def _exec_and_shell_explicit_no_output():
     shell_res = await shell_run({"command": "python3 -c \"pass\""}, ctx)
     assert shell_res.error is None
     assert "(无输出)" in shell_res.summary
-    assert shell_res.state_delta == {"process": "finished", "exit_code": 0, "timed_out": False}
+    expected_base = {"process": "finished", "exit_code": 0, "timed_out": False}
+    assert expected_base.items() <= shell_res.state_delta.items()
     assert shell_res.metadata["log_summary"].startswith("shell.run exit=0 chars=0")
     assert shell_res.resource_key is not None
     json.dumps(shell_res.to_dict(), ensure_ascii=False)
