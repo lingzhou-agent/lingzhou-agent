@@ -456,6 +456,38 @@ def _fmt_tools(manifests: "list[ToolManifest]") -> str:
     return "\n".join(lines)
 
 
+def _fmt_config_snapshot(cfg: "Config") -> str:
+    """格式化关键配置参数快照，让 LLM 在 judgment 中直接感知当前参数状态。
+
+    只列可通过 config.set 调整的运行时参数，避免冗余路径/凭证信息。
+    """
+    ev = cfg.evolution
+    lo = cfg.loop
+    lines = [
+        "# 可调运行时参数（通过 config.set <key> <json_value> 修改）",
+        "",
+        "## 模型",
+        f"  model: {cfg.model}",
+        f"  temperature: {cfg.temperature}",
+        "",
+        "## 进化引擎 (evolution.*)",
+        f"  enabled: {ev.enabled}",
+        f"  competitive_candidates: {ev.competitive_candidates}  # >=2 启用竞争进化",
+        f"  trigger_min_failures: {ev.trigger_min_failures}",
+        f"  trigger_window_minutes: {ev.trigger_window_minutes}",
+        f"  error_streak_evolve: {ev.error_streak_evolve}",
+        f"  ethos_max_delta: {ev.ethos_max_delta}",
+        "",
+        "## 认知循环 (loop.*)",
+        f"  wake_poll_interval: {lo.wake_poll_interval}ms",
+        f"  min_act_gap: {lo.min_act_gap}ms",
+        f"  active_idle_gap: {lo.active_idle_gap}ms",
+        f"  max_idle_gap: {lo.max_idle_gap}ms",
+        f"  chat_reply_timeout: {lo.chat_reply_timeout}s",
+    ]
+    return "\n".join(lines)
+
+
 def _fmt_shell_capabilities() -> str:
     cache_key = "_fmt_shell_capabilities"
     if cache_key in _context_fmt_cache:
@@ -707,47 +739,6 @@ def _compress_text_segments(text: str, keep_tokens: int) -> str:
         elif ch in close_chars and stack and stack[-1] == ch:
             stack.pop()
     return result + "".join(reversed(stack))
-
-    keep_head: list[str] = []
-    keep_tail: list[str] = []
-    head_tokens = 0
-    tail_tokens = 0
-    head_idx = 0
-    tail_idx = len(segments) - 1
-    turn = 0
-
-    while head_idx <= tail_idx:
-        if turn % 2 == 0:
-            candidate = segments[head_idx]
-            candidate_tokens = _estimate_tokens(candidate)
-            if head_tokens + tail_tokens + candidate_tokens <= keep_tokens:
-                keep_head.append(candidate)
-                head_tokens += candidate_tokens
-                head_idx += 1
-            elif tail_idx == head_idx and not keep_head and not keep_tail:
-                keep_head.append(_compress_single_segment(candidate, keep_tokens))
-                break
-            else:
-                break
-        else:
-            candidate = segments[tail_idx]
-            candidate_tokens = _estimate_tokens(candidate)
-            if head_tokens + tail_tokens + candidate_tokens <= keep_tokens:
-                keep_tail.append(candidate)
-                tail_tokens += candidate_tokens
-                tail_idx -= 1
-            elif tail_idx == head_idx and not keep_head and not keep_tail:
-                keep_tail.append(_compress_single_segment(candidate, keep_tokens))
-                break
-            else:
-                break
-        turn += 1
-
-    if not keep_head and not keep_tail:
-        return _compress_single_segment(text, keep_tokens)
-
-    body = keep_head + (["\n[...省略...]\n"] if head_idx <= tail_idx else []) + list(reversed(keep_tail))
-    return "".join(body)
 
 
 def _split_segments(text: str) -> list[str]:

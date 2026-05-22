@@ -77,6 +77,17 @@
 
 ---
 
+### 运行时参数快照（可自主调参）
+{{config_section}}
+
+> 调参规则：
+> - 以上参数可通过 `config.set` 工具修改，修改后 loop 自动热重载，**无需重启**。
+> - `evolution.competitive_candidates >= 2` 时，进化工具时并行生成多个候选，择优晋升；设为 `1` 关闭竞争进化。
+> - `evolution.enabled = false` 可临时暂停所有自进化（调试时有用）。
+> - 感知到持续高错误率（worsening trend）时，可考虑调低 `evolution.trigger_min_failures` 加速触发修复。
+
+---
+
 ### 价值图式（Ethos 当前状态）
 {{ethos_section}}
 > 以上价值维度是基于当前信号推导的结果，并非不可动摇的真理。如果你认为某个维度的漂移方向不合理，可在 reflection 中记录质疑，外环将据此进化推导规则。

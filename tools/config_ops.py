@@ -157,7 +157,9 @@ async def config_get(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
         "  loop.active_idle_gap — 有活跃任务但 wait/pause 时的等待上限(毫秒)\n"
         "  loop.chat_reply_timeout — 聊天回复超时(秒)\n"
         "  evolution.enabled — 是否启用自进化\n"
+        "  evolution.competitive_candidates — 竞争进化候选数(1=关闭, >=2=启用)\n"
         "  evolution.trigger_min_failures — 触发进化所需失败数\n"
+        "  evolution.trigger_window_minutes — 触发时间窗(分钟)\n"
         "  evolution.error_streak_evolve — 错误连击立即触发\n"
         "  memory.working_capacity — 工作记忆容量\n"
     ),

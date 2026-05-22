@@ -57,6 +57,7 @@ from .context import (
     _fmt_shell_capabilities,
     _fmt_skill_catalog,
     _fmt_skills,
+    _fmt_config_snapshot,
     _fmt_primary_skill,
     _fmt_soul,
     _fmt_task,
@@ -401,6 +402,92 @@ class JudgmentLayer:
             return "medium"
         return "low"
 
+    def _set_last_call_meta(
+        self,
+        selection: ModelSelection,
+        *,
+        thinking_override: str | None,
+        skills: str,
+        primary_skill_name: str | None = None,
+        primary_skill_guidance: bool | None = None,
+    ) -> None:
+        meta: dict[str, Any] = {
+            "phase": selection.phase,
+            "tier": selection.tier,
+            "model_ref": selection.model_ref,
+            "thinking": thinking_override or selection.thinking,
+            "skills": skills,
+        }
+        if primary_skill_name is not None or primary_skill_guidance is not None:
+            meta["primary_skill"] = primary_skill_name
+            meta["primary_skill_guidance"] = bool(primary_skill_guidance)
+        self._last_call_meta = meta
+
+    async def _chat_with_retry(
+        self,
+        *,
+        selected_provider: "Provider",
+        selection: ModelSelection,
+        messages: list[Any],
+        phase: str,
+        user_message: str,
+        thinking_override: str | None,
+        routing_overrides: dict[str, str] | None,
+        log_prefix: str,
+        current_action: str = "",
+        tool_history: list[dict[str, Any]] | None = None,
+        fallback_prefer_tier: str | None = None,
+        skills: str = "none",
+        primary_skill_name: str | None = None,
+        primary_skill_guidance: bool | None = None,
+    ) -> tuple[str | None, ModelSelection, Exception | None]:
+        raw: str | None = None
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            self._set_last_call_meta(
+                selection,
+                thinking_override=thinking_override,
+                skills=skills,
+                primary_skill_name=primary_skill_name,
+                primary_skill_guidance=primary_skill_guidance,
+            )
+            try:
+                raw = await selected_provider.chat(messages, thinking_override=thinking_override)
+                self._mark_model_success(selection.model_ref)
+                self._track_token_usage(selected_provider)
+                return raw, selection, None
+            except Exception as exc:
+                last_error = exc
+                _err = str(exc) or repr(exc)
+                self._mark_model_failure(selection.model_ref, _err)
+                if _attempt == 0:
+                    _fallback_tier = fallback_prefer_tier or self._fallback_tiers(selection.tier)[0]
+                    fb_provider, fb_selection = self._select_provider(
+                        phase=phase,
+                        user_message=user_message,
+                        current_action=current_action,
+                        tool_history=tool_history,
+                        prefer_tier=_fallback_tier,
+                        thinking_override=thinking_override,
+                        routing_overrides=routing_overrides,
+                    )
+                    if fb_selection.model_ref != selection.model_ref:
+                        _log.warning(
+                            "%s LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) err=%s",
+                            log_prefix,
+                            selection.model_ref,
+                            selection.tier,
+                            fb_selection.model_ref,
+                            fb_selection.tier,
+                            _err,
+                        )
+                        selected_provider, selection = fb_provider, fb_selection
+                        continue
+                    _log.warning("%s LLM 调用失败，1s 后重试: %s", log_prefix, _err)
+                    await asyncio.sleep(1.0)
+                    continue
+                _log.warning("%s LLM 调用失败: %s", log_prefix, _err)
+        return raw, selection, last_error
     def _build_model_routing_section(
         self,
         *,
@@ -626,82 +713,38 @@ class JudgmentLayer:
             thinking_override=thinking_override,
             routing_overrides=routing_overrides,
         )
-        raw: str | None = None
-        for _attempt in range(2):
-            _primary = self._last_selected_skills[0] if self._last_selected_skills else None
-            self._last_call_meta = {
-                "phase": selection.phase,
-                "tier": selection.tier,
-                "model_ref": selection.model_ref,
-                "thinking": selection.thinking,
-                "skills": self._skills_for_log(self._last_selected_skills),
-                "primary_skill": _primary.name if _primary else None,
-                "primary_skill_guidance": bool(_primary and getattr(_primary, "guidance", None)),
-            }
-            try:
-                raw = await selected_provider.chat(messages, thinking_override=thinking_override)
-                self._mark_model_success(selection.model_ref)
-                self._track_token_usage(selected_provider)
-                break
-            except Exception as exc:
-                _err = str(exc) or repr(exc)
-                self._mark_model_failure(selection.model_ref, _err)
-                if _attempt == 0:
-                    _fallback_tier = self._fallback_tiers(selection.tier)[0]
-                    fb_provider, fb_selection = self._select_provider(
-                        phase=phase,
-                        user_message=user_message,
-                        current_action="",
-                        tool_history=None,
-                        prefer_tier=_fallback_tier,
-                        thinking_override=thinking_override,
-                        routing_overrides=routing_overrides,
-                    )
-                    if fb_selection.model_ref != selection.model_ref:
-                        _log.warning(
-                            "[judgment] LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) err=%s",
-                            selection.model_ref,
-                            selection.tier,
-                            fb_selection.model_ref,
-                            fb_selection.tier,
-                            _err,
-                        )
-                        selected_provider, selection = fb_provider, fb_selection
-                        continue
-                    _log.warning("[judgment] LLM 调用失败，1s 后重试: %s", _err)
-                    await asyncio.sleep(1.0)
-                else:
-                    _log.warning("[judgment] LLM 调用失败: %s", _err)
-                    return self._simulate_safe_output(
-                        failure_count=0,
-                        signals=judgment_signals,
-                        hard_boundaries=hard_boundaries or [],
-                        reason=_err,
-                    )
-        assert raw is not None  # 两次都失败时上面已 return
+        _primary = self._last_selected_skills[0] if self._last_selected_skills else None
+        raw, selection, llm_error = await self._chat_with_retry(
+            selected_provider=selected_provider,
+            selection=selection,
+            messages=messages,
+            phase=phase,
+            user_message=user_message,
+            thinking_override=thinking_override,
+            routing_overrides=routing_overrides,
+            log_prefix="[judgment]",
+            skills=self._skills_for_log(self._last_selected_skills),
+            primary_skill_name=_primary.name if _primary else None,
+            primary_skill_guidance=bool(_primary and getattr(_primary, "guidance", None)),
+        )
+        if raw is None:
+            _err = str(llm_error) or repr(llm_error) if llm_error is not None else "unknown error"
+            return self._simulate_safe_output(
+                failure_count=0,
+                signals=judgment_signals,
+                hard_boundaries=hard_boundaries or [],
+                reason=_err,
+            )
 
         output = JudgmentOutput.from_llm(raw)
 
         # 解析失败时尝试一次修复，避免因为截断/格式噪声直接进入空转
-        if output.rationale.startswith("LLM 输出解析失败"):
-            repaired = await self._repair_output(context_text, raw)
-            if repaired is not None:
-                output = repaired
-            else:
-                await task_store.record_failure("judgment_parse", output.rationale)  # 保留完整信息，不截断
-
-        if output.decision not in ("act", "pause", "wait"):
-            output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
-        if output.decision == "act" and not output.chosen_action_id \
-                and not output.parallel_actions and not output.delegate_tasks:
-            repaired = await self._repair_output(context_text, raw)
-            if repaired is not None and repaired.decision == "act" and (
-                repaired.chosen_action_id or repaired.parallel_actions or repaired.delegate_tasks
-            ):
-                output = repaired
-            else:
-                output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
-
+        output = await self._normalize_output(
+            output,
+            context_text=context_text,
+            raw=raw,
+            record_parse_failure=task_store.record_failure,
+        )
         _applied = ",".join(output.applied_skills) if output.applied_skills else "none"
         if output.applied_skills:
             self._last_applied_skill_names = list(output.applied_skills)
@@ -803,60 +846,31 @@ class JudgmentLayer:
         resolved_thinking = thinking_override
         if resolved_thinking is None and selection.tier == "reasoner" and user_message:
             resolved_thinking = "low"
-        self._last_call_meta = {
-            "phase": selection.phase,
-            "tier": selection.tier,
-            "model_ref": selection.model_ref,
-            "thinking": resolved_thinking or selection.thinking,
-            "skills": self._last_call_meta.get("skills") or "none",
-        }
-        raw: str | None = None
-        for _attempt in range(2):
-            try:
-                raw = await selected_provider.chat(messages, thinking_override=resolved_thinking)
-                self._mark_model_success(selection.model_ref)
-                self._track_token_usage(selected_provider)
-                break
-            except Exception as exc:
-                _err = str(exc) or repr(exc)
-                self._mark_model_failure(selection.model_ref, _err)
-                if _attempt == 0:
-                    _fallback_tier = self._fallback_tiers(selection.tier)[0]
-                    fb_provider, fb_selection = self._select_provider(
-                        phase=phase,
-                        user_message=user_message,
-                        current_action=current_action,
-                        tool_history=tool_history,
-                        prefer_tier="reasoner" if reply_only else _fallback_tier,
-                        thinking_override=resolved_thinking,
-                        routing_overrides=routing_overrides,
-                    )
-                    if fb_selection.model_ref != selection.model_ref:
-                        _log.warning(
-                            "[judgment.continue] LLM 调用失败，切换模型重试: from=%s(%s) to=%s(%s) err=%s",
-                            selection.model_ref,
-                            selection.tier,
-                            fb_selection.model_ref,
-                            fb_selection.tier,
-                            _err,
-                        )
-                        selected_provider, selection = fb_provider, fb_selection
-                        continue
-                    _log.warning("[judgment.continue] LLM 调用失败，1s 后重试: %s", _err)
-                    await asyncio.sleep(1.0)
-                else:
-                    _log.warning("[judgment.continue] LLM 调用失败: %s", _err)
-                    return JudgmentOutput.wait(reason=f"[inner-loop] LLM 不可用: {exc!r}")
-
+        raw, selection, llm_error = await self._chat_with_retry(
+            selected_provider=selected_provider,
+            selection=selection,
+            messages=messages,
+            phase=phase,
+            user_message=user_message,
+            current_action=current_action,
+            tool_history=tool_history,
+            thinking_override=resolved_thinking,
+            routing_overrides=routing_overrides,
+            fallback_prefer_tier="reasoner" if reply_only else None,
+            log_prefix="[judgment.continue]",
+            skills=self._last_call_meta.get("skills") or "none",
+        )
         if raw is None:
+            if llm_error is not None:
+                return JudgmentOutput.wait(reason=f"[inner-loop] LLM 不可用: {llm_error!r}")
             return JudgmentOutput.wait(reason="[inner-loop] LLM returned None")
 
         output = JudgmentOutput.from_llm(raw)
-        if output.decision not in ("act", "pause", "wait"):
-            output = JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
-        if output.decision == "act" and not output.chosen_action_id \
-                and not output.parallel_actions and not output.delegate_tasks:
-            output = JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+        output = await self._normalize_output(
+            output,
+            context_text=continuation_context,
+            raw=raw,
+        )
         if reply_only:
             if not output.reply_to_user.strip():
                 output = JudgmentOutput.wait(reason="[reply-only] reply_to_user 不能为空")
@@ -955,6 +969,38 @@ class JudgmentLayer:
             if signals.posture in ("pause", "narrow"):
                 return JudgmentOutput.wait(reason=f"[fallback] posture={signals.posture}, LLM 不可用: {reason}")
         return JudgmentOutput.wait(reason=f"[fallback] LLM 不可用: {reason}")
+
+    async def _normalize_output(
+        self,
+        output: JudgmentOutput,
+        *,
+        context_text: str,
+        raw: str,
+        record_parse_failure: Any | None = None,
+    ) -> JudgmentOutput:
+        repair_attempted = False
+
+        if output.rationale.startswith("LLM 输出解析失败"):
+            repaired = await self._repair_output(context_text, raw)
+            repair_attempted = True
+            if repaired is not None:
+                output = repaired
+            elif record_parse_failure is not None:
+                await record_parse_failure("judgment_parse", output.rationale)
+
+        if output.decision not in ("act", "pause", "wait"):
+            return JudgmentOutput.wait(reason=f"无效 decision: {output.decision!r}")
+        if output.decision == "act" and not output.chosen_action_id \
+                and not output.parallel_actions and not output.delegate_tasks:
+            repaired = None
+            if not repair_attempted:
+                repaired = await self._repair_output(context_text, raw)
+            if repaired is not None and repaired.decision == "act" and (
+                repaired.chosen_action_id or repaired.parallel_actions or repaired.delegate_tasks
+            ):
+                return repaired
+            return JudgmentOutput.wait(reason="act 决策缺少 chosen_action_id")
+        return output
 
     async def _assemble_context(
         self,
@@ -1121,6 +1167,7 @@ class JudgmentLayer:
                 routing_overrides=routing_overrides,
             ),
             "current_time_section": _fmt_current_time(),
+            "config_section": _fmt_config_snapshot(self._cfg),
             "user_message": user_message or "",
         }
         # STM 对话缓冲：源自情节记忆（narrative 表 role=user/assistant_reply）
