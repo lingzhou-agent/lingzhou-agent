@@ -89,50 +89,40 @@ import re
 
 
 def _fuzzy_find(content: str, old_text: str) -> int:
-    """模糊匹配链：依次尝试宽松策略找到 old_text 在 content 中的位置。
+    """模糊匹配：优先精确匹配，失败后尝试行级去空白精确匹配。"""
+    # 1. 精确匹配
+    idx = content.find(old_text)
+    if idx != -1:
+        return idx
+
+    # 2. 统一换行符
+    old_text = old_text.replace('\r\n', '\n').replace('\r', '\n')
+    content = content.replace('\r\n', '\n').replace('\r', '\n')
+
+    # 3. 行级去空白精确匹配（修复原 startswith 过于宽松导致的误判/漏判）
+    old_lines = old_text.split('\n')
+    content_lines = content.split('\n')
+    old_stripped = [l.strip() for l in old_lines]
     
-    策略：
-    1. 行去空格匹配 — 每行 strip 后比较
-    2. 空白归一化 — 多空格/Tab 坍塌为单空格
-    3. 换行归一化 — 字面 \\n 转为实际换行
-    
-    返回匹配位置，找不到返回 -1。
-    """
-    # 策略1: 行去空格匹配
-    old_lines = [l.strip() for l in old_text.split("\n")]
-    content_lines = content.split("\n")
-    for i in range(len(content_lines) - len(old_lines) + 1):
+    # 过滤首尾空行，提高容错
+    while old_stripped and not old_stripped[0]:
+        old_stripped.pop(0)
+    while old_stripped and not old_stripped[-1]:
+        old_stripped.pop()
+    if not old_stripped:
+        return -1
+
+    for i in range(len(content_lines) - len(old_stripped) + 1):
         match = True
-        for j, old_l in enumerate(old_lines):
-            cl = content_lines[i + j].strip()
-            if not cl.startswith(old_l):
+        for j, os_line in enumerate(old_stripped):
+            if not os_line:  # 跳过空行
+                continue
+            if content_lines[i + j].strip() != os_line:  # 严格逐行相等
                 match = False
                 break
         if match:
-            return sum(len(l) + 1 for l in content_lines[:i])
-    
-    # 策略2: 空白归一化（忽略所有空白差异）
-    def _strip_spaces(s):
-        return re.sub(r"\s+", "", s)
-    old_nosp = _strip_spaces(old_text)
-    content_nosp = _strip_spaces(content)
-    idx = content_nosp.find(old_nosp)
-    if idx != -1 and len(old_nosp) >= 6:
-        # 反推原始位置
-        _pos = 0
-        for _i in range(len(content)):
-            if not content[_i].isspace():
-                if _pos == idx:
-                    return _i
-                _pos += 1
-        return content.find(old_text.split("\n")[0].strip())
-    
-    # 策略3: 换行归一化
-    old_unescaped = old_text.replace("\\n", "\n").replace("\\t", "\t")
-    idx = content.find(old_unescaped)
-    if idx != -1:
-        return idx
-    
+            return sum(len(cl) + 1 for cl in content_lines[:i])
+
     return -1
 
 

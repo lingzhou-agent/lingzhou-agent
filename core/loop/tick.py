@@ -318,7 +318,9 @@ async def _tick_impl(loop: Any, cycle: int, user_message: str = "", chat_id: str
     cognitive_signals.last_action_progress_reason = loop._last_act_progress_reason if loop._last_action_status else ""
     cognitive_signals.recent_action_history = list(loop._recent_action_feedback)
 
-    failures_recent = await loop._task_store.list_failures(limit=5)
+    (failures_recent,) = await asyncio.gather(
+        loop._task_store.list_failures(limit=5),
+    )
     loop._emotion.derive_from_signals(
         failure_count=len(failures_recent),
         prediction_error=percept.prediction_error,
@@ -682,9 +684,10 @@ async def _tick_finalize_impl(
     await loop._post_tick_memory(action, result, active_task, cycle, user_message)
     await loop._save_self_model()
 
-    if cycle % cfg.loop.consolidate_every == 0:
-        if loop._wm.pressure >= loop._cfg.thresholds.wm_pressure_task:
-            await loop._consolidate(active_task)
+    # 压力驱动优先：WM 压力过高时立即沉淀，防止关键上下文丢失；周期检查作为兜底
+    wm_pressure = loop._wm.pressure
+    if wm_pressure >= 0.85 or (cycle % cfg.loop.consolidate_every == 0 and wm_pressure >= loop._cfg.thresholds.wm_pressure_task):
+        await loop._consolidate(active_task)
         # 感知 global.md 膨胀 → 注入信号让 LLM 自主决定是否压缩
         try:
             _gm = loop._cfg.memory_dir / "global.md"

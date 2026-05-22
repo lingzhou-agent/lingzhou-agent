@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import json
 import logging
 import os
@@ -12,6 +14,15 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 _log = logging.getLogger("lingzhou.judgment")
+
+# --- 纯计算格式化函数缓存（per-tick 粒度）---
+# key = tick_id + 函数名 + hash(参数); value = 格式化结果字符串
+_context_fmt_cache: dict[str, str] = {}
+
+
+def _clear_context_cache() -> None:
+    """在每 tick 开头调用，清除上一 tick 的所有缓存。"""
+    _context_fmt_cache.clear()
 
 if TYPE_CHECKING:
     from core.config import Config
@@ -116,8 +127,13 @@ def _fmt_task(task: "Task | None") -> str:
 
 
 def _fmt_recent_runs(runs: list["Run"]) -> str:
+    cache_key = f"_fmt_recent_runs:{hash(tuple(r.id for r in runs)) if runs else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     if not runs:
-        return "（暂无近期运行记录）"
+        result = "（暂无近期运行记录）"
+        _context_fmt_cache[cache_key] = result
+        return result
     lines: list[str] = []
     for run in runs[:5]:
         summary = _clip_text(_run_summary(run), 120)
@@ -129,7 +145,9 @@ def _fmt_recent_runs(runs: list["Run"]) -> str:
         if summary:
             line += f" summary={summary}"
         lines.append(line)
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _context_fmt_cache[cache_key] = result
+    return result
 
 
 _FACT_CONTEXT_EXCLUDE_PREFIXES = (
@@ -200,17 +218,29 @@ def _format_fact_value(raw: str) -> str:
 
 
 def _fmt_context_facts(facts: list[tuple[str, str]]) -> str:
+    cache_key = f"_fmt_context_facts:{hash(tuple(facts)) if facts else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     if not facts:
-        return "（暂无近期关键事实）"
-    return "\n".join(
+        result = "（暂无近期关键事实）"
+        _context_fmt_cache[cache_key] = result
+        return result
+    result = "\n".join(
         f"- {key} = {_format_fact_value(value)}"
         for key, value in facts
     )
+    _context_fmt_cache[cache_key] = result
+    return result
 
 
 def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
+    cache_key = f"_fmt_waiting_tasks:{hash(tuple(t.id for t in tasks)) if tasks else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     if not tasks:
-        return "（无 waiting 任务）"
+        result = "（无 waiting 任务）"
+        _context_fmt_cache[cache_key] = result
+        return result
     lines: list[str] = []
     for task in tasks[:5]:
         wait_desc = task.wait_kind or "unknown"
@@ -220,7 +250,9 @@ def _fmt_waiting_tasks(tasks: list["Task"]) -> str:
         if task.next_step:
             line += f" next={_clip_text(task.next_step, 80)}"
         lines.append(line)
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    _context_fmt_cache[cache_key] = result
+    return result
 
 
 def _run_summary(run: "Run") -> str:
@@ -243,10 +275,15 @@ def _clip_text(text: str, limit: int) -> str:
 
 
 def _fmt_current_time() -> str:
+    cache_key = "_fmt_current_time"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     now = datetime.now(timezone.utc)
     local_iso = now.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     utc_str = now.strftime("%Y-%m-%d %H:%M UTC")
-    return f"当前时间: {local_iso}\n参考 UTC: {utc_str}"
+    result = f"当前时间: {local_iso}\n参考 UTC: {utc_str}"
+    _context_fmt_cache[cache_key] = result
+    return result
 
 
 def _fmt_chat_history(messages: list[dict[str, Any]], max_chars: int = 300) -> str:
@@ -255,8 +292,13 @@ def _fmt_chat_history(messages: list[dict[str, Any]], max_chars: int = 300) -> s
     role=user 显示为 '用户:', role=assistant 显示为 '我:',
     每条消息截断到 max_chars，防止 token 爆炸。
     """
+    cache_key = f"_fmt_chat_history:{hash(str(messages)) if messages else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     if not messages:
-        return "（暂无对话历史）"
+        result = "（暂无对话历史）"
+        _context_fmt_cache[cache_key] = result
+        return result
     lines = []
     for msg in messages:
         role = msg.get("role", "")
@@ -266,7 +308,9 @@ def _fmt_chat_history(messages: list[dict[str, Any]], max_chars: int = 300) -> s
         label = "用户" if role == "user" else "我"
         snippet = content[:max_chars] + ("…" if len(content) > max_chars else "")
         lines.append(f"{label}: {snippet}")
-    return "\n".join(lines) if lines else "（暂无对话历史）"
+    result = "\n".join(lines) if lines else "（暂无对话历史）"
+    _context_fmt_cache[cache_key] = result
+    return result
 
 
 def _fmt_wm(
@@ -406,6 +450,9 @@ def _fmt_tools(manifests: "list[ToolManifest]") -> str:
 
 
 def _fmt_shell_capabilities() -> str:
+    cache_key = "_fmt_shell_capabilities"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     cmds = (
         "python3", "python", "bash", "sh", "grep", "find", "ls", "cat",
         "sqlite3", "git", "sed", "awk", "jq", "rg",
@@ -423,7 +470,9 @@ def _fmt_shell_capabilities() -> str:
         "available_commands": available,
         "missing_commands": [cmd for cmd in cmds if cmd not in available],
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    result = json.dumps(payload, ensure_ascii=False, indent=2)
+    _context_fmt_cache[cache_key] = result
+    return result
 
 
 def _fmt_percept(percept: "Percept") -> str:
@@ -434,12 +483,17 @@ def _fmt_percept(percept: "Percept") -> str:
 
 
 def _fmt_soul(axioms_val: str, ethos_val: str) -> str:
+    cache_key = f"_fmt_soul:{hash(axioms_val)}:{hash(ethos_val)}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     parts: list[str] = []
     if axioms_val:
         parts.append(f"绝对禁忌（hard_axioms）: {axioms_val}")
     if ethos_val:
         parts.append(f"价值基线（ethos_baseline）: {ethos_val}")
-    return "\n".join(parts) if parts else "（Soul 未初始化，运行 `init` 命令生成）"
+    result = "\n".join(parts) if parts else "（Soul 未初始化，运行 `init` 命令生成）"
+    _context_fmt_cache[cache_key] = result
+    return result
 
 
 def _emotion_label(emotion: "EmotionState", cfg: "Config") -> str:
@@ -476,8 +530,14 @@ def _fill_template(template: str, ctx: dict[str, Any]) -> str:
 
 
 def _fmt_ethos(ethos_state: "EthosState | None") -> str:
+    # 缓存：纯计算函数，同一 tick 内不重复计算
+    cache_key = f"_fmt_ethos:{hash(ethos_state) if ethos_state else 'none'}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
     if not ethos_state:
-        return "（Ethos 未计算）"
+        result = "（Ethos 未计算）"
+        _context_fmt_cache[cache_key] = result
+        return result
     values = ethos_state.values
     bias = ethos_state.bias
     lines: list[str] = [
@@ -511,6 +571,12 @@ def apply_context_budget(
         raise TypeError("apply_context_budget() missing required argument: 'token_budget'")
     if token_budget <= 0:
         return ctx
+
+    # 增量缓存：若上下文内容未变，直接返回上次预算结果，避免重复估算与截断
+    ctx_hash = hashlib.md5("".join(sorted(ctx.values())).encode()).hexdigest()
+    cache_key = f"budget:{ctx_hash}:{token_budget}:{skill_min_tokens}"
+    if cache_key in _context_fmt_cache:
+        return _context_fmt_cache[cache_key]
 
     budgeted = dict(ctx)
     priority = [
@@ -557,16 +623,21 @@ def apply_context_budget(
         budgeted[key] = trimmed
         current_total -= _estimate_tokens(original) - _estimate_tokens(trimmed)
 
+    _context_fmt_cache[cache_key] = budgeted
     return budgeted
 
 
+# 简单缓存，避免重复计算高频短文本
+@functools.lru_cache(maxsize=8192)
 def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
-    cjk = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
-    ascii_chars = sum(1 for char in text if ord(char) < 128 and not char.isspace())
-    other = sum(1 for char in text if ord(char) >= 128 and not ("\u4e00" <= char <= "\u9fff"))
-    return cjk + max(1, ascii_chars // 4) + max(1, other // 2)
+    
+    cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    ascii_chars = sum(1 for c in text if ord(c) < 128)
+    other = len(text) - cjk - ascii_chars
+    
+    return max(1, int(cjk * 1.8 + ascii_chars * 0.3 + other * 1.0))
 
 
 def _compress_text_segments(text: str, keep_tokens: int) -> str:
@@ -578,6 +649,57 @@ def _compress_text_segments(text: str, keep_tokens: int) -> str:
     segments = _split_segments(text)
     if not segments:
         return ""
+
+    keep_head: list[str] = []
+    keep_tail: list[str] = []
+    head_tokens = 0
+    tail_tokens = 0
+    head_idx = 0
+    tail_idx = len(segments) - 1
+    turn = 0
+
+    while head_idx <= tail_idx:
+        if turn % 2 == 0:
+            candidate = segments[head_idx]
+            candidate_tokens = _estimate_tokens(candidate)
+            if head_tokens + tail_tokens + candidate_tokens <= keep_tokens:
+                keep_head.append(candidate)
+                head_tokens += candidate_tokens
+                head_idx += 1
+            elif tail_idx == head_idx and not keep_head and not keep_tail:
+                keep_head.append(_compress_single_segment(candidate, keep_tokens))
+                break
+            else:
+                break
+        else:
+            candidate = segments[tail_idx]
+            candidate_tokens = _estimate_tokens(candidate)
+            if head_tokens + tail_tokens + candidate_tokens <= keep_tokens:
+                keep_tail.append(candidate)
+                tail_tokens += candidate_tokens
+                tail_idx -= 1
+            elif tail_idx == head_idx and not keep_head and not keep_tail:
+                keep_tail.append(_compress_single_segment(candidate, keep_tokens))
+                break
+            else:
+                break
+        turn += 1
+
+    if not keep_head and not keep_tail:
+        return _compress_single_segment(text, keep_tokens)
+
+    body = keep_head + (["\n[...省略...]\n"] if head_idx <= tail_idx else []) + keep_tail[::-1]
+    result = "".join(body)
+    # 结构安全保护：自动补全未闭合的括号/引号，防止压缩破坏代码/JSON结构
+    open_chars = "([{"
+    close_chars = ")]}"
+    stack = []
+    for ch in result:
+        if ch in open_chars:
+            stack.append(close_chars[open_chars.index(ch)])
+        elif ch in close_chars and stack and stack[-1] == ch:
+            stack.pop()
+    return result + "".join(reversed(stack))
 
     keep_head: list[str] = []
     keep_tail: list[str] = []

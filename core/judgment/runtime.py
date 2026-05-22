@@ -35,6 +35,7 @@ from .output import (
     tool_tier_mapping,
 )
 from .context import (
+    _clear_context_cache,
     _emotion_label,
     _fill_template,
     _fmt_chat_history,
@@ -112,6 +113,8 @@ class JudgmentLayer:
         self._routing_providers: dict[str, "Provider"] = {}
         # 内层工具循环用：缓存上一次 decide() 组装的完整上下文，由 decide_continue() 复用
         self._last_context_text: str = ""
+        # 上下文缓存：key=(section_name, tick)，value=计算好的文本片段
+        self._context_cache: dict[str, str] = {}
         # 探针系统引用：由 CognitionLoop.__init__ 在创建 ProbeManager 后注入
         self._probe_manager: Any = None
         # 最近一次真实 LLM 调用元数据（供 loop 日志输出实际 model/tier/thinking）
@@ -319,6 +322,11 @@ class JudgmentLayer:
         if prefer_tier in {"reader", "reasoner", "repair"}:
             return prefer_tier
         if phase == "continue":
+            # 高速自进化：防循环门控，连续3次相同工具且无报错，强制切 reasoner 策略调整
+            if tool_history and len(tool_history) >= 3:
+                last_tools = [h.get("tool") for h in tool_history[-3:]]
+                if len(set(last_tools)) == 1 and not self._tool_history_has_error(tool_history):
+                    return "reasoner"
             current_tier = tool_tier(current_action, self._registry) if current_action else ""
             if current_tier == "reasoner" and current_action:
                 return "reasoner"
@@ -572,6 +580,9 @@ class JudgmentLayer:
         from provider.base import Message
 
         try:
+            # per-tick 清空静态缓存（静态 section 仅在本 tick 复用）
+            self._context_cache.clear()
+            _clear_context_cache()
             context_text = await self._assemble_context(
                 percept, wm, task_store, episodic, semantic, emotion,
                 active_task=active_task,
@@ -969,24 +980,30 @@ class JudgmentLayer:
         """将运行时状态填入 judgment 模板。"""
         task = active_task if active_task is not None else await task_store.get_active()
 
-        if task:
-            failures = await task_store.list_failures_for_task(
-                str(task.id), self._cfg.memory.failure_limit
-            )
-        else:
-            failures = await task_store.list_failures(self._cfg.memory.failure_limit)
-
         task_id_str = str(task.id) if task else None
         _el = asyncio.get_running_loop()
+        # 提前准备 failures 协程，以便并行获取
+        _failures_task = task_store.list_failures_for_task(str(task.id), self._cfg.memory.failure_limit) if task else task_store.list_failures(self._cfg.memory.failure_limit)
+        
         # episodic/semantic 使用同步 sqlite3，需经 executor 層驱动，避免阻塞事件循环
-        episodic_text = await _el.run_in_executor(
-            None, episodic.load_for_context, task_id_str, self._cfg.memory.episodic_max_chars
+        # 并行获取独立 IO 操作，降低 tick 延迟
+        (
+            episodic_text,
+            recent_runs,
+            waiting_tasks,
+            durable_failure_snapshot,
+            context_facts,
+            probes,
+            failures,
+        ) = await asyncio.gather(
+            _el.run_in_executor(None, episodic.load_for_context, task_id_str, self._cfg.memory.episodic_max_chars),
+            task_store.list_runs(task_id=task.id, limit=6) if task else [],
+            task_store.list_tasks(status="waiting", limit=5),
+            _load_durable_failure_snapshot(task_store),
+            _load_context_facts_snapshot(task_store, task),
+            self._probe_manager.list_probes() if self._probe_manager else [],
+            _failures_task,
         )
-        recent_runs = await task_store.list_runs(task_id=task.id, limit=6) if task else []
-        waiting_tasks = await task_store.list_tasks(status="waiting", limit=5)
-        durable_failure_snapshot = await _load_durable_failure_snapshot(task_store)
-        context_facts = await _load_context_facts_snapshot(task_store, task)
-        probes = await self._probe_manager.list_probes() if self._probe_manager else []
 
         search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
         episodic_search = (
@@ -1001,27 +1018,43 @@ class JudgmentLayer:
         resolved_entities = await self._ref_resolver.resolve(user_message, semantic, episodic) if user_message else []
         entity_section = self._ref_resolver.format_section(resolved_entities)
 
+        # 动态构建检索锚点：结合任务、情绪与近期失败，提升语义记忆命中率
         anchors: list[str] = []
         if task:
-            anchors.append(task.next_step or task.goal or task.title)
-            # 来源身份锚：wechat/chat 用户 ID 作为额外检索锚，让已存储的用户身份节点可被命中
+            # 优先级：下一步 > 目标 > 标题
+            primary_anchor = task.next_step or task.goal or task.title
+            if primary_anchor:
+                anchors.append(primary_anchor)
+            # 身份锚：确保跨会话认人
             task_source = str(getattr(task, "source", "") or "")
             if task_source and task_source not in anchors:
                 anchors.append(task_source)
+        
+        # 用户消息锚：截取关键片段
         if user_message and user_message not in anchors:
             anchors.append(user_message[:100])
+        
+        # 失败模式锚：若近期有失败，优先检索相关教训
         if failures:
             anchors.append(failures[0].kind)
+        
+        # 情绪状态锚：将当前心境作为检索上下文
         emotion_label = _emotion_label(emotion, self._cfg)
         anchors.append(emotion_label)
+
+        # 执行语义检索：使用动态锚点集合
         memories = await _el.run_in_executor(
             None, semantic.retrieve_multi_anchor, anchors, self._cfg.memory.semantic_top_k
         )
         _log.info("[context] semantic hits=%d anchors=%r",
                   len(memories), [a[:40] for a in anchors[:3]])
 
-        axioms_val, _ = await task_store.get_fact("soul:hard_axioms")
-        ethos_val, _ = await task_store.get_fact("soul:ethos_baseline")
+        axioms_fact, ethos_fact = await asyncio.gather(
+            task_store.get_fact("soul:hard_axioms"),
+            task_store.get_fact("soul:ethos_baseline"),
+        )
+        axioms_val, _ = axioms_fact
+        ethos_val, _ = ethos_fact
         soul_section = _fmt_soul(axioms_val, ethos_val)
 
         _wm_items = wm.get_top(15)
