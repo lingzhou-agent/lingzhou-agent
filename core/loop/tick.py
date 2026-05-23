@@ -14,7 +14,7 @@ from typing import Any
 
 from rich.console import Console
 
-from core.judgment import JudgmentOutput, CognitionFrame
+from core.judgment import JudgmentOutput
 from core.perception import (
     build_emotion_replay,
     build_perception_replay,
@@ -472,14 +472,12 @@ async def _decide_initial_action(
         pending_override=pending_initial_thinking,
     )
     action = await loop._judgment.decide(
-        CognitionFrame(
-            percept=prep.percept,
-            wm=loop._wm,
-            task_store=loop._task_store,
-            episodic=loop._episodic,
-            semantic=loop._semantic,
-            emotion=loop._emotion,
-        ),
+        prep.percept,
+        loop._wm,
+        loop._task_store,
+        loop._episodic,
+        loop._semantic,
+        loop._emotion,
         active_task=active_task,
         user_message=user_message,
         ethos_state=prep.ethos_state,

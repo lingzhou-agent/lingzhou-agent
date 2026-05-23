@@ -828,16 +828,13 @@ class SubagentRunner:
             percept = Percept(summary=cfg.goal if tick == 0 else "")
 
             try:
-                from core.judgment import CognitionFrame
                 output = await self._judgment.decide(
-                    CognitionFrame(
-                        percept=percept,
-                        wm=sub_wm,
-                        task_store=task_store_view,
-                        episodic=episodic_view,
-                        semantic=semantic_view,
-                        emotion=neutral_emotion,
-                    ),
+                    percept,
+                    sub_wm,
+                    task_store_view,
+                    episodic_view,
+                    semantic_view,
+                    neutral_emotion,
                     user_message=cfg.goal if tick == 0 else "",
                     ethos_state=inherited_ethos_state,  # Tier-2: 传入继承的 Ethos
                     registry_override=filtered_reg,

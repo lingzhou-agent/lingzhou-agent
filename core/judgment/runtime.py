@@ -17,7 +17,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from provider.catalog import lookup_model
 from core.execution import action_key_param
@@ -169,6 +169,42 @@ class JudgmentLayer:
                 completion=usage.get("completion_tokens", 0),
             )
 
+    def _coerce_frame_args(
+        self,
+        frame_or_percept: "CognitionFrame | Percept",
+        wm: "WorkingMemory | None",
+        task_store: "TaskStore | None",
+        episodic: "EpisodicMemory | None",
+        semantic: "SemanticMemory | None",
+        emotion: "EmotionState | None",
+    ) -> tuple[
+        "Percept",
+        "WorkingMemory",
+        "TaskStore",
+        "EpisodicMemory",
+        "SemanticMemory",
+        "EmotionState",
+    ]:
+        if isinstance(frame_or_percept, CognitionFrame):
+            return (
+                frame_or_percept.percept,
+                frame_or_percept.wm,
+                frame_or_percept.task_store,
+                frame_or_percept.episodic,
+                frame_or_percept.semantic,
+                frame_or_percept.emotion,
+            )
+        if None in (wm, task_store, episodic, semantic, emotion):
+            raise TypeError("decide/_assemble_context 缺少认知基底参数")
+        return (
+            frame_or_percept,
+            cast("WorkingMemory", wm),
+            cast("TaskStore", task_store),
+            cast("EpisodicMemory", episodic),
+            cast("SemanticMemory", semantic),
+            cast("EmotionState", emotion),
+        )
+
     def set_identity_prefix(self, prefix: str) -> None:
         """由 SoulManager.bootstrap() 调用，将 BOOTSTRAP.md/IDENTITY.md 永久注入 system prompt。"""
         self._identity_prefix = prefix
@@ -311,7 +347,11 @@ class JudgmentLayer:
             return self._provider
         # _routing_providers 按 tier 存储，用完整 model_ref 匹配（不能用 p._model 短 ID，会永远不等）
         for p in self._routing_providers.values():
-            p_ref = getattr(p, "_model_ref", None) or getattr(p, "_model", None)
+            p_ref = (
+                getattr(p, "model_ref", None)
+                or getattr(p, "_model_ref", None)
+                or getattr(p, "_model", None)
+            )
             if p_ref == model_ref:
                 return p
         if model_ref not in self._override_providers:
