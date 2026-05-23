@@ -23,7 +23,7 @@ _MODEL_PRICES: dict[str, dict[str, float]] = {
     "deepseek-reasoner":  {"input": 0.55, "output": 2.19},
     "qwen3.6-plus":       {"input": 0.50, "output": 2.00},
     "qwen3.5-plus":       {"input": 0.35, "output": 1.40},
-    "qwen-plus":          {"input": 0.20, "output": 0.80},
+
 }
 
 

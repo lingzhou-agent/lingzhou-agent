@@ -26,8 +26,8 @@ from typing import Any, Optional
 from tools.registry import tool, ToolManifest, ToolResult, ToolParam, ToolContext
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
-BROWSER_CMD = "npx"
-BROWSER_ARGS = ["agent-browser"]
+BROWSER_CMD = "agent-browser"
+BROWSER_ARGS = []
 BROWSER_TIMEOUT = 30  # 浏览器操作超时（秒）
 _NAVIGATE_NETWORK_PATTERNS = (
     "err_name_not_resolved",
@@ -74,7 +74,7 @@ def _find_browser() -> Optional[str]:
     try:
         r = subprocess.run(
             ["npx", "agent-browser", "--version"],
-            capture_output=True, text=True, timeout=5, check=False,
+            capture_output=True, text=True, timeout=30, check=False,
         )
         if r.stdout.strip():
             return "npx agent-browser"
@@ -86,14 +86,19 @@ def _find_browser() -> Optional[str]:
 async def _browser_run(*args: str, timeout: int = BROWSER_TIMEOUT) -> tuple[int, str, str]:
     """异步运行 agent-browser 命令。"""
     cmd = BROWSER_ARGS + list(args)
+    env = os.environ.copy()
     proc = await asyncio.create_subprocess_exec(
         BROWSER_CMD, *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return proc.returncode or -1, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+        rc = proc.returncode
+        if rc is None:
+            rc = 0 if stdout.strip() else -1
+        return rc, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
     except asyncio.TimeoutError:
         proc.kill()
         return -1, "", "操作超时"
