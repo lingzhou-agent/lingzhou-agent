@@ -219,6 +219,35 @@ async def memory_get_fact(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 
 
 @tool(ToolManifest(
+    name="memory.list_facts",
+    description=(
+        "按前缀枚举持久化 facts，用于回顾成长历史。\n"
+        "常用前缀：evolution:history:（进化事件）、soul:（身份核心）"
+    ),
+    prefer_tier="reader",
+    capabilities=("ask_evidence", "plan_bootstrap_exempt", "plan_alignment_exempt"),
+    params=[
+        ToolParam("prefix", "string", "key 前缀，如 evolution:history:", required=True),
+        ToolParam("limit", "number", "返回条数上限，默认 20", required=False),
+    ],
+))
+async def memory_list_facts(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    prefix = (params.get("prefix") or "").strip()
+    if not prefix:
+        return ToolResult(summary="prefix 不能为空", skipped=True)
+    limit = int(params.get("limit") or 20)
+    limit = max(1, min(limit, 100))
+    rows = await ctx.task_store.list_facts(prefix=prefix, limit=limit)
+    if not rows:
+        return ToolResult(summary=f"前缀 {prefix!r} 下无 facts", skipped=True)
+    lines = [f"{k}: {v[:120]}" for k, v in rows]
+    return ToolResult(
+        summary=f"找到 {len(rows)} 条 facts（前缀 {prefix!r}）",
+        evidence="\n".join(lines),
+    )
+
+
+@tool(ToolManifest(
     name="failure.dismiss",
     description="豁免指定失败记录，同 kind 的失败以后不再重复记录",
     prefer_tier="reader",

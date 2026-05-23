@@ -564,9 +564,20 @@ class CognitionLoop:
         task_template = self._self_drive.generate_exploration_task(
             signal.suggested_domain or "self_evolution"
         )
-        self._wm.add(WMItem(
-            kind="self_drive",
-            content=(
+        if signal.drive_type == "consolidate":
+            drive_content = (
+                f"[自驱信号·整合] 空闲 {self._behavior.wait_streak} 轮，"
+                f"自驱力 C={signal.curiosity_score:.2f}，模式=内聚整合。\n"
+                f"触发原因: {signal.rationale}\n"
+                f"待运行 self_drive 任务: {len(_pending_sd)} 个；上次 self_drive 完成: {_last_done_ago}\n"
+                "本次请优先整合与巩固已有知识，而非开辟新方向：\n"
+                "· 回顾最近几次任务的结论，写入语义记忆或情节记忆\n"
+                "· 检查并更新 SOUL.md / DREAMS.md 的认知偏差\n"
+                "· 检视近期失败，提取可复用的错误模式\n"
+                "若认为当前状态仍需探索，可忽略此整合信号。"
+            )
+        else:
+            drive_content = (
                 f"[自驱信号] 空闲 {self._behavior.wait_streak} 轮，"
                 f"自驱力 C={signal.curiosity_score:.2f}。\n"
                 f"触发原因: {signal.rationale}\n"
@@ -578,7 +589,10 @@ class CognitionLoop:
                 "若认可这次自驱触发，可调用 task.add 创建任务；"
                 "建议显式设置 source=self_drive，以便后续去重与追踪。\n"
                 "本轮探索请优先读全相关文件（不加 limit），感知完整后再决定存储哪些结论。"
-            ),
+            )
+        self._wm.add(WMItem(
+            kind="self_drive",
+            content=drive_content,
             priority=self._cfg.thresholds.wm_pri_signal,
         ))
         # 自驱探索：强制下一 tick 使用 high thinking 以保障推理深度

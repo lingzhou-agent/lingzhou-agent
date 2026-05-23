@@ -27,7 +27,8 @@ class SelfModel:
     version: str = ""
 
     # 运行态
-    started_at: float = 0.0
+    started_at: float = 0.0   # 本次会话启动时间戳（每次重启重置）
+    born_at: float = 0.0      # 首次诞生时间戳（跨重启持久，来自 soul:born_at）
     tick_count: int = 0
     api_call_count: int = 0
     tool_call_count: int = 0
@@ -102,6 +103,22 @@ class SelfModel:
         m, s = divmod(rem, 60)
         return f"{h}h {m}m {s}s"
 
+    @property
+    def lifetime_seconds(self) -> float:
+        """自首次诞生以来的总时长（跨重启）。"""
+        return time.time() - self.born_at if self.born_at > 0 else self.uptime_seconds
+
+    @property
+    def lifetime_display(self) -> str:
+        secs = int(self.lifetime_seconds)
+        if secs < 3600:
+            return f"{secs // 60}m"
+        if secs < 86400:
+            h, rem = divmod(secs, 3600)
+            return f"{h}h {rem // 60}m"
+        days, rem = divmod(secs, 86400)
+        return f"{days}天{rem // 3600}h"
+
     def set_routing(self, cfg: "Config") -> None:
         self.primary_model = cfg.model
         routing = getattr(cfg, "routing", {}) or {}
@@ -152,9 +169,12 @@ class SelfModel:
 
 def fmt_self_model(sm: SelfModel) -> str:
     """将自我模型格式化为 LLM 感知上下文字段。"""
+    lifetime_hint = (
+        f"累计存在: {sm.lifetime_display}" if sm.born_at > 0 else "首次启动"
+    )
     lines = [
         f"名称: {sm.name}",
-        f"已运行: {sm.uptime_display}  (tick #{sm.tick_count})",
+        f"已运行: {sm.uptime_display}  (tick #{sm.tick_count})  [{lifetime_hint}]",
         f"API 调用: {sm.api_call_count}  工具调用: {sm.tool_call_count}",
         f"Token 消耗: {sm.total_tokens:,}  (输入 {sm.total_prompt_tokens:,} + 输出 {sm.total_completion_tokens:,})",
         f"计费模式: {'订阅制（token 不计费）' if sm.billing_mode == 'subscription' else ('按量 $' + f'{sm.estimated_cost_usd:.4f}' if sm.estimated_cost_usd > 0 else '按量（未配置 model_prices）')}",

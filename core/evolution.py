@@ -20,7 +20,7 @@ from pathlib import Path
 import logging
 from typing import TYPE_CHECKING, Any
 
-from core.skill import ensure_workspace_skill_file, _split_frontmatter
+from core.skill import ensure_workspace_skill_file, _split_frontmatter, workspace_skill_file
 
 _log = logging.getLogger("lingzhou.evolution")
 
@@ -518,7 +518,7 @@ print("SMOKE_OK")
         if clamped_dims:
             _log.info("[evolution] ethos_baseline 夹幅修正（超过 ±%.2f）: %s", _max_delta, clamped_dims)
         _log.info("[evolution] ethos_baseline 已更新: %s", validated)
-        await self._update_dreams(f"价值观微调：{validated}")
+        await self._update_dreams(f"价值观微调：{validated}", ctx=ctx)
         clamp_note = f"夹幅修正: {'; '.join(clamped_dims)}" if clamped_dims else ""
         return EvolutionResult(success=True, target="ethos_baseline",
                                new_code=json.dumps(validated), reason=clamp_note)
@@ -645,6 +645,77 @@ print("SMOKE_OK")
                 skill_path.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
             return EvolutionResult(success=False, target=f"skill:{skill_name}", reason=str(exc))
 
+    async def synthesize_skill(
+        self, skill_name: str, description: str, *, ctx: ToolContext | None = None
+    ) -> EvolutionResult:
+        """从零合成一个新技能 SKILL.md 并写入 workspace/skills/。
+
+        当没有现有 skill 可进化，但 LLM 认为需要一个新的认知护栏时调用。
+        写入后立即触发 SkillRegistry 热重载。
+        """
+        from provider.base import Message
+
+        workspace_dir = self._cfg.workspace_dir
+        skill_path = workspace_skill_file(workspace_dir, skill_name)
+        if skill_path.exists():
+            # 已存在时退化为 evolve_skill
+            return await self.evolve_skill(skill_name, description, ctx=ctx)
+
+        messages = [
+            Message(
+                role="system",
+                content=(
+                    "你是 lingzhou 的自进化模块，负责合成新的 skill 认知护栏文件。\n"
+                    "输出格式：完整的 SKILL.md Markdown 文件，以 YAML frontmatter 开头。\n"
+                    "frontmatter 必须包含：name、description、tags（列表）、triggers（列表）。\n"
+                    "正文为该 skill 的激活指导文本，描述灵舟在此 skill 激活时应做什么、避免什么。\n"
+                    "长度：frontmatter + 正文合计 100~400 字，简洁清晰。\n"
+                    "只输出 SKILL.md 内容，不要任何额外文字或代码块。"
+                ),
+            ),
+            Message(
+                role="user",
+                content=(
+                    f"技能名称：{skill_name}\n"
+                    f"期望描述：{description[:800]}\n\n"
+                    "请为这个认知护栏合成完整的 SKILL.md，让灵舟能在合适的场景下激活它。"
+                ),
+            ),
+        ]
+        try:
+            new_src = (await self._provider.chat(messages)).strip()
+            if not new_src:
+                return EvolutionResult(success=False, target=f"skill:{skill_name}", reason="LLM 返回空内容")
+
+            meta, _body = _split_frontmatter(new_src)
+            if not meta.get("name") or not meta.get("description"):
+                return EvolutionResult(
+                    success=False, target=f"skill:{skill_name}",
+                    reason="skill 校验失败：缺少 name 或 description"
+                )
+            if str(meta.get("name") or "").strip() != skill_name:
+                return EvolutionResult(
+                    success=False, target=f"skill:{skill_name}",
+                    reason=f"skill 校验失败：name 与目标 {skill_name!r} 不一致"
+                )
+
+            skill_path.parent.mkdir(parents=True, exist_ok=True)
+            skill_path.write_text(new_src, encoding="utf-8")
+
+            judgment = getattr(ctx, "judgment", None) if ctx is not None else None
+            reload_skills = getattr(judgment, "reload_skills", None)
+            if callable(reload_skills):
+                reload_skills()
+
+            _log.info("[evolution] 新 skill %r 已合成写入: %s", skill_name, skill_path)
+            await self._update_dreams(f"合成新技能：{skill_name}——{description[:60]}", ctx=ctx)
+            return EvolutionResult(success=True, target=f"skill:{skill_name}", new_code=new_src)
+        except Exception as exc:
+            return EvolutionResult(
+                success=False, target=f"skill:{skill_name}",
+                reason=traceback.format_exc(limit=3)
+            )
+
     async def evolve_tool(self, tool_name: str, tool_path: Path, feedback: str, ctx: ToolContext | None = None) -> EvolutionResult:
         """根据反馈重写工具，热替换。"""
         current_src = tool_path.read_text(encoding="utf-8") if tool_path.exists() else ""
@@ -741,7 +812,7 @@ print("SMOKE_OK")
                         tool_path=tool_path,
                         backup_path=backup_path,
                     )
-                await self._update_dreams(f"习得改进能力：{tool_name} 工具已根据失败反馈重写并热加载。")
+                await self._update_dreams(f"习得改进能力：{tool_name} 工具已根据失败反馈重写并热加载。", ctx=ctx)
                 return EvolutionResult(success=True, target=tool_name, new_code=new_src)
 
             except SyntaxError as exc:
@@ -966,11 +1037,12 @@ print("SMOKE_OK")
             reason=f"competitive_evolve: candidate={candidate_idx} score={score}",
         )
 
-    async def _update_dreams(self, trigger_desc: str) -> None:
-        """进化成功后，追加一条真实的志向到 DREAMS.md。
+    async def _update_dreams(self, trigger_desc: str, ctx: "ToolContext | None" = None) -> None:
+        """进化成功后，追加一条真实的志向到 DREAMS.md，并写入持久历史 fact。
 
         LLM 根据刚刚发生的进化事件，用第一人称写一句新的长期志向（≤40字）。
         追加到 DREAMS.md 末尾——这是灵舟自己写给自己的成长记录，不是摘要。
+        同时在 DB 写一条 evolution:history:{ts} fact，保证身份叙事可追溯。
         """
         from provider.base import Message
         from datetime import datetime, timezone
@@ -1001,6 +1073,20 @@ print("SMOKE_OK")
             with dreams_path.open("a", encoding="utf-8") as f:
                 f.write(entry)
             _log.info("[evolution] DREAMS.md 追加志向: %s", aspiration[:60])
+            # ── 持久化结构化历史 fact（幂等，按毫秒时间戳去重） ──
+            if ctx is not None:
+                try:
+                    _fact_ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:17]
+                    _fact_key = f"evolution:history:{_fact_ts}"
+                    _fact_val = json.dumps({
+                        "desc": trigger_desc[:200],
+                        "aspiration": aspiration[:120],
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }, ensure_ascii=False)
+                    await ctx.task_store.set_fact(_fact_key, _fact_val, scope="system")
+                    _log.debug("[evolution] 历史 fact 已写入: %s", _fact_key)
+                except Exception as _fe:
+                    _log.debug("[evolution] 历史 fact 写入跳过: %s", _fe)
         except Exception as exc:
             _log.debug("[evolution] DREAMS.md 更新跳过: %s", exc)
 

@@ -221,3 +221,61 @@ async def skill_evolve(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
             "target": result.target or "",
         },
     )
+
+
+@tool(ToolManifest(
+    name="skill.synthesize",
+    description=(
+        "从零合成一个全新的 skill 认知护栏，写入 workspace/skills/ 并立即热重载。\n"
+        "用于：没有现成 skill 但你发现某类场景反复出现，需要一个新的行为准则时。\n"
+        "若同名 skill 已存在，自动退化为 skill.evolve 逻辑。"
+    ),
+    prefer_tier="reasoner",
+    params=[
+        ToolParam("name", "string", "新 skill 的 hyphen 规范名，如 careful-deletion、slow-think", required=True),
+        ToolParam("description", "string", "这个 skill 的用途与激活场景描述（100 字以内）", required=True),
+    ],
+))
+async def skill_synthesize(params: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    name = str(params.get("name") or "").strip()
+    description = str(params.get("description") or "").strip()
+    # 规范化：小写 + 空格/下划线 → hyphen
+    import re as _re
+    name = _re.sub(r"[\s_]+", "-", name.lower())
+    name = _re.sub(r"[^a-z0-9\-]", "", name).strip("-")
+    if not name:
+        return ToolResult(summary="name 不能为空", error="EmptySkillName")
+    if not description:
+        return ToolResult(summary="description 不能为空", error="EmptyDescription")
+
+    judgment = getattr(ctx, "judgment", None)
+    provider = getattr(judgment, "_provider", None)
+    registry = getattr(judgment, "_registry", None)
+    if provider is None or registry is None:
+        return ToolResult(
+            summary="skill.synthesize 缺少 judgment provider/registry 上下文",
+            error="MissingEvolutionContext",
+        )
+
+    try:
+        from core.evolution import EvolutionEngine
+
+        engine = EvolutionEngine(ctx.config, provider, registry)
+        result = await engine.synthesize_skill(name, description, ctx=ctx)
+    except Exception as exc:
+        return ToolResult(summary=f"skill.synthesize 内部错误: {exc}", error="EvolutionError")
+
+    if not result.success:
+        return ToolResult(
+            summary=f"skill {name!r} 合成失败: {result.reason}",
+            error="SynthesisFailed",
+        )
+
+    return ToolResult(
+        summary=f"skill {name!r} 已合成写入 workspace，下一轮 tick 自动生效。",
+        evidence=(result.new_code or "")[:500],
+        kind="skill_synthesis",
+        priority=0.9,
+        resource_key=name,
+        metadata={"skill": name, "target": result.target or ""},
+    )

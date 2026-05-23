@@ -33,13 +33,18 @@ async def _run_cycle_impl(loop: Any, cycle: int) -> int:
 
 async def _wait_after_cycle_impl(loop: Any) -> None:
     cfg = loop._cfg
+    # arousal 调制系数：高唤醒→更短间隔（最多缩 20%），低唤醒→更长间隔（最多扩 20%）
+    # 不干预 LLM 主动设置的 _pending_idle_gap，只影响配置兜底值
+    _arousal = float(getattr(getattr(loop, "_emotion", None), "arousal", 0.5))
+    _arousal_factor = max(0.8, 1.0 - 0.4 * (_arousal - 0.5))  # [0.8, 1.2]
+
     dispatcher = getattr(loop, "_tick_dispatcher", None)
     if dispatcher is not None and dispatcher.enabled:
         has_work = dispatcher.has_running() or dispatcher.has_pending()
         if has_work:
             gap = max(float(cfg.loop.min_act_gap) / 1000.0, 0.2)
         else:
-            gap = cfg.loop.active_idle_gap / 1000.0
+            gap = cfg.loop.active_idle_gap / 1000.0 * _arousal_factor
         await _wait_for_event_impl(loop, gap, await loop._task_store.get_active())
         await loop._maybe_hot_reload_provider()
         return
@@ -51,19 +56,19 @@ async def _wait_after_cycle_impl(loop: Any) -> None:
         await _wait_for_event_impl(loop, act_gap, after_task)
     else:
         # 等待间隔决策树：
-        #   ① LLM 上轮主动要求 next_idle_gap_secs → 优先尊重 LLM 意图
+        #   ① LLM 上轮主动要求 next_idle_gap_secs → 优先尊重 LLM 意图（不加 arousal 调制）
         #   ② 有活跃 task（上轮 decision≠act，或 act 后 task 仍在）→ active_idle_gap（较短，保持响应）
         #   ③ bootstrap 未完成 → 同 ② 缩短间隔（避免引导阶段空等 max_idle_gap）
         #   ④ 真正空闲（无 task、无 bootstrap）→ max_idle_gap（节省 CPU/计费）
         if loop._pending_idle_gap is not None:
-            gap = loop._pending_idle_gap                   # ① LLM 主动调度
+            gap = loop._pending_idle_gap                                       # ① LLM 主动调度
         elif after_task is not None:
-            gap = cfg.loop.active_idle_gap / 1000.0        # ② 有活跃任务
+            gap = cfg.loop.active_idle_gap / 1000.0 * _arousal_factor         # ② 有活跃任务
         elif getattr(loop, '_bootstrap_mode', 'none') == "full":
             # bootstrap 未完成时，等同于有隐式未完成工作：缩短轮询间隔提升响应度
-            gap = cfg.loop.active_idle_gap / 1000.0        # ③ bootstrap 阶段
+            gap = cfg.loop.active_idle_gap / 1000.0 * _arousal_factor         # ③ bootstrap 阶段
         else:
-            gap = cfg.loop.max_idle_gap / 1000.0           # ④ 完全空闲
+            gap = cfg.loop.max_idle_gap / 1000.0 * _arousal_factor            # ④ 完全空闲
         await _wait_for_event_impl(loop, gap, after_task)
     await loop._maybe_hot_reload_provider()
 

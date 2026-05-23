@@ -246,6 +246,20 @@ async def _prepare_runtime_run_impl(loop: Any) -> tuple[Config, str]:
 
 async def _restore_state_from_db_impl(loop: Any) -> None:
     """从 DB 恢复上次持久化的状态，实现跨重启连续性。"""
+    # ── soul:born_at：首次启动写入，后续恢复；记录灵舟的诞生时刻 ──
+    import time as _time
+    born_json, born_found = await loop._task_store.get_fact("soul:born_at")
+    if born_found and born_json:
+        try:
+            loop._judgment.self_model.born_at = float(born_json)
+        except Exception:
+            pass
+    else:
+        _born_ts = _time.time()
+        await loop._task_store.set_fact("soul:born_at", str(_born_ts), scope="system")
+        loop._judgment.self_model.born_at = _born_ts
+        _log.info("[startup] soul:born_at 首次写入: %.0f", _born_ts)
+
     emotion_json, emotion_found = await loop._task_store.get_fact("soul:emotion_state")
     if emotion_found and emotion_json:
         try:

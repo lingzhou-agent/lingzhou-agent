@@ -97,6 +97,7 @@ class CuriosityState:
 class DriveSignal:
     """自驱力信号 — 传递给判断层。"""
     should_explore: bool = False
+    drive_type: str = "explore"    # "explore"（扩展探索）| "consolidate"（内聚整合）
     curiosity_score: float = 0.5
     suggested_domain: Optional[str] = None
     rationale: str = ""
@@ -236,12 +237,25 @@ class SelfDriveEngine:
             rationale_parts.append(f"探索领域: {suggested_domain}")
 
         rationale = "; ".join(rationale_parts) if rationale_parts else "好奇心未达阈值"
+        # 内聚整合模式：已完成≥3任务且预测误差低时，30% 概率切换为巩固模式
+        import random as _random
+        _consolidate = (
+            should_explore
+            and s.tasks_completed >= 3
+            and s.prediction_error_ema < 0.15
+            and _random.random() < 0.30
+        )
+        drive_type = "consolidate" if _consolidate else "explore"
+        if _consolidate:
+            rationale_parts.append("切换整合模式（tasks_completed≥3 且预测误差低）")
+            rationale = "; ".join(rationale_parts)
         _log.debug(
-            "[self_drive] C=%.3f idle=%d has_task=%s explore=%s domain=%s | %s",
-            C, idle_ticks, has_active_task, should_explore, suggested_domain, rationale,
+            "[self_drive] C=%.3f idle=%d has_task=%s explore=%s drive_type=%s domain=%s | %s",
+            C, idle_ticks, has_active_task, should_explore, drive_type, suggested_domain, rationale,
         )
         return DriveSignal(
             should_explore=should_explore,
+            drive_type=drive_type,
             curiosity_score=C,
             suggested_domain=suggested_domain,
             rationale=rationale,
