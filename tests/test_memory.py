@@ -87,6 +87,40 @@ def test_semantic_importance_slows_decay():
     assert important_eff >= 0.5
 
 
+def test_semantic_retrieve_ranking_uses_effective_activation():
+    from memory.semantic import SemanticMemory, MemoryNode
+
+    old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+
+    ordinary = MemoryNode(
+        id="ordinary-rank",
+        kind="fact",
+        title="python importlib",
+        body="",
+        activation=0.8,
+        importance=0.0,
+        created_at=old_ts,
+    )
+    important = MemoryNode(
+        id="important-rank",
+        kind="fact",
+        title="python",
+        body="",
+        activation=0.8,
+        importance=0.9,
+        created_at=old_ts,
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        sm = SemanticMemory(Path(d), decay_lambda=0.1)
+        sm.upsert(ordinary)
+        sm.upsert(important)
+
+        results = sm.retrieve("python reload importlib hot swap", top_k=2)
+
+        assert results[0]["id"] == "important-rank"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # EpisodicMemory — events.jsonl 轮转
 # ══════════════════════════════════════════════════════════════════════════════

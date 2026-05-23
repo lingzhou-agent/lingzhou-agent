@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import logging as _log_sem
-from .quality_checker import evaluate_retrieval_quality, calculate_recency_decay
+from .quality_checker import evaluate_retrieval_quality
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
 
@@ -717,7 +717,7 @@ class SemanticMemory:
         如果 query_vec 可用且节点有 embedding，
         使用 cosine similarity 混合评分（embedding_weight 加权）。
         """
-        eff_act = calculate_recency_decay(node.created_at, self._decay_lambda, node.activation)
+        eff_act = effective_activation(node, self._decay_lambda)
         q_tokens = set(re.findall(r"\w+", query.lower()))
         n_tokens = set(re.findall(r"\w+", (node.title + " " + node.body).lower()))
         if not q_tokens or not n_tokens:
