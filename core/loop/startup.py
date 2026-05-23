@@ -167,10 +167,23 @@ def _build_routing_providers(cfg: Config) -> dict[str, Any]:
     """根据 cfg.routing 构建分层路由 providers 字典。"""
     if not cfg.routing:
         return {}
+    from provider.catalog import lookup_model_ref, lookup_model
     providers: dict[str, Any] = {}
     for tier, model_ref in cfg.routing.items():
         if not model_ref or model_ref == cfg.model:
             continue
+        # 启动期校验：若 model_id 不在指定 provider 的目录中，但存在于其他 provider，提前告警
+        if "/" in model_ref:
+            if lookup_model_ref(model_ref) is None:
+                model_id = model_ref.split("/", 1)[1]
+                provider_name = model_ref.split("/", 1)[0]
+                alt = lookup_model(model_id)
+                if alt is not None:
+                    _log.warning(
+                        "[routing] tier=%s model=%s: 模型 %r 未在 provider %r 的内置目录中注册，"
+                        "但在其他 provider 中存在。请检查 routing 配置是否正确（provider 名写错）。",
+                        tier, model_ref, model_id, provider_name,
+                    )
         try:
             providers[tier] = create_provider_with_model(cfg, model_ref)
             _log.info("[routing] tier=%s model=%s", tier, model_ref)

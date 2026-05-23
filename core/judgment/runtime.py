@@ -307,8 +307,10 @@ class JudgmentLayer:
         """按 model_ref 找到或创建 provider（用于 routing_overrides 临时覆盖）。"""
         if model_ref == self._cfg.model:
             return self._provider
+        # _routing_providers 按 tier 存储，用完整 model_ref 匹配（不能用 p._model 短 ID，会永远不等）
         for p in self._routing_providers.values():
-            if getattr(p, "_model", None) == model_ref:
+            p_ref = getattr(p, "_model_ref", None) or getattr(p, "_model", None)
+            if p_ref == model_ref:
                 return p
         if model_ref not in self._override_providers:
             from provider import create_provider_with_model
