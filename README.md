@@ -26,21 +26,14 @@ curl -fsSL https://raw.githubusercontent.com/suuugeee/lingzhou-agent/main/script
 lingzhou
 ```
 
-如果你已经 clone 了源码：
-
-```bash
-git clone https://github.com/suuugeee/lingzhou-agent.git
-cd lingzhou-agent
-./setup-lingzhou.sh
-lingzhou
-```
-
 如果你偏好 `pipx`：
 
 ```bash
 pipx install --python python3.12 git+https://github.com/suuugeee/lingzhou-agent.git
 lingzhou
 ```
+
+如果你需要源码检出、本地开发或提交流程，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 首次运行 `lingzhou` 会自动进入 `onboard`，完成 provider 配置、初始化数据库与 workspace，并把运行时目录自动准备到 `~/.lingzhou/`。
 
@@ -79,13 +72,12 @@ sudo systemctl enable --now lingzhou
 
 每个文档页顶部都带有中英文切换入口。
 
-- [架构设计](docs/ARCHITECTURE.md)
+- [架构设计与当前差距](docs/ARCHITECTURE.md)
 - [自驱力与自主探索](docs/SELF_DRIVE.md)
 - [工具目录](docs/TOOLS.md)
 - [配置参考](docs/CONFIG.md)
 - [探针说明](docs/PROBE.md)
 - [插件开发指南](docs/PLUGIN.md)
-- [蓝图偏差审查](docs/DEVIATION_REVIEW.md)
 
 ## 内置工具面
 

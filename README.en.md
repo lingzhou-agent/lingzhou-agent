@@ -26,21 +26,14 @@ curl -fsSL https://raw.githubusercontent.com/suuugeee/lingzhou-agent/main/script
 lingzhou
 ```
 
-If you already cloned the source tree:
-
-```bash
-git clone https://github.com/suuugeee/lingzhou-agent.git
-cd lingzhou-agent
-./setup-lingzhou.sh
-lingzhou
-```
-
 If you prefer `pipx`:
 
 ```bash
 pipx install --python python3.12 git+https://github.com/suuugeee/lingzhou-agent.git
 lingzhou
 ```
+
+For source checkout, local development, or contribution workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The first `lingzhou` run automatically enters `onboard`, walks through provider setup, seeds the runtime database, and prepares the workspace under `~/.lingzhou/`.
 
@@ -79,13 +72,12 @@ Reflection ->  Evolution
 
 Each document page now includes a language switch at the top.
 
-- [Architecture](docs/ARCHITECTURE.en.md)
+- [Architecture and Current Gaps](docs/ARCHITECTURE.en.md)
 - [Self-Drive](docs/SELF_DRIVE.en.md)
 - [Tool Catalog](docs/TOOLS.en.md)
 - [Configuration Reference](docs/CONFIG.en.md)
 - [Probe Guide](docs/PROBE.en.md)
 - [Plugin Guide](docs/PLUGIN.en.md)
-- [Deviation Review](docs/DEVIATION_REVIEW.en.md)
 
 ## Built-In Tool Surface
 

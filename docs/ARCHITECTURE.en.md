@@ -119,3 +119,34 @@ lingzhou currently supports three IO modes:
 - `webhook` — HTTP integration
 
 These channels run alongside the cognition loop and inject events into the runtime.
+
+## Current Gaps
+
+This section folds the old standalone deviation review into the architecture document so the current design and its remaining gaps live in one place.
+
+The list below was re-checked against the current source tree. It keeps only items that are still not fully closed; capabilities already covered by code and tests are no longer listed as gaps.
+
+### P0: Core Loop Gaps Still Open
+
+| ID | Blueprint Requirement | Current State | Deviation |
+|----|-----------------------|---------------|-----------|
+| P0-1 | Native multimodal perception loop | `tools/image.py`, `core/worker.py`, and tests show that `image.analyze`, `multimodal-worker`, and vision-model routing are already implemented; however, `core/perception/` still has no direct multimodal entry point | If the blueprint expectation is “multimodal input is consumed by perception itself”, the current system still relies on Judgment to call tools explicitly rather than on a native always-on perception path |
+| P0-2 | Automatic task-level model-routing closure | `task.model_tier`, `_prefer_tier_for_task()`, and `_apply_tick_model_strategy()` already exist, so tasks can persist a tier and feed it back into later routing | Partially implemented; routing guard / meta-reflection suggestions still surface as hints by default instead of auto-writing `task.model_tier`, and the persistent preference path is currently focused on `reasoner/repair` |
+
+### P1: Structural Maturity
+
+| ID | Blueprint Requirement | Current State | Deviation |
+|----|-----------------------|---------------|-----------|
+| P1-1 | Full Run abstraction semantics | `Run` storage, `WorkerLayer`, `refresh_running_runs()`, and `build_task_run_result_patch()` already form a working mainline | The mainline exists; the remaining gap is stronger control-plane / execution-plane separation, clearer Run ownership, and richer lifecycle semantics |
+| P1-2 | Fully automatic MetaReflection closure | `build_meta_reflection()`, `meta_reflections`, and `_ingest_actionable_meta_reflections()` are implemented and can write into WM, facts, and semantic memory | The dual-loop reflection substrate exists; the remaining gap is that most proposals still require an explicit LLM or tool-mediated approval before becoming policy |
+
+### P2: Quality Improvements
+
+| ID | Blueprint Requirement | Current State | Deviation |
+|----|-----------------------|---------------|-----------|
+| P2-1 | Before/after evolution evaluation | `core/evolution.py` already has smoke and rollback guards, but there is still no unified before/after scoring loop | Partial |
+
+### Summary
+
+The following capabilities should no longer be described as open gaps: the autonomous inner loop, worker executors, Run-to-Task state feedback, progress crystallization, multi-worker / multi-task concurrency, and the MetaReflection substrate.
+The more accurate remaining gaps are native multimodal perception, automatic task-level routing write-back, further maturation of the Run abstraction, and structured evolution evaluation.
