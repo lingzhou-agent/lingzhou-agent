@@ -6,7 +6,7 @@ import json as _json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 
@@ -18,6 +18,140 @@ dev_app = typer.Typer(
     help="开发者工具：evolve / tools / skills / model / update / version / doctor",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
+
+_RUNTIME_ROUTING_TIERS = frozenset({"reader", "reasoner", "repair"})
+_MODEL_TARGET_ALIASES = {
+    "": "primary",
+    "model": "primary",
+    "main": "primary",
+    "primary": "primary",
+    "thinking": "reasoner",
+    "reasoner": "reasoner",
+    "complex": "reasoner",
+    "reader": "reader",
+    "simple": "reader",
+    "repair": "repair",
+}
+
+
+def _provider_name(model_ref: str) -> str:
+    provider, _, _ = model_ref.partition("/")
+    return provider
+
+
+def _normalize_model_target(target: str) -> str:
+    return _MODEL_TARGET_ALIASES.get((target or "").strip().lower(), (target or "").strip())
+
+
+def _effective_target_model(cfg_data: dict[str, Any], target: str) -> str:
+    normalized = _normalize_model_target(target)
+    if normalized == "primary":
+        return str(cfg_data.get("model") or "")
+    routing = cfg_data.get("routing")
+    if isinstance(routing, dict):
+        model_ref = routing.get(normalized)
+        if isinstance(model_ref, str) and model_ref:
+            return model_ref
+    return str(cfg_data.get("model") or "")
+
+
+def _apply_model_target_selection(
+    cfg_data: dict[str, Any],
+    *,
+    current_model: str,
+    new_model: str,
+    target: str,
+) -> dict[str, Any]:
+    normalized = _normalize_model_target(target)
+    if normalized == "primary":
+        previous = str(cfg_data.get("model") or current_model)
+        cfg_data["model"] = new_model
+        return {
+            "target": "primary",
+            "previous": previous,
+            "routing_changed": _sync_routing_models_on_primary_switch(
+                cfg_data,
+                old_model=current_model,
+                new_model=new_model,
+            ),
+            "runtime_override_tier": None,
+        }
+
+    routing = cfg_data.get("routing")
+    if not isinstance(routing, dict):
+        routing = {}
+        cfg_data["routing"] = routing
+
+    previous = _effective_target_model(cfg_data, normalized)
+    routing[normalized] = new_model
+    return {
+        "target": normalized,
+        "previous": previous,
+        "routing_changed": [normalized],
+        "runtime_override_tier": normalized if normalized in _RUNTIME_ROUTING_TIERS else None,
+    }
+
+
+def _merge_runtime_routing_override(overrides: dict[str, str], *, tier: str, model_ref: str) -> dict[str, str]:
+    merged = {
+        key: value
+        for key, value in overrides.items()
+        if key in _RUNTIME_ROUTING_TIERS and isinstance(value, str) and value
+    }
+    merged[tier] = model_ref
+    return merged
+
+
+def _set_db_routing_override(cfg_path: Path, *, tier: str, model_ref: str) -> None:
+    if tier not in _RUNTIME_ROUTING_TIERS or not model_ref:
+        return
+
+    import sqlite3 as _sqlite3
+
+    try:
+        from core.config import Config as _Config
+
+        cfg = _Config.load(cfg_path)
+        db_path = cfg.db_path
+        if not db_path.exists():
+            return
+
+        conn = _sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT value FROM facts WHERE key='pref:routing_overrides'"
+            ).fetchone()
+            overrides: dict[str, str] = {}
+            if row and row[0]:
+                payload = _json.loads(row[0])
+                if isinstance(payload, dict):
+                    overrides = {
+                        key: value
+                        for key, value in payload.items()
+                        if isinstance(key, str) and isinstance(value, str)
+                    }
+
+            merged = _merge_runtime_routing_override(overrides, tier=tier, model_ref=model_ref)
+            serialized = _json.dumps(merged, ensure_ascii=False)
+            if row:
+                conn.execute(
+                    "UPDATE facts SET value=?, scope='system', updated_at=datetime('now') WHERE key='pref:routing_overrides'",
+                    (serialized,),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO facts (key, value, scope, updated_at) VALUES ('pref:routing_overrides', ?, 'system', datetime('now'))",
+                    (serialized,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        console.print(
+            f"[green]✓ 运行时 {tier} override 已同步:[/green] [bold cyan]{model_ref}[/bold cyan]"
+        )
+    except Exception as exc:
+        console.print(f"[yellow]⚠ 运行时 {tier} override 同步失败（非致命）: {exc}[/yellow]")
 
 
 def _sync_routing_models_on_primary_switch(
@@ -39,10 +173,6 @@ def _sync_routing_models_on_primary_switch(
     routing = cfg_data.get("routing")
     if not isinstance(routing, dict):
         return []
-
-    def _provider_name(model_ref: str) -> str:
-        provider, _, _ = model_ref.partition("/")
-        return provider
 
     repair_same_provider = old_model == new_model
     new_provider = _provider_name(new_model)
@@ -244,16 +374,51 @@ def model(
     cfg_data = _json.loads(cfg_path.read_text(encoding="utf-8"))
     current = cfg_data.get("model", "(未设置)")
     chosen_thinking = cfg_data.get("thinking", "off")
-    current_provider, _, current_model_id = str(current).partition("/")
+    model_target = "primary"
+    current_target_model = str(current)
+    current_provider, _, current_model_id = current_target_model.partition("/")
 
     # ── 交互式选择 ─────────────────────────────────────────────────────────
     if interactive or (not set_model):
         console.print(f"当前模型: [bold cyan]{current}[/bold cyan]")
         if not interactive:
             console.print(f"[dim]切换模型: lingzhou model <provider/model-id>[/dim]")
-            console.print(f"[dim]交互切换: lingzhou model -i[/dim]")
+            console.print(f"[dim]交互切换: lingzhou dev model -i[/dim]")
             console.print(f"[dim]查看全部: lingzhou model --list[/dim]")
             return
+
+        console.print("\n[bold]选择要设置的模型槽位[/bold]")
+        target_options = [
+            ("primary", f"主模型 (model)  [dim]当前: {current}[/dim]"),
+            ("reasoner", f"思考层 (reasoner)  [dim]当前: {_effective_target_model(cfg_data, 'reasoner')}[/dim]"),
+            ("reader", f"Reader 层 (reader)  [dim]当前: {_effective_target_model(cfg_data, 'reader')}[/dim]"),
+            ("repair", f"Repair 层 (repair)  [dim]当前: {_effective_target_model(cfg_data, 'repair')}[/dim]"),
+            ("other", "其他 routing 键（手动输入）"),
+        ]
+        for i, (_, label) in enumerate(target_options, 1):
+            console.print(f"  {i}. {label}")
+
+        raw_target = typer.prompt("模型槽位编号", default="1")
+        try:
+            target_idx = int(raw_target.strip()) - 1
+        except ValueError:
+            target_idx = 0
+        if not (0 <= target_idx < len(target_options)):
+            console.print("[red]无效编号[/red]")
+            raise typer.Exit(1)
+
+        selected_target = target_options[target_idx][0]
+        if selected_target == "other":
+            entered_key = typer.prompt("  输入 routing 键", default="reasoner")
+            model_target = _normalize_model_target(entered_key)
+        else:
+            model_target = selected_target
+
+        current_target_model = _effective_target_model(cfg_data, model_target)
+        current_provider, _, current_model_id = current_target_model.partition("/")
+        console.print(
+            f"[dim]本次将设置 {_normalize_model_target(model_target)} 模型槽位，当前值: {current_target_model or current}[/dim]"
+        )
 
         # 交互式：先选 provider
         configured_providers = list(cfg_data.get("providers", {}).keys())
@@ -388,45 +553,60 @@ def model(
 
         set_model = f"{chosen_provider}/{chosen_model_id}"
 
-        # 选思考等级
-        _THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"]
-        _THINKING_DESC = {
-            "off":     "关闭思考，速度最快，省 token",
-            "minimal": "极浅思考，轻量推理",
-            "low":     "低强度思考，例行决策",
-            "medium":  "中等思考，常规判断（推荐日常）",
-            "high":    "深度思考，复杂推理/代码生成",
-        }
-        current_thinking = cfg_data.get("thinking", "off")
-        console.print(f"\n[bold]选择思考等级[/bold]  [dim](当前: {current_thinking})[/dim]")
-        for i, lvl in enumerate(_THINKING_LEVELS, 1):
-            mark = "[bold cyan]●[/bold cyan]" if lvl == current_thinking else " "
-            console.print(f"  {i}. {mark} {lvl:<8} [dim]{_THINKING_DESC[lvl]}[/dim]")
-        cur_default = str(_THINKING_LEVELS.index(current_thinking) + 1) if current_thinking in _THINKING_LEVELS else "1"
-        raw_t = typer.prompt("  等级编号", default=cur_default)
-        try:
-            tidx = int(raw_t.strip()) - 1
-        except ValueError:
-            tidx = -1
-        chosen_thinking = _THINKING_LEVELS[tidx] if 0 <= tidx < len(_THINKING_LEVELS) else current_thinking
+        if _normalize_model_target(model_target) == "primary":
+            # 选思考等级
+            _THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"]
+            _THINKING_DESC = {
+                "off":     "关闭思考，速度最快，省 token",
+                "minimal": "极浅思考，轻量推理",
+                "low":     "低强度思考，例行决策",
+                "medium":  "中等思考，常规判断（推荐日常）",
+                "high":    "深度思考，复杂推理/代码生成",
+            }
+            current_thinking = cfg_data.get("thinking", "off")
+            console.print(f"\n[bold]选择思考等级[/bold]  [dim](当前: {current_thinking})[/dim]")
+            for i, lvl in enumerate(_THINKING_LEVELS, 1):
+                mark = "[bold cyan]●[/bold cyan]" if lvl == current_thinking else " "
+                console.print(f"  {i}. {mark} {lvl:<8} [dim]{_THINKING_DESC[lvl]}[/dim]")
+            cur_default = str(_THINKING_LEVELS.index(current_thinking) + 1) if current_thinking in _THINKING_LEVELS else "1"
+            raw_t = typer.prompt("  等级编号", default=cur_default)
+            try:
+                tidx = int(raw_t.strip()) - 1
+            except ValueError:
+                tidx = -1
+            chosen_thinking = _THINKING_LEVELS[tidx] if 0 <= tidx < len(_THINKING_LEVELS) else current_thinking
 
     # ── 写入配置 ───────────────────────────────────────────────────────────
-    cfg_data["model"] = set_model
-    synced_routing = _sync_routing_models_on_primary_switch(
+    selection = _apply_model_target_selection(
         cfg_data,
-        old_model=current,
-        new_model=set_model,
+        current_model=str(current),
+        new_model=str(set_model),
+        target=model_target,
     )
-    if not interactive:
+    synced_routing = selection["routing_changed"]
+    if not interactive or selection["target"] != "primary":
         chosen_thinking = cfg_data.get("thinking", "off")  # 非交互模式保持原值
 
     old_thinking = cfg_data.get("thinking", "off")
     cfg_data["thinking"] = chosen_thinking
     cfg_path.write_text(_json.dumps(cfg_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    # 同步 DB routing_overrides：避免重启后从 DB 恢复到旧模型
-    _sync_db_routing_overrides(cfg_path, old_model=current, new_model=set_model)
-    console.print(f"[green]✓ 模型已切换:[/green] {current} → [bold cyan]{set_model}[/bold cyan]")
-    if synced_routing:
+    if selection["target"] == "primary":
+        # 同步 DB routing_overrides：避免重启后从 DB 恢复到旧模型
+        _sync_db_routing_overrides(cfg_path, old_model=str(current), new_model=str(set_model))
+        console.print(f"[green]✓ 模型已切换:[/green] {current} → [bold cyan]{set_model}[/bold cyan]")
+    else:
+        console.print(
+            f"[green]✓ {selection['target']} 模型已更新:[/green]"
+            f" {selection['previous'] or current} → [bold cyan]{set_model}[/bold cyan]"
+        )
+        runtime_tier = selection["runtime_override_tier"]
+        if runtime_tier:
+            _set_db_routing_override(cfg_path, tier=runtime_tier, model_ref=str(set_model))
+        else:
+            console.print(
+                f"[yellow]⚠ routing 键 {selection['target']} 不是标准运行时 tier；仅已写入 config routing。[/yellow]"
+            )
+    if synced_routing and selection["target"] == "primary":
         console.print(
             f"[green]✓ 已同步 routing:[/green] {', '.join(synced_routing)} → [bold cyan]{set_model}[/bold cyan]"
         )

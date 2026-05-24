@@ -304,7 +304,7 @@ async def _config_set_rejects_unknown_interval_key(monkeypatch):
 
     with tempfile.TemporaryDirectory() as d:
         cfg_path = Path(d) / "lingzhou.json"
-        cfg_path.write_text((_proj_root() / "lingzhou.json").read_text(encoding="utf-8"), encoding="utf-8")
+        cfg_path.write_text((_proj_root() / "lingzhou.json.example").read_text(encoding="utf-8"), encoding="utf-8")
         before = cfg_path.read_text(encoding="utf-8")
 
         monkeypatch.setattr(config_mod, "_resolve_config_path", lambda ctx=None: cfg_path)
@@ -314,6 +314,29 @@ async def _config_set_rejects_unknown_interval_key(monkeypatch):
         assert res.error == "UnknownConfigKey"
         assert "固定 tick interval 已废弃" in res.summary
         assert cfg_path.read_text(encoding="utf-8") == before
+
+
+def test_config_set_accepts_duration_string_for_millisecond_fields(monkeypatch):
+    asyncio.run(_config_set_accepts_duration_string_for_millisecond_fields(monkeypatch))
+
+
+async def _config_set_accepts_duration_string_for_millisecond_fields(monkeypatch):
+    from tools.config_ops import config_set
+    import tools.config_ops as config_mod
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg_path = Path(d) / "lingzhou.json"
+        cfg_path.write_text((_proj_root() / "lingzhou.json.example").read_text(encoding="utf-8"), encoding="utf-8")
+
+        monkeypatch.setattr(config_mod, "_resolve_config_path", lambda ctx=None: cfg_path)
+
+        res = await config_set({"key": "loop.wake_poll_interval", "value": "100ms"}, _tool_ctx())
+
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+        assert res.error is None
+        assert "✅ loop.wake_poll_interval" in res.summary
+        assert cfg["loop"]["wake_poll_interval"] == 100
 
 
 def test_subagent_filtered_registry_blocks_parent_mutations():
@@ -330,6 +353,31 @@ def test_subagent_filtered_registry_blocks_parent_mutations():
     assert filtered.get("memory.search") is not None
     assert filtered.get("memory.add_wm") is not None
     assert filtered.get("task.ask") is not None
+
+
+def test_tool_registry_discover_skips_hidden_smoke_failed_modules():
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        stem = f"visible_tool_{time.time_ns()}"
+        manifest_name = f"probe.hidden_skip.{time.time_ns()}"
+        (root / f"{stem}.py").write_text(
+            "from tools.registry import ToolManifest, ToolResult, tool\n"
+            f"@tool(ToolManifest(name={manifest_name!r}, description='visible probe'))\n"
+            "async def _visible_probe(params, ctx):\n"
+            "    return ToolResult(summary='ok')\n",
+            encoding="utf-8",
+        )
+        (root / f".{stem}.smoke-failed.py").write_text(
+            "raise RuntimeError('hidden smoke-failed artifact must not be imported')\n",
+            encoding="utf-8",
+        )
+
+        registry = ToolRegistry()
+        registry.discover(root)
+
+        assert registry.get(manifest_name) is not None
 
 
 def test_subagent_runner_restores_parent_registry_after_child_exception():

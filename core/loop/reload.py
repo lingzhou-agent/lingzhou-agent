@@ -73,6 +73,36 @@ def _refresh_semantic_embed_runtime(loop: "CognitionLoop") -> None:
     semantic._embedding_weight = loop._cfg.memory.embedding_weight
 
 
+async def _refresh_runtime_routing_overrides(loop: "CognitionLoop") -> None:
+    task_store = getattr(loop, "_task_store", None)
+    if task_store is None:
+        return
+
+    refreshed: dict[str, str] | None = None
+    try:
+        raw, found = await task_store.get_fact("pref:routing_overrides")
+    except Exception as exc:
+        _log.warning("[hot-reload] 读取 DB routing_overrides 失败,保留当前内存态: %s", exc)
+        return
+
+    if found and raw:
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                refreshed = {
+                    key: value
+                    for key, value in payload.items()
+                    if key in {"reader", "reasoner", "repair"} and isinstance(value, str) and value
+                } or None
+        except Exception as exc:
+            _log.warning("[hot-reload] DB routing_overrides 解析失败,已清空内存态: %s", exc)
+
+    previous = getattr(loop, "_pending_routing_overrides", None)
+    loop._pending_routing_overrides = refreshed
+    if previous != refreshed:
+        _log.info("[hot-reload] routing_overrides 已同步: %s", refreshed or {})
+
+
 async def _build_reload_candidate(
     loop: "CognitionLoop",
     new_cfg: Config,
@@ -134,6 +164,7 @@ async def _commit_hot_reload_candidate(
     loop._auth_profiles_mtime = auth_mtime
     loop._soul._cfg = candidate.cfg
     _refresh_semantic_embed_runtime(loop)
+    await _refresh_runtime_routing_overrides(loop)
 
     try:
         await loop._soul.refresh_identity(loop._judgment)

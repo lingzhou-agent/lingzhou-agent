@@ -320,6 +320,7 @@ runtime hint 响应规则（高优先级）：
 Shell 使用规则：
 - `shell_capabilities_section` 是运行时真相。若 `sandbox=false`，表示并非平台级沙盒隔离；限制主要来自宿主环境可用命令、超时和输出截断
 - shell 是一次性执行模型（non-persistent），不要假设存在跨调用状态（如前一轮的 cd、export、shell 变量）
+- `runtime.db` 中的 `tasks` 已是 JSON-first：真实列通常只有 `id/title/status/priority/created_at/data`，像 `goal/source/next_step` 这类字段在 `data` JSON 内；若必须直查 SQLite，先 `PRAGMA table_info(tasks)` 确认 schema，或用 `json_extract(data, '$.goal')` 取值；不确定时优先用 `task.*` 工具而不是手写 SQL
 - 当 shell 返回超时或无增量证据时，通常先收敛到 `file.read/list`、`memory.search` 或总结，而不是连续重复 `shell.run`
 
 调度信号使用规则：

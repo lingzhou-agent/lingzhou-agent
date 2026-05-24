@@ -171,6 +171,16 @@ class _ReloadSoul:
         self.refresh_calls += 1
 
 
+class _ReloadTaskStore:
+    def __init__(self, *, value: str = "", found: bool = False) -> None:
+        self.value = value
+        self.found = found
+
+    async def get_fact(self, key: str) -> tuple[str, bool]:
+        assert key == "pref:routing_overrides"
+        return self.value, self.found
+
+
 def test_hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path):
     asyncio.run(_hot_reload_build_failure_keeps_old_runtime(monkeypatch, tmp_path))
 
@@ -287,6 +297,60 @@ async def _hot_reload_success_atomically_replaces_runtime(monkeypatch, tmp_path)
     assert callable(loop._semantic._embed_fn)
     assert loop._semantic._embedding_weight == loop._cfg.memory.embedding_weight
     assert self_model.last_cfg is loop._cfg
+
+
+def test_hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path):
+    asyncio.run(_hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path))
+
+
+async def _hot_reload_refreshes_runtime_routing_overrides_from_db(monkeypatch, tmp_path):
+    from core.config import Config
+    import core.loop.reload as reload_mod
+
+    cfg_path = tmp_path / "lingzhou.json"
+    old_mtime = time.time() - 10
+    new_mtime = old_mtime + 5
+    _write_hot_reload_config(cfg_path, model="bailian/qwen-plus", mtime=old_mtime)
+    old_cfg = Config.load(cfg_path)
+    _write_hot_reload_config(cfg_path, model="copilot/gpt-5.4", mtime=new_mtime)
+
+    old_provider = _ReloadClosable("old-main")
+    old_reader = _ReloadClosable("old-reader")
+    new_provider = _ReloadClosable("new-main")
+    new_reader = _ReloadClosable("new-reader")
+    self_model = _ReloadSelfModel()
+    loop = cast(
+        Any,
+        SimpleNamespace(
+            _cfg=old_cfg,
+            _cfg_file=cfg_path,
+            _cfg_mtime=old_mtime,
+            _auth_profiles_path=tmp_path / "auth-profiles.json",
+            _auth_profiles_mtime=0.0,
+            _provider=old_provider,
+            _routing_providers={"reader": old_reader},
+            _registry=object(),
+            _judgment=SimpleNamespace(self_model=self_model),
+            _execution="old-execution",
+            _evolution="old-evolution",
+            _perception="old-perception",
+            _semantic=SimpleNamespace(_embed_fn=None, _embedding_weight=0.0),
+            _soul=_ReloadSoul(old_cfg),
+            _task_store=_ReloadTaskStore(value='{"reasoner":"copilot/gpt-5.4"}', found=True),
+            _pending_routing_overrides={"reasoner": "bailian/qwen-plus"},
+        ),
+    )
+
+    monkeypatch.setattr(reload_mod, "create_provider", lambda cfg: new_provider)
+    monkeypatch.setattr(reload_mod, "_build_routing_providers", lambda cfg: {"reader": new_reader})
+    monkeypatch.setattr(reload_mod, "JudgmentLayer", _ReloadJudgment)
+    monkeypatch.setattr(reload_mod, "ExecutionLayer", _ReloadExecution)
+    monkeypatch.setattr(reload_mod, "EvolutionEngine", _ReloadEvolution)
+    monkeypatch.setattr(reload_mod, "PerceptionLayer", _ReloadPerception)
+
+    await reload_mod._maybe_hot_reload_provider_impl(loop)
+
+    assert loop._pending_routing_overrides == {"reasoner": "copilot/gpt-5.4"}
 
 
 def test_copilot_gpt5_does_not_auto_inject_max_completion_tokens():

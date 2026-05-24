@@ -2696,6 +2696,97 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
             await store.close()
 
 
+def test_assemble_context_consumes_parallel_fetch_exceptions():
+    asyncio.run(_assemble_context_consumes_parallel_fetch_exceptions())
+
+
+async def _assemble_context_consumes_parallel_fetch_exceptions():
+    from core.config import Config
+    from core.judgment import JudgmentLayer
+    from core.perception import EmotionState
+    from memory.episodic import EpisodicMemory
+    from memory.semantic import SemanticMemory
+    from memory.task_store import TaskStore
+    from memory.working import WorkingMemory
+    from tools.registry import ToolRegistry
+
+    class _DummyProvider:
+        async def chat(self, messages, *, temperature=None, thinking_override=None):
+            return '{"decision":"wait"}'
+
+        async def close(self):
+            return None
+
+    cfg = Config.model_validate({
+        "providers": {
+            "copilot": {
+                "type": "openai_compat",
+                "mode": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "api_key_env": "GITHUB_TOKEN",
+            },
+        },
+        "model": "copilot/gpt-5.4",
+        "thinking": "low",
+        "temperature": 0.7,
+        "timeout": 60.0,
+    })
+
+    with tempfile.TemporaryDirectory() as d:
+        store = TaskStore(Path(d) / "ctx.db")
+        await store.open()
+        loop = asyncio.get_running_loop()
+        recorded_exceptions: list[str] = []
+        prev_handler = loop.get_exception_handler()
+
+        def _capture_exception(_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+            message = str(context.get("message") or context.get("exception") or context)
+            recorded_exceptions.append(message)
+
+        loop.set_exception_handler(_capture_exception)
+        try:
+            task_id = await store.add_task(
+                "并发上下文异常回归",
+                goal="确保并发上下文异常不会泄漏未消费异常",
+                next_step="触发 list_runs 与 list_failures_for_task 异常",
+            )
+            task = await store.get_task_by_id(task_id)
+            assert task is not None
+
+            async def _list_runs_fail(*args: Any, **kwargs: Any) -> Any:
+                raise RuntimeError("recent runs boom")
+
+            async def _list_failures_fail(*args: Any, **kwargs: Any) -> Any:
+                raise RuntimeError("failures boom")
+
+            store.list_runs = cast(Any, _list_runs_fail)
+            store.list_failures_for_task = cast(Any, _list_failures_fail)
+
+            from core.judgment import CognitionFrame
+            layer = JudgmentLayer(_DummyProvider(), ToolRegistry(), cfg)
+
+            with pytest.raises(RuntimeError, match="recent runs boom"):
+                await layer._assemble_context(
+                    CognitionFrame(
+                        percept=cast(Any, SimpleNamespace(prediction_error=0.0, workspace_dirty=False)),
+                        wm=WorkingMemory(capacity=20),
+                        task_store=store,
+                        episodic=EpisodicMemory(Path(d) / "memory"),
+                        semantic=SemanticMemory(Path(d) / "memory", decay_lambda=0.0),
+                        emotion=EmotionState.from_config(cfg),
+                    ),
+                    active_task=task,
+                    user_message="检查并发异常清理",
+                )
+
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert recorded_exceptions == []
+        finally:
+            loop.set_exception_handler(prev_handler)
+            await store.close()
+
+
 def test_assemble_context_registry_override_limits_tools_section():
     asyncio.run(_assemble_context_registry_override_limits_tools_section())
 

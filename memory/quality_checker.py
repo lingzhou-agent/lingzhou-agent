@@ -16,7 +16,7 @@ from typing import Any
 def calculate_relevance(query: str, retrieved_text: str) -> float:
     """计算相关度分（字符级 Jaccard 相似度，支持中文）。
 
-    原 \w+ 正则无法分割中文导致相似度恒为 0，已改为字符级集合匹配。
+    原 \\w+ 正则无法分割中文导致相似度恒为 0，已改为字符级集合匹配。
     """
     if not query.strip() or not retrieved_text.strip():
         return 0.0

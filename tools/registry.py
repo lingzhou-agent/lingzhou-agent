@@ -30,6 +30,15 @@ if TYPE_CHECKING:
 CAPS_EXEMPT: tuple[str, ...] = ("plan_bootstrap_exempt", "plan_alignment_exempt")
 CAPS_RUN_SPAWN: tuple[str, ...] = ("run_spawn",)
 
+
+def _is_discoverable_tool_file(mod_file: Path) -> bool:
+    stem = mod_file.stem
+    if mod_file.suffix != ".py":
+        return False
+    if stem == "registry" or stem.startswith(("_", ".")):
+        return False
+    return stem.isidentifier()
+
 @dataclass
 class ToolParam:
     name: str
@@ -166,9 +175,9 @@ class ToolRegistry:
     def discover(self, tools_dir: Path) -> None:
         """扫描 tools_dir，import 所有非 _ 开头的 .py 文件，触发 @tool 装饰器注册。"""
         for mod_file in sorted(tools_dir.glob("*.py")):
-            stem = mod_file.stem
-            if stem.startswith("_") or stem == "registry":
+            if not _is_discoverable_tool_file(mod_file):
                 continue
+            stem = mod_file.stem
             module_name = f"tools.{stem}"
             if module_name in sys.modules:
                 continue
@@ -180,6 +189,8 @@ class ToolRegistry:
 
     def reload_tool(self, tool_name: str, tools_dir: Path) -> bool:
         """热重载单个工具模块（EvolutionEngine 调用）。"""
+        if not tool_name.isidentifier() or tool_name.startswith(("_", ".")) or tool_name == "registry":
+            return False
         module_name = f"tools.{tool_name}"
         mod_file = tools_dir / f"{tool_name}.py"
         if not mod_file.exists():

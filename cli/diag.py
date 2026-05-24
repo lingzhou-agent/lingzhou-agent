@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Annotated
 
@@ -9,7 +10,48 @@ import typer
 from rich.panel import Panel
 
 from cli._common import console, load_cfg, PROJECT_ROOT, resolve_config_path, DEFAULT_CONFIG_PATH
-from store.auth import resolve_copilot_token, AUTH_PROFILES_PATH
+from store.auth import (
+    AUTH_PROFILES_PATH,
+    get_auth_profile,
+    load_legacy_credentials,
+    resolve_copilot_token,
+)
+
+
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _mask_token(token: str) -> str:
+    if len(token) <= 12:
+        return "*" * len(token)
+    return f"{token[:6]}...{token[-3:]}"
+
+
+def _resolve_openai_provider_api_key(provider: object) -> tuple[str | None, str | None]:
+    api_key_ref = str(getattr(provider, "api_key_env", "") or "").strip()
+    if not api_key_ref:
+        return None, None
+    if not _ENV_VAR_NAME_RE.fullmatch(api_key_ref):
+        return api_key_ref, "literal"
+
+    env_token = os.environ.get(api_key_ref, "").strip()
+    if env_token:
+        return env_token, f"env:{api_key_ref}"
+
+    legacy = load_legacy_credentials()
+    legacy_token = str(legacy.get(api_key_ref, "")).strip()
+    if legacy_token:
+        return legacy_token, f"legacy-credentials:{api_key_ref}"
+
+    profile_id = str(getattr(provider, "auth_profile_id", "") or "").strip()
+    if profile_id:
+        profile = get_auth_profile(profile_id)
+        if isinstance(profile, dict):
+            profile_token = str(profile.get("token", "")).strip()
+            if profile_token:
+                return profile_token, f"auth-profile:{profile_id}"
+
+    return None, None
 
 
 def version() -> None:
@@ -81,10 +123,10 @@ def doctor(
 
     if cfg is not None:
         _api_key_env: str | None = None
+        _provider_name: str | None = None
         try:
-            pname = cfg.model.split("/")[0] if "/" in cfg.model else None
-            if pname and pname in cfg.providers:
-                _api_key_env = cfg.providers[pname].api_key_env
+            _provider_name = cfg.active_provider_name
+            _api_key_env = cfg.active_provider.api_key_env
         except Exception:
             pass
 
@@ -94,7 +136,7 @@ def doctor(
                 if resolved:
                     if resolved.source.startswith('env:'):
                         env_name = resolved.source.split(':', 1)[1]
-                        masked = (resolved.token[:6] + '...' + resolved.token[-3:])
+                        masked = _mask_token(resolved.token)
                         console.print(f"  {ok_mark} Copilot token ({env_name}): {masked}")
                     elif resolved.source == 'auth-profile':
                         console.print(f"  {ok_mark} Copilot token: 来自 auth profile store  [dim]{AUTH_PROFILES_PATH}[/dim]")
@@ -103,25 +145,31 @@ def doctor(
                 else:
                     console.print(f"  {fail_mark} Copilot token: 未设置")
                     issues.append("Copilot token 未配置: lingzhou auth login-copilot")
-            elif os.environ.get(_api_key_env):
-                masked = (os.environ[_api_key_env][:6] + "..." + os.environ[_api_key_env][-3:])
-                console.print(f"  {ok_mark} API key ({_api_key_env}): {masked}")
             else:
-                # 检查 credentials 文件
-                cred = Path("~/.lingzhou/credentials.json").expanduser()
-                if cred.exists():
-                    try:
-                        saved = _json.loads(cred.read_text(encoding="utf-8"))
-                        if saved.get(_api_key_env):
-                            console.print(f"  {ok_mark} API key ({_api_key_env}): 来自 credentials 文件")
-                        else:
-                            console.print(f"  {fail_mark} API key ({_api_key_env}): 未设置")
-                            issues.append(f"API key 未配置: export {_api_key_env}=your_key")
-                    except Exception:
-                        console.print(f"  {warn_mark} API key ({_api_key_env}): credentials 文件读取失败")
+                _resolved_key, _resolved_source = _resolve_openai_provider_api_key(cfg.active_provider)
+                if _resolved_key:
+                    if _resolved_source == "literal":
+                        console.print(f"  {ok_mark} API key (literal): {_mask_token(_resolved_key)}")
+                    elif _resolved_source and _resolved_source.startswith("env:"):
+                        env_name = _resolved_source.split(":", 1)[1]
+                        console.print(f"  {ok_mark} API key ({env_name}): {_mask_token(_resolved_key)}")
+                    elif _resolved_source and _resolved_source.startswith("legacy-credentials:"):
+                        env_name = _resolved_source.split(":", 1)[1]
+                        console.print(f"  {ok_mark} API key ({env_name}): 来自 credentials 文件")
+                    elif _resolved_source and _resolved_source.startswith("auth-profile:"):
+                        profile_id = _resolved_source.split(":", 1)[1]
+                        console.print(f"  {ok_mark} API key ({_api_key_env}): 来自 auth profile  [dim]{profile_id}[/dim]")
+                    else:
+                        console.print(f"  {ok_mark} API key ({_api_key_env}): 已解析")
                 else:
                     console.print(f"  {fail_mark} API key ({_api_key_env}): 未设置")
-                    issues.append(f"API key 未配置: export {_api_key_env}=your_key")
+                    if _ENV_VAR_NAME_RE.fullmatch(_api_key_env):
+                        _provider_hint = _provider_name or "<provider>"
+                        issues.append(
+                            f"API key 未配置: export {_api_key_env}=your_key 或 lingzhou auth set-token --provider {_provider_hint}"
+                        )
+                    else:
+                        issues.append("API key 未配置: lingzhou auth set-token --provider <provider>")
         else:
             console.print(f"  {warn_mark} API key: 跳过（配置文件不可用）")
 
@@ -216,7 +264,15 @@ def doctor(
         console.print(f"  {warn_mark} 目录权限: 跳过（配置文件不可用）")
 
     # ── 9. DB schema 完整性 ────────────────────────────────────────────
-    _REQUIRED_TABLES = {"tasks", "facts", "failures", "task_events", "runs"}
+    _REQUIRED_TABLES = {
+        "tasks",
+        "failures",
+        "facts",
+        "signals",
+        "chat_messages",
+        "runs",
+        "meta_reflections",
+    }
     if cfg is not None and Path(cfg.db_path).exists():
         try:
             import sqlite3 as _sqlite3
@@ -282,15 +338,7 @@ def doctor(
                 _tok = resolve_copilot_token(_prov.api_key_env)
                 _ping_key = _tok.token if _tok else None
             else:
-                _ping_key = os.environ.get(_prov.api_key_env, "")
-                if not _ping_key:
-                    _cred_f = Path("~/.lingzhou/credentials.json").expanduser()
-                    if _cred_f.exists():
-                        try:
-                            _saved = _json.loads(_cred_f.read_text(encoding="utf-8"))
-                            _ping_key = _saved.get(_prov.api_key_env, "")
-                        except Exception:
-                            pass
+                _ping_key, _ = _resolve_openai_provider_api_key(_prov)
 
             if not _ping_key:
                 console.print(f"  {warn_mark} 模型探针: 跳过（无 API key）")

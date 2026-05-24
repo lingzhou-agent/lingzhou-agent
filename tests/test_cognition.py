@@ -1062,6 +1062,66 @@ def test_dev_model_prefers_current_or_reasoning_model():
     assert _preferred_model_index(models, current_model_id="") == 1
 
 
+def test_dev_model_target_selection_updates_reasoner_without_touching_primary_model():
+    from cli.dev import _apply_model_target_selection
+
+    cfg_data = {
+        "model": "bailian/qwen3.6-plus",
+        "routing": {
+            "reader": "bailian/qwen-plus",
+            "reasoner": "copilot/gpt-5.4",
+        },
+    }
+
+    result = _apply_model_target_selection(
+        cfg_data,
+        current_model="bailian/qwen3.6-plus",
+        new_model="copilot/o3",
+        target="reasoner",
+    )
+
+    assert result["target"] == "reasoner"
+    assert result["previous"] == "copilot/gpt-5.4"
+    assert result["routing_changed"] == ["reasoner"]
+    assert result["runtime_override_tier"] == "reasoner"
+    assert cfg_data["model"] == "bailian/qwen3.6-plus"
+    assert cfg_data["routing"]["reasoner"] == "copilot/o3"
+
+
+def test_dev_model_target_selection_normalizes_complex_alias_to_reasoner():
+    from cli.dev import _apply_model_target_selection
+
+    cfg_data = {
+        "model": "bailian/qwen3.6-plus",
+        "routing": {},
+    }
+
+    result = _apply_model_target_selection(
+        cfg_data,
+        current_model="bailian/qwen3.6-plus",
+        new_model="copilot/gpt-5.4-mini",
+        target="complex",
+    )
+
+    assert result["target"] == "reasoner"
+    assert cfg_data["routing"]["reasoner"] == "copilot/gpt-5.4-mini"
+
+
+def test_merge_runtime_routing_override_keeps_supported_tiers_only():
+    from cli.dev import _merge_runtime_routing_override
+
+    merged = _merge_runtime_routing_override(
+        {"reader": "bailian/qwen-plus", "custom": "ignored/model"},
+        tier="reasoner",
+        model_ref="copilot/gpt-5.4",
+    )
+
+    assert merged == {
+        "reader": "bailian/qwen-plus",
+        "reasoner": "copilot/gpt-5.4",
+    }
+
+
 def test_chat_reply_is_persisted_before_post_tick_cleanup():
     asyncio.run(_chat_reply_is_persisted_before_post_tick_cleanup())
 

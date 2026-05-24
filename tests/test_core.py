@@ -339,6 +339,14 @@ def test_judgment_prompt_includes_runtime_hint_rules():
     assert "不要因为 WM 中出现建议就假设 durable failure policy 已经改变" in prompt
 
 
+def test_judgment_prompt_includes_json_first_runtime_db_hint():
+    prompt = (_proj_root() / "prompts" / "judgment.md").read_text(encoding="utf-8")
+
+    assert "runtime.db` 中的 `tasks` 已是 JSON-first" in prompt
+    assert "PRAGMA table_info(tasks)" in prompt
+    assert "json_extract(data, '$.goal')" in prompt
+
+
 def test_chat_read_line_prefers_text_input(monkeypatch):
     from cli.chat import _read_line
 

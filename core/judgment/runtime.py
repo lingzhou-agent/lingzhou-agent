@@ -1203,13 +1203,41 @@ class JudgmentLayer:
             if task else task_store.list_failures(self._cfg.memory.failure_limit)
         )
 
-        episodic_text = await episodic_text_future
-        recent_runs = await recent_runs_task if recent_runs_task is not None else []
-        waiting_tasks = await waiting_tasks_task
-        durable_failure_snapshot = await durable_failure_task
-        context_facts = await context_facts_task
-        probes = await probes_task if probes_task is not None else []
-        failures = await failures_task
+        # 统一收口并发上下文抓取，避免前一路异常时后续任务异常/结果无人消费。
+        parallel_fetches: list[tuple[str, Any]] = [
+            ("episodic_text", episodic_text_future),
+            ("waiting_tasks", waiting_tasks_task),
+            ("durable_failure_snapshot", durable_failure_task),
+            ("context_facts", context_facts_task),
+            ("failures", failures_task),
+        ]
+        if recent_runs_task is not None:
+            parallel_fetches.append(("recent_runs", recent_runs_task))
+        if probes_task is not None:
+            parallel_fetches.append(("probes", probes_task))
+
+        parallel_results = await asyncio.gather(
+            *(awaitable for _, awaitable in parallel_fetches),
+            return_exceptions=True,
+        )
+        parallel_data: dict[str, Any] = {}
+        parallel_error: BaseException | None = None
+        for (name, _), value in zip(parallel_fetches, parallel_results):
+            if isinstance(value, BaseException):
+                if parallel_error is None:
+                    parallel_error = value
+                continue
+            parallel_data[name] = value
+        if parallel_error is not None:
+            raise parallel_error
+
+        episodic_text = parallel_data["episodic_text"]
+        recent_runs = parallel_data.get("recent_runs", [])
+        waiting_tasks = parallel_data["waiting_tasks"]
+        durable_failure_snapshot = parallel_data["durable_failure_snapshot"]
+        context_facts = parallel_data["context_facts"]
+        probes = parallel_data.get("probes", [])
+        failures = parallel_data["failures"]
 
         search_query = user_message or (task.next_step or task.goal or task.title) if task else user_message
         episodic_search = (
