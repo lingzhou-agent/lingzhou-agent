@@ -39,15 +39,39 @@ def _is_discoverable_tool_file(mod_file: Path) -> bool:
         return False
     return stem.isidentifier()
 
-@dataclass
+@dataclass(init=False)
 class ToolParam:
     name: str
-    dtype: str                   # "string" | "number" | "boolean" | "object"
+    type: str                    # "string" | "number" | "boolean" | "object"
     description: str
     required: bool = True
+    default: Any = None
+
+    def __init__(
+        self,
+        name: str,
+        type: str | None = None,
+        description: str = "",
+        required: bool = True,
+        default: Any = None,
+        dtype: str | None = None,
+    ) -> None:
+        # 兼容历史生成代码：早期模板使用 dtype= 或显式 default=。
+        resolved_type = type if type is not None else dtype
+        if resolved_type is None:
+            raise TypeError("ToolParam.__init__() missing required argument: 'type'")
+        self.name = name
+        self.type = resolved_type
+        self.description = description
+        self.required = required
+        self.default = default
+
+    @property
+    def dtype(self) -> str:
+        return self.type
 
 
-@dataclass
+@dataclass(init=False)
 class ToolManifest:
     name: str                   # 唯一 ID，如 "shell.run"
     description: str
@@ -56,17 +80,55 @@ class ToolManifest:
     progress_category: str = "" # 进展类别: "mutation" | "info" | "io" | ""=自动推断
     capabilities: tuple[str, ...] = ()
 
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        params: list[ToolParam] | None = None,
+        prefer_tier: str = "",
+        progress_category: str = "",
+        capabilities: tuple[str, ...] | list[str] = (),
+        *,
+        parameters: list[ToolParam] | None = None,
+        required_caps: tuple[str, ...] | list[str] | None = None,
+    ) -> None:
+        # 兼容历史生成代码：早期模板使用 parameters=/required_caps=。
+        resolved_params = params if params is not None else parameters
+        resolved_capabilities = capabilities or tuple(required_caps or ())
+        self.name = name
+        self.description = description
+        self.params = list(resolved_params or [])
+        self.prefer_tier = prefer_tier
+        self.progress_category = progress_category
+        self.capabilities = tuple(resolved_capabilities)
+
+    @property
+    def parameters(self) -> list[ToolParam]:
+        return self.params
+
+    @property
+    def required_caps(self) -> tuple[str, ...]:
+        return self.capabilities
+
     def to_dict(self) -> dict[str, Any]:
+        params: list[dict[str, Any]] = []
+        for p in self.params:
+            item = {
+                "name": p.name,
+                "type": p.type,
+                "description": p.description,
+                "required": p.required,
+            }
+            if p.default is not None:
+                item["default"] = p.default
+            params.append(item)
         return {
             "name": self.name,
             "description": self.description,
             "prefer_tier": self.prefer_tier,
             "progress_category": self.progress_category,
             "capabilities": list(self.capabilities),
-            "params": [
-                {"name": p.name, "type": p.dtype, "description": p.description, "required": p.required}
-                for p in self.params
-            ],
+            "params": params,
         }
 
 

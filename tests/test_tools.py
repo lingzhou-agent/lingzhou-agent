@@ -380,6 +380,31 @@ def test_tool_registry_discover_skips_hidden_smoke_failed_modules():
         assert registry.get(manifest_name) is not None
 
 
+def test_tool_registry_discover_accepts_legacy_manifest_kwargs():
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        stem = f"legacy_tool_{time.time_ns()}"
+        manifest_name = f"probe.legacy_compat.{time.time_ns()}"
+        (root / f"{stem}.py").write_text(
+            "from tools.registry import ToolManifest, ToolParam, ToolResult, tool\n"
+            f"@tool(ToolManifest(name={manifest_name!r}, description='legacy probe', parameters=[ToolParam(name='path', type='string', description='目录路径', default='.')], required_caps=('plan_bootstrap_exempt',)))\n"
+            "async def _legacy_probe(params, ctx):\n"
+            "    return ToolResult(summary='ok')\n",
+            encoding="utf-8",
+        )
+
+        registry = ToolRegistry()
+        registry.discover(root)
+
+        entry = registry.get(manifest_name)
+        assert entry is not None
+        assert entry.manifest.required_caps == ("plan_bootstrap_exempt",)
+        assert entry.manifest.parameters[0].default == "."
+        assert entry.manifest.params[0].dtype == "string"
+
+
 def test_subagent_runner_restores_parent_registry_after_child_exception():
     asyncio.run(_subagent_runner_restores_parent_registry_after_child_exception())
 
