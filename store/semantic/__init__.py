@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import logging as _log_sem
-from .quality_checker import evaluate_retrieval_quality
+from memory.quality_checker import evaluate_retrieval_quality
 
 _log = _log_sem.getLogger("lingzhou.memory.semantic")
 

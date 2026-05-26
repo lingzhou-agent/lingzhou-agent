@@ -10,7 +10,7 @@ from core.config import Config
 from core.judgment import JudgmentOutput, tool_tier
 from core.perception import PerceptionReplaySummary
 from core.task_runtime import VALID_MODEL_TIERS
-from memory.task_store import Task
+from store.task import Task
 from tools.registry import ToolResult
 
 # 上下文截断具名常量(语义记忆 & 日志截断阈值;调整后重启即生效,不影响已存数据)

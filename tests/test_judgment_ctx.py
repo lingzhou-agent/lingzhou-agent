@@ -35,7 +35,7 @@ def test_semantic_multi_anchor_convergence_bonus():
     设计原理：两节点在主锚点 "importlib" 上得分相近，但 node_ab 的 body
     同时命中第二锚点 "热加载 reload"，因此多锚点命中使其 final_score 更高。
     """
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -65,7 +65,7 @@ def test_semantic_multi_anchor_convergence_bonus():
 
 def test_semantic_multi_anchor_empty_anchors():
     """空锚点列表应返回空结果，不崩溃。"""
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -212,7 +212,7 @@ def test_select_tier_logic():
 
 def test_prefer_tier_for_task_uses_pending_then_task_default():
     from core.loop.common import _next_initial_tier_hint, _prefer_tier_for_task
-    from memory.task_store import Task
+    from store.task import Task
 
     task = Task(
         id=1,
@@ -460,7 +460,7 @@ def test_thinking_floor_respects_chat_minimum_for_user_message():
 
 def test_recent_runs_summary_prefers_output_and_progress():
     from core.judgment.context import _fmt_recent_runs
-    from memory.task_store import Run
+    from store.task import Run
 
     runs = [
         Run(
@@ -486,7 +486,7 @@ def test_recent_runs_summary_prefers_output_and_progress():
 
 def test_waiting_tasks_section_exposes_wait_reason_and_next_step():
     from core.judgment.context import _fmt_waiting_tasks
-    from memory.task_store import Task
+    from store.task import Task
 
     tasks = [
         Task(
@@ -510,7 +510,7 @@ def test_waiting_tasks_section_exposes_wait_reason_and_next_step():
 
 def test_runnable_tasks_section_omits_active_task():
     from core.judgment.context import _fmt_runnable_tasks
-    from memory.task_store import Task
+    from store.task import Task
 
     tasks = [
         Task(
@@ -540,7 +540,7 @@ def test_runnable_tasks_section_omits_active_task():
 
 def test_similar_tasks_section_exposes_similarity_and_context():
     from core.judgment.context import _fmt_similar_tasks
-    from memory.task_store import Task
+    from store.task import Task
 
     items = [(
         Task(
@@ -1405,7 +1405,7 @@ def test_fmt_durable_failures_exposes_policy_and_muted_actions():
 
 async def test_load_durable_failure_snapshot_reads_policy_and_active_mutes():
     from core.judgment.context import _load_durable_failure_snapshot
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -1628,7 +1628,7 @@ def test_write_success_stall_meta_reflection_records_task_hint():
 
 async def _write_success_stall_meta_reflection_records_task_hint():
     from core.loop.postprocess import _write_success_stall_meta_reflection
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolResult
 
     with tempfile.TemporaryDirectory() as d:
@@ -1657,7 +1657,7 @@ def test_success_stall_reflection_tracks_capability_based_tool():
 
 async def _success_stall_reflection_tracks_capability_based_tool():
     from core.loop.tick import _maybe_record_success_stall_reflection_impl
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolResult
 
     with tempfile.TemporaryDirectory() as d:
@@ -1693,7 +1693,7 @@ async def _success_stall_reflection_tracks_capability_based_tool():
 def test_fallback_reply_for_user_describes_waiting_state():
     from core.loop.logging import _fallback_reply_for_user
     from tools.registry import ToolResult
-    from memory.task_store import Task
+    from store.task import Task
 
     action = _judgment_output(decision="act", chosen_action_id="task.wait", next_step="等用户补充路径后重新验证目录")
     result = ToolResult(
@@ -2099,7 +2099,7 @@ async def test_decide_continue_includes_structured_tool_history_window():
 async def test_decide_continue_keeps_complex_act_without_runtime_rewrite():
     from core.config import Config
     from core.judgment import JudgmentLayer
-    from memory.task_store import Task
+    from store.task import Task
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -2225,7 +2225,7 @@ def test_rewrite_task_ask_ignores_configured_evidence_budget_for_passthrough():
 
 def test_rewrite_complex_user_act_keeps_llm_chosen_mutation():
     from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from memory.task_store import Task
+    from store.task import Task
 
     task = Task(
         id=7,
@@ -2258,7 +2258,7 @@ def test_rewrite_complex_user_act_keeps_llm_chosen_mutation():
 
 def test_rewrite_complex_user_act_keeps_read_action_without_plan():
     from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from memory.task_store import Task
+    from store.task import Task
 
     task = Task(
         id=8,
@@ -2288,7 +2288,7 @@ def test_rewrite_complex_user_act_keeps_read_action_without_plan():
 
 def test_rewrite_complex_user_act_keeps_structural_next_step_without_rewrite():
     from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from memory.task_store import Task
+    from store.task import Task
 
     task = Task(
         id=9,
@@ -2319,7 +2319,7 @@ def test_rewrite_complex_user_act_keeps_structural_next_step_without_rewrite():
 
 def test_rewrite_complex_user_act_respects_plan_alignment_exempt_capability():
     from core.judgment.runtime import _rewrite_complex_act_to_task_plan
-    from memory.task_store import Task
+    from store.task import Task
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
     @tool(ToolManifest(
@@ -2383,7 +2383,7 @@ def test_preferred_continue_tier_uses_manifest_reader_tier():
 
 async def test_sync_task_progress_state_promotes_previous_next_step():
     from core.task_runtime import _sync_task_progress_state
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime.db")
@@ -2418,7 +2418,7 @@ async def test_sync_task_progress_state_promotes_previous_next_step():
 
 async def test_sync_task_progress_state_preserves_explicit_current_step_from_state_delta():
     from core.task_runtime import _sync_task_progress_state
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runtime-explicit.db")
@@ -2445,7 +2445,7 @@ async def test_sync_task_progress_state_preserves_explicit_current_step_from_sta
 
 def test_fmt_task_exposes_runtime_state_to_llm():
     from core.judgment.context import _fmt_task
-    from memory.task_store import Task
+    from store.task import Task
 
     task = Task(
         id=7,
@@ -2479,7 +2479,7 @@ def test_load_context_facts_snapshot_uses_configured_exclude_prefixes_and_limits
 
 async def _fmt_context_facts_surfaces_task_and_recent_general_facts():
     from core.judgment.context import _fmt_context_facts, _load_context_facts_snapshot
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / 'facts.db')
@@ -2598,9 +2598,9 @@ async def _assemble_context_prefers_active_task_override_with_inbox():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -2670,9 +2670,9 @@ async def _assemble_context_without_active_task_or_probe_manager_does_not_crash(
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -2731,9 +2731,9 @@ async def _assemble_context_semantic_anchors_do_not_bucket_emotion():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -2819,9 +2819,9 @@ async def _assemble_context_consumes_parallel_fetch_exceptions():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -2911,9 +2911,9 @@ async def _assemble_context_registry_override_limits_tools_section():
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
     from core.subagent import _DEFAULT_BLOCKED_TOOLS, _FilteredRegistry
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
     class _DummyProvider:
@@ -2987,9 +2987,9 @@ async def _assemble_context_includes_recent_daily_continuity():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -3050,9 +3050,9 @@ async def _assemble_context_skips_daily_when_long_term_memory_is_strong():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import MemoryNode, SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import MemoryNode, SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -3127,9 +3127,9 @@ async def _assemble_context_includes_chat_scoped_memory_layers():
     from core.config import Config
     from core.judgment import JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import MemoryNode, SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import MemoryNode, SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -3210,9 +3210,9 @@ async def _assemble_context_includes_current_interlocutor_sections():
     from core.config import Config
     from core.judgment import CognitionFrame, JudgmentLayer
     from core.perception import EmotionState
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import MemoryNode, SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import MemoryNode, SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 

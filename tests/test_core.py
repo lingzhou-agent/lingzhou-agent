@@ -218,7 +218,7 @@ def test_reference_resolver_retrieve_candidates_uses_recent_pool_without_time_pa
 @pytest.mark.asyncio
 async def test_reference_resolver_resolve_current_speaker_prefers_memory_and_interaction_cues_over_chat_id():
     from core.reference import ReferenceResolver
-    from memory.semantic import MemoryNode, SemanticMemory
+    from store.semantic import MemoryNode, SemanticMemory
 
     with tempfile.TemporaryDirectory() as d:
         semantic = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -260,7 +260,7 @@ async def test_reference_resolver_resolve_current_speaker_prefers_memory_and_int
 @pytest.mark.asyncio
 async def test_reference_resolver_remember_speaker_persists_person_scoped_profile_and_facts():
     from core.reference import ReferenceResolver, ResolvedSpeaker
-    from memory.semantic import SemanticMemory
+    from store.semantic import SemanticMemory
 
     class FactStoreStub:
         def __init__(self) -> None:
@@ -308,7 +308,7 @@ async def test_reference_resolver_remember_speaker_persists_person_scoped_profil
 @pytest.mark.asyncio
 async def test_reference_resolver_remember_speaker_captures_interlocutor_source_traits():
     from core.reference import ReferenceResolver, ResolvedSpeaker
-    from memory.semantic import SemanticMemory
+    from store.semantic import SemanticMemory
 
     class FactStoreStub:
         def __init__(self) -> None:
@@ -1322,7 +1322,7 @@ def test_task_store_fact_listing_and_delete():
 
 
 async def _task_store_fact_listing_and_delete():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "facts.db")
@@ -1346,7 +1346,7 @@ def test_task_store_signal_lifecycle():
 
 
 async def _task_store_signal_lifecycle():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "signals.db")
@@ -1400,7 +1400,7 @@ async def _evolution_pending_verification_becomes_verified():
 
     from core.config import Config
     from core.evolution import EvolutionEngine, _verification_fact_key
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -1468,7 +1468,7 @@ async def _evolution_regression_triggers_rollback():
 
     from core.config import Config
     from core.evolution import EvolutionEngine, _verification_fact_key
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -1694,7 +1694,7 @@ async def _competitive_evolve_routes_based_on_config():
 
     from core.config import Config
     from core.evolution import EvolutionEngine, EvolutionResult
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     class _DummyProvider:
@@ -1763,7 +1763,7 @@ async def test_refresh_running_runs_updates_finished_exec_runs():
     import time
 
     from core.run_refresh import refresh_running_runs
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
     with tempfile.TemporaryDirectory() as d:
@@ -1814,7 +1814,7 @@ async def test_refresh_running_runs_updates_process_monitored_non_exec_runs():
     import time
 
     from core.run_refresh import refresh_running_runs
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
     with tempfile.TemporaryDirectory() as d:
@@ -1859,7 +1859,7 @@ async def test_refresh_running_runs_crystallizes_progress():
     import time
 
     from core.run_refresh import refresh_running_runs
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
     with tempfile.TemporaryDirectory() as d:
@@ -1910,9 +1910,9 @@ async def test_refresh_running_runs_crystallizes_progress():
 
 async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
     from core.run_refresh import refresh_running_runs
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -1986,9 +1986,9 @@ async def test_refresh_running_runs_updates_fact_monitored_non_exec_runs():
 
 async def test_refresh_running_runs_failed_fact_monitored_run_records_learning():
     from core.run_refresh import refresh_running_runs
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -2049,9 +2049,9 @@ async def test_refresh_running_runs_failed_exec_run_records_learning():
     import time
 
     from core.run_refresh import refresh_running_runs
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.exec import ProcessInfo, _MANAGER
 
     with tempfile.TemporaryDirectory() as d:
@@ -2292,7 +2292,7 @@ def test_image_model_routing_falls_back_to_vision_model():
 async def _file_list_and_memory_search():
     from tools.file import file_list, file_read
     from tools.memory_ops import memory_search, memory_add_semantic
-    from memory.semantic import MemoryNode, SemanticMemory
+    from store.semantic import MemoryNode, SemanticMemory
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as d:
@@ -2339,7 +2339,7 @@ def test_memory_add_semantic_disambiguates_duplicate_titles():
 
 async def _memory_add_semantic_disambiguates_duplicate_titles():
     from tools.memory_ops import memory_add_semantic
-    from memory.semantic import SemanticMemory
+    from store.semantic import SemanticMemory
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as d:
@@ -2373,9 +2373,9 @@ def test_reflect_structural_disambiguates_duplicate_titles():
 
 
 async def _reflect_structural_disambiguates_duplicate_titles():
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory, WMItem
     from tools.memory_ops import reflect_structural
 
@@ -2500,7 +2500,7 @@ async def _execution_durable_failure_sensing():
     from tempfile import TemporaryDirectory
 
     from core.judgment import JudgmentOutput
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2543,7 +2543,7 @@ async def _execution_durable_failure_sensing_for_file_tool():
     from tempfile import TemporaryDirectory
 
     from core.judgment import JudgmentOutput
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2579,9 +2579,9 @@ async def _execution_dispatch_records_run():
     from tempfile import TemporaryDirectory
 
     from core.judgment import JudgmentOutput
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2643,7 +2643,7 @@ def test_execution_logs_worker_metadata(caplog):
 async def _execution_logs_worker_metadata(caplog):
     from tempfile import TemporaryDirectory
 
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2688,7 +2688,7 @@ def test_execution_dispatch_rebinds_target_task_run():
 async def _execution_dispatch_rebinds_target_task_run():
     from tempfile import TemporaryDirectory
 
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2745,7 +2745,7 @@ def test_execution_dispatch_routes_fact_monitored_action_to_llm_worker():
 
 async def _execution_dispatch_routes_fact_monitored_action_to_llm_worker():
     from tempfile import TemporaryDirectory
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2785,7 +2785,7 @@ async def _execution_plan_gate_blocks_mutation_until_current_step_aligned():
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2856,7 +2856,7 @@ async def _execution_plan_gate_keeps_reader_tools_available():
     from pathlib import Path
     from tempfile import TemporaryDirectory
 
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2898,9 +2898,9 @@ async def _execution_failure_creates_meta_reflection():
     from tempfile import TemporaryDirectory
 
     from core.judgment import JudgmentOutput
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -2966,9 +2966,9 @@ async def _execution_generic_failure_meta_reflection_defers():
     from tempfile import TemporaryDirectory
 
     from core.judgment import JudgmentOutput
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
     with TemporaryDirectory() as d:
@@ -3017,7 +3017,7 @@ def test_ingest_actionable_meta_reflections_dedupes():
 
 async def _ingest_actionable_meta_reflections_dedupes():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
     with tempfile.TemporaryDirectory() as d:
@@ -3100,7 +3100,7 @@ def test_meta_reflection_threshold_apply_surfaces_runtime_policy_hint():
 
 async def _meta_reflection_threshold_apply_surfaces_runtime_policy_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolRegistry
 
@@ -3169,7 +3169,7 @@ def test_consume_task_runtime_hints_surfaces_replan_and_routing_once():
 
 async def _consume_task_runtime_hints_surfaces_replan_and_routing_once():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
     with tempfile.TemporaryDirectory() as d:
@@ -3236,7 +3236,7 @@ def test_meta_reflection_threshold_apply_queues_explicit_policy_hint():
 
 async def _meta_reflection_threshold_apply_queues_explicit_policy_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
     with tempfile.TemporaryDirectory() as d:
@@ -3284,7 +3284,7 @@ def test_consume_task_runtime_hints_surfaces_preferred_tier_hint():
 
 async def _consume_task_runtime_hints_surfaces_preferred_tier_hint():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
     with tempfile.TemporaryDirectory() as d:
@@ -3325,7 +3325,7 @@ def test_consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
 
 async def _consume_task_runtime_hints_surfaces_task_meta_reflection_to_wm():
     from core.task_runtime import _consume_task_runtime_hints, _ingest_actionable_meta_reflections
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
     with tempfile.TemporaryDirectory() as d:
@@ -3365,7 +3365,7 @@ def test_ingest_actionable_meta_reflections_queues_generic_control_hint():
 
 async def _ingest_actionable_meta_reflections_queues_generic_control_hint():
     from core.task_runtime import _ingest_actionable_meta_reflections
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
     with tempfile.TemporaryDirectory() as d:
@@ -3402,9 +3402,9 @@ async def _execution_background_run_does_not_record_completion_early():
     import os
 
     from core.judgment import JudgmentOutput
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.exec import ProcessManager, process_kill
     from tools.registry import ToolRegistry
 

@@ -6,7 +6,7 @@ import json
 import logging
 
 from core.judgment import JudgmentOutput
-from memory.task_store import Task, TaskStore
+from store.task import Task, TaskStore
 from tools.registry import ToolResult, tool_has_capability
 
 _log = logging.getLogger("lingzhou.loop")

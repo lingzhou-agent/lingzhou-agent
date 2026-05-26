@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from core.config import run_result_memory_affect
 from core.worker import WorkerLayer
-from memory.task_store import build_task_run_result_patch
+from store.task import build_task_run_result_patch
 from tools.registry import ToolResult, ToolContext, tool_has_capability
 
 _log = logging.getLogger("lingzhou.execution")
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from core.config import Config
     from core.judgment import JudgmentOutput
     from memory.working import WorkingMemory, WMItem
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.registry import ToolRegistry
 
 
@@ -329,7 +329,7 @@ def record_run_outcome_memory(
         )
     if semantic is None:
         return
-    from memory.semantic import MemoryNode
+    from store.semantic import MemoryNode
 
     tags = [status]
     if tool_name:
@@ -397,7 +397,7 @@ def record_meta_reflection_memory(
         )
     if semantic is None:
         return
-    from memory.semantic import MemoryNode
+    from store.semantic import MemoryNode
 
     tags = ["meta_reflection", target_kind, loop_level, decision]
     if tool_name:

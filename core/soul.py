@@ -39,7 +39,7 @@ from core.workspace.state import (
 if TYPE_CHECKING:
     from core.config import Config
     from core.judgment import JudgmentLayer
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from memory.working import WorkingMemory
 
 _log = logging.getLogger("lingzhou.soul")

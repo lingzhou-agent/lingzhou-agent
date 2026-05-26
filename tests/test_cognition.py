@@ -575,7 +575,7 @@ async def _self_drive_signal_bypasses_idle_judge_aggregation():
 
 def test_short_continuation_message_is_also_forwarded_to_active_task_inbox():
     from core.loop.tick import _should_steer_active_task_from_user_message
-    from memory.task_store import Task
+    from store.task import Task
 
     task = Task(
         id=1,
@@ -592,7 +592,7 @@ def test_short_continuation_message_is_also_forwarded_to_active_task_inbox():
 
 def test_task_steer_any_nonempty_user_message_is_forwarded_to_active_task_inbox():
     from core.loop.tick import _should_steer_active_task_from_user_message
-    from memory.task_store import Task
+    from store.task import Task
 
     task = Task(
         id=1,
@@ -616,7 +616,7 @@ def test_distinct_user_message_is_queued_into_active_task_inbox():
 
 async def _distinct_user_message_is_queued_into_active_task_inbox():
     from core.loop.tick import _maybe_steer_active_task_from_user_message
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "steer-user-message.db")
@@ -653,7 +653,7 @@ def test_invalid_routing_overrides_clear_previous_pending_state():
 
 async def _invalid_routing_overrides_clear_previous_pending_state():
     from core.loop.tick import _apply_tick_model_strategy
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "routing-overrides.db")
@@ -760,11 +760,15 @@ async def _run_tick_maintenance_uses_configured_global_md_warn_lines():
         db = _DB()
         soul = _Soul()
         wm = _WM()
+
+        async def _wal_checkpoint() -> None:
+            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
         loop = cast(Any, SimpleNamespace(
             _cfg=cfg,
             _wm=wm,
             _soul=soul,
-            _task_store=SimpleNamespace(_db=db),
+            _task_store=SimpleNamespace(_db=db, wal_checkpoint=_wal_checkpoint),
             consolidated=False,
         ))
 
@@ -854,8 +858,8 @@ def test_post_tick_memory_crystallizes_task_summary_title_with_task_id():
 
 async def _post_tick_memory_crystallizes_task_summary_title_with_task_id():
     from core.loop.tick import _post_tick_memory_impl
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -898,9 +902,9 @@ def test_consolidate_promotes_semantic_nodes_and_durable_user_facts():
 async def _consolidate_promotes_semantic_nodes_and_durable_user_facts():
     from core.config import MemoryConfig
     from core.loop.runtime import CognitionLoop
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory, WMItem
 
     with tempfile.TemporaryDirectory() as d:
@@ -964,8 +968,8 @@ async def _post_tick_memory_formats_learned_insight_title_with_hash_suffix():
     import hashlib
 
     from core.loop.tick import _post_tick_memory_impl
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
 
     prefix = "当检测到行为死循环时，仅改变工具调用参数是不够的，必须在 next_step 中注入具体的、可执行的子目标内容，以强制认"
     reflection_a = prefix + "知路径A"
@@ -1028,8 +1032,8 @@ def test_post_tick_memory_crystallizes_event_title_with_task_id():
 
 async def _post_tick_memory_crystallizes_event_title_with_task_id():
     from core.loop.tick import _post_tick_memory_impl
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -1073,9 +1077,9 @@ async def _post_tick_memory_crystallizes_chat_summary_and_records_chat_turns():
     import hashlib
 
     from core.loop.tick import _post_tick_memory_impl
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -1421,7 +1425,7 @@ def test_resolve_reply_chat_id_falls_back_to_last_chat_fact():
 
 async def _resolve_reply_chat_id_falls_back_to_last_chat_fact():
     from core.loop.chat import _resolve_reply_chat_id
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "chat-fallback.db")

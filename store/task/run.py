@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import aiosqlite
 
 if TYPE_CHECKING:
-    from memory.task_store import Run
+    from store.task.models import Run
 
 
 class RunStore:
@@ -57,7 +57,7 @@ class RunStore:
         return run_id
 
     async def get_run_by_id(self, run_id: int) -> Optional["Run"]:
-        from memory.task_store import Run
+        from store.task.models import Run
 
         async with self._db.execute(
             "SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data FROM runs WHERE id=?",
@@ -73,7 +73,7 @@ class RunStore:
         status: str | None = None,
         limit: int = 50,
     ) -> list["Run"]:
-        from memory.task_store import Run
+        from store.task.models import Run
 
         clauses: list[str] = []
         args: list[Any] = []

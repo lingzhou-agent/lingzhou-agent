@@ -33,9 +33,9 @@ from typing import TYPE_CHECKING, Any
 from core.config import ThresholdsConfig
 
 if TYPE_CHECKING:
-    from memory.semantic import SemanticMemory
-    from memory.episodic import EpisodicMemory
-    from memory.task_store import TaskStore
+    from store.semantic import SemanticMemory
+    from store.episodic import EpisodicMemory
+    from store.task import TaskStore
     from provider.base import Provider
 
 _log = logging.getLogger("lingzhou.reference")
@@ -724,7 +724,7 @@ class ReferenceResolver:
             return
 
         from datetime import UTC, datetime
-        from memory.semantic import MemoryNode
+        from store.semantic import MemoryNode
 
         cues = self._extract_identity_cues(message, chat_id=chat_id, source_hint=source_hint)
         existing = semantic.get(speaker.node_id)

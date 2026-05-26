@@ -39,9 +39,9 @@ from .tick import (
 )
 from memory.working import WorkingMemory, WMItem
 from memory.consolidation import build_consolidation_plan, build_daily_summary_node, current_week_key, merge_promoted_node
-from memory.episodic import EpisodicMemory
-from memory.semantic import SemanticMemory
-from memory.task_store import TaskStore, Task
+from store.episodic import EpisodicMemory
+from store.semantic import SemanticMemory
+from store.task import TaskStore, Task
 from provider import create_provider
 from provider.base import EmbeddingProvider
 from tools.registry import ToolRegistry, ToolContext, ToolResult

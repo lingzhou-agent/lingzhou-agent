@@ -30,7 +30,7 @@ from conftest import (
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_semantic_ebbinghaus():
-    from memory.semantic import SemanticMemory, MemoryNode, effective_activation
+    from store.semantic import SemanticMemory, MemoryNode, effective_activation
 
     now_ts = datetime.now(UTC).isoformat()
     old_ts = (datetime.now(UTC) - timedelta(days=7)).isoformat()
@@ -57,7 +57,7 @@ def test_semantic_ebbinghaus():
 
 
 def test_semantic_importance_slows_decay():
-    from memory.semantic import MemoryNode, effective_activation
+    from store.semantic import MemoryNode, effective_activation
 
     old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
 
@@ -88,7 +88,7 @@ def test_semantic_importance_slows_decay():
 
 
 def test_semantic_retrieve_ranking_uses_effective_activation():
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
 
@@ -122,7 +122,7 @@ def test_semantic_retrieve_ranking_uses_effective_activation():
 
 
 def test_semantic_retrieve_prefers_stable_long_term_memory_over_recent_event_echo():
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     old_ts = (datetime.now(UTC) - timedelta(days=45)).isoformat()
     now_ts = datetime.now(UTC).isoformat()
@@ -158,7 +158,7 @@ def test_semantic_retrieve_prefers_stable_long_term_memory_over_recent_event_ech
 
 
 def test_semantic_migrates_legacy_person_profile_nodes_to_interlocutor_profile():
-    from memory.semantic import SemanticMemory
+    from store.semantic import SemanticMemory
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -194,7 +194,7 @@ def test_semantic_migrates_legacy_person_profile_nodes_to_interlocutor_profile()
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_episodic_rotation():
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=10)
@@ -209,7 +209,7 @@ def test_episodic_rotation():
 
 def test_episodic_no_rotation():
     """max_events=0 时不做任何裁剪。"""
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -220,7 +220,7 @@ def test_episodic_no_rotation():
 
 
 def test_semantic_store_reflection_title_uses_unique_suffix():
-    from memory.semantic import SemanticMemory
+    from store.semantic import SemanticMemory
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -283,7 +283,7 @@ def test_build_consolidation_plan_extracts_explicit_user_facts_and_semantic_prom
 
 def test_episodic_search_finds_chinese_narrative():
     """search() 通过 FTS5 能召回中文 narrative 条目。"""
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -295,7 +295,7 @@ def test_episodic_search_finds_chinese_narrative():
 
 
 def test_episodic_search_recent_daily_returns_only_relevant_recent_blocks():
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -314,7 +314,7 @@ def test_episodic_search_short_ascii_not_overmatching():
     查询 "阅读 core/ 中的关键模块" 时 "core" 被过滤掉（ASCII len=4 < 5）；
     只用中文词检索，task-3（"今天天气不错"）不应被召回。
     """
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -329,7 +329,7 @@ def test_episodic_search_short_ascii_not_overmatching():
 
 def test_episodic_search_cross_task_returns_different_task():
     """跨任务检索：search() 能返回来自其他任务的相关内容。"""
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -347,7 +347,7 @@ def test_episodic_search_exclude_task_id_blocks_self_echo():
     场景：同一目标被多个任务运行过（goal echo）；
     传入 exclude_task_id 后，旧任务中 content ≈ 查询文本的条目被过滤掉。
     """
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     goal = "阅读 core/ 中的关键模块，理解架构和可改进点。选择你之前没细读过的文件开始。"
     with tempfile.TemporaryDirectory() as d:
@@ -371,7 +371,7 @@ def test_episodic_search_exclude_task_id_blocks_self_echo():
 
 def test_episodic_record_keeps_narrative_when_fts_sync_fails():
     """FTS 同步失败时，.md 和 narrative 表仍应保持一致。"""
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -394,7 +394,7 @@ def test_episodic_record_keeps_narrative_when_fts_sync_fails():
 
 def test_episodic_migrates_legacy_root_narrative_files():
     """旧版根目录 task/global narrative 文件应迁移到 episodic/ 子目录。"""
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         memory_dir = Path(d)
@@ -415,7 +415,7 @@ def test_episodic_migrates_legacy_root_narrative_files():
 
 def test_episodic_record_writes_daily_memory_file():
     """新增情节记录时，应同时镜像到当天 daily 记忆文件。"""
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         memory_dir = Path(d)
@@ -435,7 +435,7 @@ def test_episodic_record_writes_daily_memory_file():
 
 
 def test_episodic_load_for_chat_context_keeps_same_chat_cross_task_history():
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         memory_dir = Path(d)
@@ -457,7 +457,7 @@ def test_episodic_load_for_chat_context_keeps_same_chat_cross_task_history():
 
 
 def test_episodic_get_recent_turns_supports_chat_scope():
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -474,7 +474,7 @@ def test_episodic_get_recent_turns_supports_chat_scope():
 
 
 def test_episodic_load_for_interlocutor_context_keeps_cross_chat_history():
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -495,7 +495,7 @@ def test_episodic_load_for_interlocutor_context_keeps_cross_chat_history():
 
 
 def test_episodic_get_recent_turns_supports_interlocutor_scope():
-    from memory.episodic import EpisodicMemory
+    from store.episodic import EpisodicMemory
 
     with tempfile.TemporaryDirectory() as d:
         ep = EpisodicMemory(Path(d), max_events=0)
@@ -520,7 +520,7 @@ def test_semantic_retrieve_with_mock_embedding():
     mock embed_fn：含 'python' → [1,0]，否则 [0,1]；
     查询向量 [1,0] → python 节点相似度高 → 应排第一。
     """
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     def _mock_embed(text: str) -> list[float]:
         return [1.0, 0.0] if "python" in text.lower() else [0.0, 1.0]
@@ -544,7 +544,7 @@ def test_semantic_multi_anchor_uses_embedding_when_available():
     两节点内容完全相同（关键词得分相等），但 embedding 方向不同；
     embedding 对齐查询方向的节点应得分更高 → 验证向量路径生效。
     """
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     # embed_fn 统一返回 [1,0]，保证 query_vec = [1,0]
     def _mock_embed(text: str) -> list[float]:
@@ -569,7 +569,7 @@ def test_semantic_multi_anchor_uses_embedding_when_available():
 
 def test_semantic_fts_short_ascii_filtered():
     """FTS5 短 ASCII 词（≤4字符）被过滤后，中文词主导检索排序。"""
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)
@@ -591,7 +591,7 @@ def test_semantic_fts_short_ascii_filtered():
 
 def test_semantic_upsert_disables_fts_when_sync_fails_and_retrieval_falls_back():
     """FTS 同步失败后，不应继续依赖残缺索引。"""
-    from memory.semantic import SemanticMemory, MemoryNode
+    from store.semantic import SemanticMemory, MemoryNode
 
     with tempfile.TemporaryDirectory() as d:
         sm = SemanticMemory(Path(d), decay_lambda=0.0)

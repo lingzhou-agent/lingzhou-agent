@@ -35,7 +35,7 @@ def test_task_store_get_active_prefers_started_task_over_pending():
 
 
 async def _task_store_get_active_prefers_started_task_over_pending():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -70,7 +70,7 @@ def test_task_tools_do_not_reenter_terminal_tasks():
 
 
 async def _task_tools_do_not_reenter_terminal_tasks():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.task_ops import task_advance, task_complete
 
     with tempfile.TemporaryDirectory() as d:
@@ -413,9 +413,9 @@ async def _subagent_runner_restores_parent_registry_after_child_exception():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, tool
 
@@ -499,9 +499,9 @@ async def _subagent_runner_passes_filtered_registry_to_judgment():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolRegistry
 
@@ -568,7 +568,7 @@ def test_subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
 
 async def _subagent_task_store_view_exposes_local_state_to_subsequent_ticks():
     from core.subagent import _SubagentTaskStoreView
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -647,7 +647,7 @@ def test_subagent_task_store_view_hides_parent_waiting_tasks_from_child_context(
 
 async def _subagent_task_store_view_hides_parent_waiting_tasks_from_child_context():
     from core.subagent import _SubagentTaskStoreView
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -681,9 +681,9 @@ async def _subagent_runner_uses_virtual_active_task_instead_of_parent_task():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
@@ -808,9 +808,9 @@ async def _subagent_task_list_does_not_expose_parent_tasks():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolRegistry
 
@@ -896,9 +896,9 @@ async def _subagent_explicit_task_id_does_not_expose_parent_task():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
@@ -988,9 +988,9 @@ async def _subagent_run_history_does_not_expose_parent_runs():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
@@ -1091,9 +1091,9 @@ async def _subagent_failure_and_reflection_history_do_not_expose_parent_state():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
@@ -1212,9 +1212,9 @@ async def _subagent_runner_does_not_pollute_parent_store():
     from core.perception import EmotionState
     from core.perception.ethos import EthosState
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolRegistry
 
@@ -1304,9 +1304,9 @@ async def _subagent_runner_shared_memory_does_not_write_parent_episodic():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
     from core.subagent import SubagentConfig, make_subagent_runner
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
 
@@ -1390,7 +1390,7 @@ def test_subagent_absorb_persists_parent_semantic_node_with_provenance():
 
 
 async def _subagent_absorb_persists_parent_semantic_node_with_provenance():
-    from memory.semantic import SemanticMemory
+    from store.semantic import SemanticMemory
     from tools.subagent_ops import subagent_absorb
 
     with tempfile.TemporaryDirectory() as d:
@@ -1438,8 +1438,8 @@ def test_subagent_run_isolated_memory_returns_absorbable_memories_without_parent
 async def _subagent_run_isolated_memory_returns_absorbable_memories_without_parent_semantic_pollution():
     from core.execution import ExecutionLayer
     from core.judgment import JudgmentOutput
-    from memory.semantic import MemoryNode, SemanticMemory
-    from memory.task_store import TaskStore
+    from store.semantic import MemoryNode, SemanticMemory
+    from store.task import TaskStore
     from memory.working import WorkingMemory
     from tools.registry import ToolContext, ToolManifest, ToolRegistry, ToolResult, tool
     from tools.subagent_ops import subagent_run
@@ -1541,7 +1541,7 @@ def test_subagent_absorb_surfaces_truncation_and_invalid_nodes():
 
 
 async def _subagent_absorb_surfaces_truncation_and_invalid_nodes():
-    from memory.semantic import SemanticMemory
+    from store.semantic import SemanticMemory
     from tools.subagent_ops import subagent_absorb
 
     with tempfile.TemporaryDirectory() as d:

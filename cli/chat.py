@@ -18,10 +18,10 @@ from rich.panel import Panel
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
 from cli._common import console, load_cfg, DEFAULT_CONFIG_PATH
-from store.memory import sanitize_chat_content
+from store.task import sanitize_chat_content
 
 # 等待回复最长秒数（-a 模式）
 _DEFAULT_TIMEOUT = 300
@@ -222,7 +222,7 @@ async def _main(
     timeout: int,
     chat_id: str,
 ) -> None:
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from core.paths import project_root as _project_root
     from core.loop.startup import _startup_health_check
 

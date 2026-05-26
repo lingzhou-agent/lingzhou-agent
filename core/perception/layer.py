@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from core.config import Config
     from memory.working import WorkingMemory
-    from memory.task_store import Task
+    from store.task import Task
     from core.perception.emotion import EmotionState
     from core.perception.signals import CognitiveSignals
 

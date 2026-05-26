@@ -201,7 +201,7 @@ async def subagent_absorb(params: dict[str, Any], ctx: ToolContext) -> ToolResul
 
     for idx, node_dict in enumerate(nodes, start=1):
         try:
-            from memory.semantic import MemoryNode
+            from store.semantic import MemoryNode
             if not isinstance(node_dict, dict):
                 invalid += 1
                 continue

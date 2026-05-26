@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from store.memory.ingress import IngressStore
+from store.task.ingress import IngressStore
 
 try:
     import requests  # type: ignore[import]

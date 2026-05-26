@@ -178,14 +178,8 @@ def doctor(
         db_path = cfg.db_path
         if db_path.exists():
             try:
-                import sqlite3
-                conn = sqlite3.connect(str(db_path))
-                try:
-                    tables = [r[0] for r in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    ).fetchall()]
-                finally:
-                    conn.close()
+                from store.task.ingress import IngressStore
+                tables = IngressStore(db_path).list_tables()
                 console.print(f"  {ok_mark} 数据库: {db_path}  [dim]表: {', '.join(tables) or '(空)'}[/dim]")
             except Exception as e:
                 console.print(f"  {fail_mark} 数据库异常: {e}")
@@ -275,14 +269,8 @@ def doctor(
     }
     if cfg is not None and Path(cfg.db_path).exists():
         try:
-            import sqlite3 as _sqlite3
-            _conn = _sqlite3.connect(str(cfg.db_path))
-            try:
-                _tables = {r[0] for r in _conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()}
-            finally:
-                _conn.close()
+            from store.task.ingress import IngressStore
+            _tables = set(IngressStore(cfg.db_path).list_tables())
             _missing_tables = _REQUIRED_TABLES - _tables
             if _missing_tables:
                 console.print(f"  {warn_mark} DB schema: 缺少表 {sorted(_missing_tables)}  [dim]lingzhou run 首次启动时会自动建表[/dim]")

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import aiosqlite
 
 if TYPE_CHECKING:
-    from memory.task_store import Task
+    from store.task.models import Task
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ class TaskStateStore:
         return task_id
 
     async def get_task_by_id(self, task_id: int) -> Optional["Task"]:
-        from memory.task_store import Task
+        from store.task.models import Task
 
         async with self._db.execute(
             "SELECT id, title, status, priority, created_at, data FROM tasks WHERE id=?",
@@ -188,7 +188,7 @@ class TaskStateStore:
         return Task.from_row(row) if row else None
 
     async def list_runnable_tasks(self, limit: int = 20) -> list["Task"]:
-        from memory.task_store import Task
+        from store.task.models import Task
 
         async with self._db.execute(
             """SELECT id, title, status, priority, created_at, data
@@ -220,7 +220,7 @@ class TaskStateStore:
         status: Optional[str] = None,
         limit: int = 50,
     ) -> list["Task"]:
-        from memory.task_store import Task
+        from store.task.models import Task
 
         if status:
             sql = (

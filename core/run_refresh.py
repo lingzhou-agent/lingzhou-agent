@@ -5,9 +5,9 @@ import logging
 from typing import Any
 
 from core.execution import build_meta_reflection, record_meta_reflection_memory, record_run_outcome_memory
-from memory.episodic import EpisodicMemory
-from memory.semantic import SemanticMemory
-from memory.task_store import TaskStore, Run, build_task_run_result_patch
+from store.episodic import EpisodicMemory
+from store.semantic import SemanticMemory
+from store.task import TaskStore, Run, build_task_run_result_patch
 from tools.registry import ToolResult
 
 _log = logging.getLogger("lingzhou.loop")

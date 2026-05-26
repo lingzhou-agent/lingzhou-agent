@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-from memory.task_store import Task
+from store.task import Task
 from memory.working import WMItem
 from .dispatcher import TickJob
 

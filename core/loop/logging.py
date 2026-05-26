@@ -6,7 +6,7 @@ from typing import Any
 
 from core.judgment import JudgmentOutput
 from core.execution import action_key_param
-from memory.task_store import Task
+from store.task import Task
 from tools.registry import ToolResult
 
 DEFAULT_LOG_REPLY_CHARS = 240

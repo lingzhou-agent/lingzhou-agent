@@ -7,7 +7,7 @@ from typing import Any
 
 from .chat import build_chat_message_insert
 from .fact import build_fact_upsert
-from .task import build_task_data, build_task_insert
+from .state import build_task_data, build_task_insert
 
 
 class IngressStore:
@@ -53,6 +53,13 @@ class IngressStore:
         if row is None:
             return "", False
         return str(row[0] or ""), True
+
+    def list_tables(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def ingest_user_message(
         self,

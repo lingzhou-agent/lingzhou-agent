@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 from typing import Any
 
 from core.judgment import JudgmentOutput
-from memory.task_store import TaskStore, Task
+from store.task import TaskStore, Task
 from memory.working import WorkingMemory, WMItem
 
 _log = logging.getLogger("lingzhou.loop")

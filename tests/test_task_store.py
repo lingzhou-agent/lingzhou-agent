@@ -33,7 +33,7 @@ def test_task_store_basic():
     asyncio.run(_task_store_basic())
 
 async def _task_store_basic():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "test.db")
         await store.open()
@@ -123,7 +123,7 @@ def test_task_store_find_similar_open_tasks():
 
 
 async def _task_store_find_similar_open_tasks():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "similar.db")
@@ -155,7 +155,7 @@ def test_task_add_reuses_similar_open_task():
 
 
 async def _task_add_reuses_similar_open_task():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.task_ops import task_add
 
     with tempfile.TemporaryDirectory() as d:
@@ -187,7 +187,7 @@ async def _task_add_reuses_similar_open_task():
 
 
 async def _task_store_run_lifecycle():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "runs.db")
@@ -235,7 +235,7 @@ def test_task_update_can_clear_runtime_fields():
 
 
 async def _task_update_can_clear_runtime_fields():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.task_ops import task_update
 
     with tempfile.TemporaryDirectory() as d:
@@ -277,7 +277,7 @@ def test_update_status_can_patch_runtime_fields_in_one_call():
 
 
 async def _update_status_can_patch_runtime_fields_in_one_call():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "status-patch.db")
@@ -313,7 +313,7 @@ def test_task_wait_resume_can_clear_runtime_fields():
 
 
 async def _task_wait_resume_can_clear_runtime_fields():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.task_ops import task_resume, task_wait
 
     with tempfile.TemporaryDirectory() as d:
@@ -370,7 +370,7 @@ def test_status_transitions_can_merge_result_json_in_one_call():
 
 
 async def _status_transitions_can_merge_result_json_in_one_call():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "status-result.db")
@@ -420,7 +420,7 @@ def test_task_wait_allows_external_wait_without_wait_key():
 
 
 async def _task_wait_allows_external_wait_without_wait_key():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.task_ops import task_wait
 
     with tempfile.TemporaryDirectory() as d:
@@ -454,7 +454,7 @@ def test_task_wait_rejects_unknown_wait_kind():
 
 
 async def _task_wait_rejects_unknown_wait_kind():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.task_ops import task_wait
 
     with tempfile.TemporaryDirectory() as d:
@@ -487,7 +487,7 @@ def test_task_steer_inbox_is_consumed_once():
 
 
 async def _task_steer_inbox_is_consumed_once():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from tools.task_ops import task_steer
 
     with tempfile.TemporaryDirectory() as d:
@@ -524,7 +524,7 @@ async def _task_steer_inbox_is_consumed_once():
 
 
 async def _chat_messages_are_sanitized_on_write():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         store = TaskStore(Path(d) / "chat.db")
@@ -539,7 +539,7 @@ async def _chat_messages_are_sanitized_on_write():
 
 
 async def _chat_pending_messages_are_recoverable_until_processed():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         db_path = Path(d) / "chat-processing.db"
@@ -571,8 +571,8 @@ async def _chat_pending_messages_are_recoverable_until_processed():
 
 
 async def _ingress_store_unifies_external_chat_and_task_writes():
-    from memory.task_store import TaskStore
-    from store.memory.ingress import IngressStore
+    from store.task import TaskStore
+    from store.task.ingress import IngressStore
 
     with tempfile.TemporaryDirectory() as d:
         db_path = Path(d) / "ingress.db"
@@ -630,7 +630,7 @@ def test_ingress_store_unifies_external_chat_and_task_writes():
 
 async def _task_store_migration():
     """旧列式 schema → JSON-first 自动迁移。"""
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         db_path = Path(d) / "old.db"
@@ -691,7 +691,7 @@ def test_task_store_migrates_legacy_person_profile_facts_to_interlocutor_scope()
 
 
 async def _task_store_migrates_legacy_person_profile_facts_to_interlocutor_scope():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     with tempfile.TemporaryDirectory() as d:
         db_path = Path(d) / "legacy-facts.db"

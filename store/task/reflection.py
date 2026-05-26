@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import aiosqlite
 
 if TYPE_CHECKING:
-    from memory.task_store import MetaReflection
+    from store.task.models import MetaReflection
 
 
 class MetaReflectionStore:
@@ -61,7 +61,7 @@ class MetaReflectionStore:
         limit: int = 20,
         loop_level: str | None = None,
     ) -> list["MetaReflection"]:
-        from memory.task_store import MetaReflection
+        from store.task.models import MetaReflection
 
         if loop_level:
             async with self._db.execute(

@@ -10,7 +10,7 @@ _log = logging.getLogger("lingzhou.tools")
 
 from tools.registry import ToolManifest, ToolParam, ToolResult, ToolContext, tool, CAPS_EXEMPT
 from memory.working import WMItem
-from memory.semantic import MemoryNode
+from store.semantic import MemoryNode
 from memory.quality_checker import evaluate_retrieval_quality
 
 _PRIORITY_ALIASES = {"high": 0.9, "medium": 0.6, "mid": 0.6, "low": 0.3, "critical": 1.0}

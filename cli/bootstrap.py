@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import re as _re
-import sqlite3
 from pathlib import Path
 from typing import Annotated
 
@@ -45,22 +44,16 @@ def onboarding_status(config: Path = DEFAULT_CONFIG_PATH) -> tuple[bool, str]:
         return False, f"未找到运行时数据库: {db_path}"
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        try:
-            facts_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='facts'"
-            ).fetchone()
-            if facts_table is None:
-                return False, f"数据库尚未初始化: {db_path}"
-            soul_init = conn.execute(
-                "SELECT value FROM facts WHERE key='soul:init_at' LIMIT 1"
-            ).fetchone()
-        finally:
-            conn.close()
+        from store.task.ingress import IngressStore
+        ingress = IngressStore(db_path)
+        tables = ingress.list_tables()
+        if "facts" not in tables:
+            return False, f"数据库尚未初始化: {db_path}"
+        soul_init_val, found = ingress.get_fact("soul:init_at")
     except Exception as exc:
         return False, f"数据库读取失败: {exc}"
 
-    if soul_init is None or not str(soul_init[0] or "").strip():
+    if not found or not soul_init_val.strip():
         return False, "尚未完成首次初始化（缺少 soul:init_at）"
     return True, "ok"
 
@@ -284,7 +277,7 @@ def _run_init(
     async def _run() -> bool:
         import datetime as _dt
         from core.soul import SoulManager
-        from memory.task_store import TaskStore
+        from store.task import TaskStore
         from memory.working import WorkingMemory
 
         seeded = False

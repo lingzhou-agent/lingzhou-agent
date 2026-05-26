@@ -27,9 +27,9 @@ from core.task_runtime import (
     _ingest_actionable_meta_reflections,
     _sync_task_progress_state,
 )
-from memory.episodic import EpisodicMemory
-from memory.semantic import MemoryNode
-from memory.task_store import Task
+from store.episodic import EpisodicMemory
+from store.semantic import MemoryNode
+from store.task import Task
 from memory.working import WMItem
 from tools.registry import ToolResult
 
@@ -1120,7 +1120,7 @@ async def _run_tick_maintenance(loop: Any, active_task: Task | None, cycle: int)
     await loop._soul.sync_md()
     # 定期 WAL checkpoint 防止 DB 膨胀
     try:
-        await loop._task_store._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        await loop._task_store.wal_checkpoint()
     except Exception:
         pass
 

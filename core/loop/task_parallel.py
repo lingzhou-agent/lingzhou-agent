@@ -26,13 +26,13 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from memory.task_store import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
+from store.task import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
 
 _log = logging.getLogger("lingzhou.task_parallel")
 
 if TYPE_CHECKING:
     from core.loop.runtime import CognitionLoop
-    from memory.task_store import Task
+    from store.task import Task
     from tools.registry import ToolContext
 
 

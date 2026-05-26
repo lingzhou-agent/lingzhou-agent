@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, cast
 from provider.catalog import lookup_model
 from core.execution import action_key_param
 from core.self_model import SelfModel, fmt_self_model
-from memory.task_store import RUNNABLE_TASK_STATUSES, TASK_SIMILARITY_CONTEXT_SCORE
+from store.task import RUNNABLE_TASK_STATUSES, TASK_SIMILARITY_CONTEXT_SCORE
 from tools.registry import tool_has_capability
 from .output import (
     JudgmentOutput,
@@ -145,9 +145,9 @@ if TYPE_CHECKING:
     )
     from core.skill import Skill
     from memory.working import WorkingMemory
-    from memory.task_store import TaskStore
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
+    from store.task import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
     from tools.registry import ToolRegistry
     from provider.base import Provider
 

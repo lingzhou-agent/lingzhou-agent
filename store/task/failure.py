@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Callable
 import aiosqlite
 
 if TYPE_CHECKING:
-    from memory.task_store import Failure
+    from store.task.models import Failure
 
 
 class FailureStore:
@@ -34,7 +34,7 @@ class FailureStore:
         await self._db.commit()
 
     async def list_failures(self, limit: int = 20) -> list["Failure"]:
-        from memory.task_store import Failure
+        from store.task.models import Failure
 
         async with self._db.execute(
             "SELECT id, kind, dismissed, created_at, data FROM failures "
@@ -45,7 +45,7 @@ class FailureStore:
         return [Failure.from_row(row) for row in rows]
 
     async def list_failures_for_task(self, task_id: str, limit: int = 20) -> list["Failure"]:
-        from memory.task_store import Failure
+        from store.task.models import Failure
 
         async with self._db.execute(
             "SELECT id, kind, dismissed, created_at, data FROM failures "

@@ -27,7 +27,7 @@ def task_add(
     cfg = load_cfg(config)
 
     async def _run() -> None:
-        from memory.task_store import TaskStore
+        from store.task import TaskStore
         store = TaskStore(cfg.db_path)
         await store.open()
         try:
@@ -48,7 +48,7 @@ def task_list(
     cfg = load_cfg(config)
 
     async def _run() -> None:
-        from memory.task_store import TaskStore
+        from store.task import TaskStore
         store = TaskStore(cfg.db_path)
         await store.open()
         try:

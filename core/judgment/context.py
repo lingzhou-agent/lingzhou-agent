@@ -37,8 +37,8 @@ if TYPE_CHECKING:
         PerceptionReplaySummary,
     )
     from core.skill import Skill
-    from memory.task_store import Failure, Run, Task, TaskStore
-    from memory.semantic import SemanticMemory
+    from store.task import Failure, Run, Task, TaskStore
+    from store.semantic import SemanticMemory
     from tools.registry import ToolManifest
 
 

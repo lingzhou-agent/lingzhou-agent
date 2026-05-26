@@ -409,7 +409,7 @@ def test_run_tasks_parallel_each_task_sees_own_active():
 
 
 async def _run_tasks_parallel_each_task_sees_own_active():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from core.loop.task_parallel import run_tasks_parallel
     from core.judgment import JudgmentOutput
     from tools.registry import ToolResult
@@ -473,7 +473,7 @@ def test_run_tasks_parallel_reuses_similar_open_task():
 
 
 async def _run_tasks_parallel_reuses_similar_open_task():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
     from core.loop.task_parallel import run_tasks_parallel
 
     with tempfile.TemporaryDirectory() as d:
@@ -524,7 +524,7 @@ def test_aiosqlite_concurrent_writes_different_rows():
 
 
 async def _aiosqlite_concurrent_writes():
-    from memory.task_store import TaskStore
+    from store.task import TaskStore
 
     N = 10  # 每个协程的更新次数
 

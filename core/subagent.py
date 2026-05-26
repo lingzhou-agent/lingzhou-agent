@@ -30,9 +30,9 @@ if TYPE_CHECKING:
     from core.judgment import JudgmentLayer
     from core.execution import ExecutionLayer
     from memory.working import WorkingMemory
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from tools.registry import ToolRegistry, ToolContext
     from core.perception import EmotionState, Percept
 
@@ -97,7 +97,7 @@ def _default_ethos_cfg(soul: Any = None) -> Any:
 
 
 def _build_subagent_active_task(sub_id: str, goal: str) -> Any:
-    from memory.task_store import Task
+    from store.task import Task
 
     title = (goal or "").strip()[:60]
     if title:
@@ -264,7 +264,7 @@ class _SubagentTaskStoreView:
         return merged
 
     async def add_run(self, **kwargs: Any) -> int:
-        from memory.task_store import Run
+        from store.task import Run
 
         now = _utc_now_iso()
         run_id = self._next_run_id
@@ -330,7 +330,7 @@ class _SubagentTaskStoreView:
         context: str = "",
         task_id: str = "",
     ) -> None:
-        from memory.task_store import Failure
+        from store.task import Failure
 
         self._local_failures.append(Failure(
             id=-(len(self._local_failures) + 1),
@@ -432,7 +432,7 @@ class _SubagentTaskStoreView:
         raise self._reject("sync_task_progress")
 
     async def add_meta_reflection(self, **kwargs: Any) -> None:
-        from memory.task_store import MetaReflection
+        from store.task import MetaReflection
 
         self._local_meta_reflections.append(MetaReflection(
             id=str(kwargs.get("reflection_id") or ""),
@@ -751,8 +751,8 @@ class SubagentRunner:
             sub_mem_path.mkdir(parents=True, exist_ok=True)
             sub_memory_dir = str(sub_mem_path)
 
-            from memory.episodic import EpisodicMemory
-            from memory.semantic import SemanticMemory
+            from store.episodic import EpisodicMemory
+            from store.semantic import SemanticMemory
             sub_episodic = EpisodicMemory(
                 sub_mem_path / "episodic",
                 max_events=getattr(parent_cfg.memory, "max_events", 0),

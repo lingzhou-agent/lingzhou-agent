@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from core.config import Config
     from tools.registry import ToolContext, ToolRegistry
     from provider.base import Provider
-    from memory.task_store import Failure
+    from store.task import Failure
 
 
 @dataclass

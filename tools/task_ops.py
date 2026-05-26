@@ -32,8 +32,8 @@ from tools.registry import (
     tool_has_capability,
     CAPS_EXEMPT,
 )
-from memory.semantic import MemoryNode
-from memory.task_store import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
+from store.semantic import MemoryNode
+from store.task import TASK_DUPLICATE_REUSE_SCORE, build_task_similarity_query
 
 
 def _has_capability(ctx: ToolContext, tool_name: str, capability: str) -> bool:

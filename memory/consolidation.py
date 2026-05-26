@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from memory.semantic import MemoryNode
+from store.semantic import MemoryNode
 
 _DEFAULT_PROMOTION_SEMANTIC_KINDS = (
     "self_awareness",

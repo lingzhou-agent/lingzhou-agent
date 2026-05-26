@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING, Any, Callable, Awaitable
 if TYPE_CHECKING:
     from core.config import Config
     from memory.working import WorkingMemory
-    from memory.episodic import EpisodicMemory
-    from memory.semantic import SemanticMemory
-    from memory.task_store import TaskStore
+    from store.episodic import EpisodicMemory
+    from store.semantic import SemanticMemory
+    from store.task import TaskStore
     from core.perception import EmotionState
 
 
