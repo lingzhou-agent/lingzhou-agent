@@ -4,6 +4,8 @@ from typing import Callable
 
 import aiosqlite
 
+from ._base import BaseAsyncStore
+
 
 FACT_UPSERT_SQL = (
     "INSERT INTO facts (key, value, scope, updated_at) VALUES (?,?,?,datetime('now')) "
@@ -16,13 +18,7 @@ def build_fact_upsert(key: str, value: str, *, scope: str = "general") -> tuple[
     return FACT_UPSERT_SQL, (str(key), str(value), str(scope or "general"))
 
 
-class FactStore:
-    def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
-        self._db_getter = db_getter
-
-    @property
-    def _db(self) -> aiosqlite.Connection:
-        return self._db_getter()
+class FactStore(BaseAsyncStore):
 
     async def set_fact(self, key: str, value: str, scope: str = "general") -> None:
         sql, params = build_fact_upsert(key, value, scope=scope)

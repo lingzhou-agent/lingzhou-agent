@@ -74,6 +74,15 @@ def test_cognition_loop_init():
         assert loop.episodic.max_events == cfg.memory.max_events
 
 
+def test_memory_config_accepts_legacy_decay_lambda_key_and_property():
+    from core.config import MemoryConfig
+
+    cfg = MemoryConfig.model_validate({"decay_lambda": 0.25})
+
+    assert cfg.semantic_decay_lambda == 0.25
+    assert cfg.decay_lambda == 0.25
+
+
 def test_curiosity_signal_does_not_auto_create_task():
     asyncio.run(_curiosity_signal_does_not_auto_create_task())
 

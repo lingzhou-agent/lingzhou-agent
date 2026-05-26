@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import Any, Callable, Optional
 
 import aiosqlite
 
-if TYPE_CHECKING:
-    from store.task.models import Task
+from ._base import BaseAsyncStore
+from .models import Task
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +66,9 @@ def build_task_insert(
     )
 
 
-class TaskStateStore:
-    def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
-        self._db_getter = db_getter
+class TaskStateStore(BaseAsyncStore):
 
-    @property
-    def _db(self) -> aiosqlite.Connection:
-        return self._db_getter()
-
-    async def _save_task(self, task: "Task") -> None:
+    async def _save_task(self, task: Task) -> None:
         await self._db.execute(
             "UPDATE tasks SET status=?, data=? WHERE id=?",
             (task.status, task.to_data_json(), task.id),
@@ -177,9 +171,7 @@ class TaskStateStore:
         await self._db.commit()
         return task_id
 
-    async def get_task_by_id(self, task_id: int) -> Optional["Task"]:
-        from store.task.models import Task
-
+    async def get_task_by_id(self, task_id: int) -> Optional[Task]:
         async with self._db.execute(
             "SELECT id, title, status, priority, created_at, data FROM tasks WHERE id=?",
             (task_id,),
@@ -187,9 +179,7 @@ class TaskStateStore:
             row = await cur.fetchone()
         return Task.from_row(row) if row else None
 
-    async def list_runnable_tasks(self, limit: int = 20) -> list["Task"]:
-        from store.task.models import Task
-
+    async def list_runnable_tasks(self, limit: int = 20) -> list[Task]:
         async with self._db.execute(
             """SELECT id, title, status, priority, created_at, data
                FROM tasks
@@ -211,7 +201,7 @@ class TaskStateStore:
             rows = await cur.fetchall()
         return [Task.from_row(row) for row in rows]
 
-    async def get_active(self) -> Optional["Task"]:
+    async def get_active(self) -> Optional[Task]:
         runnable = await self.list_runnable_tasks(limit=1)
         return runnable[0] if runnable else None
 
@@ -219,9 +209,7 @@ class TaskStateStore:
         self,
         status: Optional[str] = None,
         limit: int = 50,
-    ) -> list["Task"]:
-        from store.task.models import Task
-
+    ) -> list[Task]:
         if status:
             sql = (
                 "SELECT id, title, status, priority, created_at, data "

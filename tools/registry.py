@@ -247,7 +247,11 @@ class ToolRegistry:
             if spec and spec.loader:
                 mod = importlib.util.module_from_spec(spec)
                 sys.modules[module_name] = mod
-                spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+                try:
+                    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+                except Exception:
+                    sys.modules.pop(module_name, None)
+                    raise
 
     def reload_tool(self, tool_name: str, tools_dir: Path) -> bool:
         """热重载单个工具模块（EvolutionEngine 调用）。"""
@@ -261,8 +265,16 @@ class ToolRegistry:
         if not spec or not spec.loader:
             return False
         mod = importlib.util.module_from_spec(spec)
+        previous = sys.modules.get(module_name)
         sys.modules[module_name] = mod
-        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        try:
+            spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        except Exception:
+            if previous is not None:
+                sys.modules[module_name] = previous
+            else:
+                sys.modules.pop(module_name, None)
+            raise
         return True
 
     def get(self, name: str) -> ToolEntry | None:

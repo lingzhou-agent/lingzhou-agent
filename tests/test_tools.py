@@ -405,6 +405,96 @@ def test_tool_registry_discover_accepts_legacy_manifest_kwargs():
         assert entry.manifest.params[0].dtype == "string"
 
 
+def test_tool_registry_discover_cleans_partial_module_after_import_failure():
+    import sys
+
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        broken_stem = f"broken_tool_{time.time_ns()}"
+        dependent_stem = f"dependent_tool_{time.time_ns()}"
+        broken_module_name = f"tools.{broken_stem}"
+        dependent_manifest = f"probe.dependent_recover.{time.time_ns()}"
+
+        (root / f"{broken_stem}.py").write_text(
+            "PARTIAL = True\n"
+            "raise RuntimeError('boom during import')\n"
+            "def resolve_read_path():\n"
+            "    return 'ok'\n",
+            encoding="utf-8",
+        )
+        (root / f"{dependent_stem}.py").write_text(
+            f"from tools.{broken_stem} import resolve_read_path\n"
+            "from tools.registry import ToolManifest, ToolResult, tool\n"
+            f"@tool(ToolManifest(name={dependent_manifest!r}, description='dependent probe'))\n"
+            "async def _dependent_probe(params, ctx):\n"
+            "    return ToolResult(summary=resolve_read_path())\n",
+            encoding="utf-8",
+        )
+
+        registry = ToolRegistry()
+        with pytest.raises(RuntimeError, match="boom during import"):
+            registry.discover(root)
+
+        assert broken_module_name not in sys.modules
+
+        (root / f"{broken_stem}.py").write_text(
+            "def resolve_read_path():\n"
+            "    return 'ok'\n",
+            encoding="utf-8",
+        )
+
+        registry.discover(root)
+
+        assert registry.get(dependent_manifest) is not None
+        sys.modules.pop(broken_module_name, None)
+        sys.modules.pop(f"tools.{dependent_stem}", None)
+
+
+def test_tool_registry_reload_restores_previous_module_after_failure():
+    import sys
+
+    from tools.registry import ToolRegistry
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        stem = f"reloadable_tool_{time.time_ns()}"
+        module_name = f"tools.{stem}"
+        manifest_name = f"probe.reload_restore.{time.time_ns()}"
+
+        (root / f"{stem}.py").write_text(
+            "def resolve_read_path():\n"
+            "    return 'ok'\n"
+            "from tools.registry import ToolManifest, ToolResult, tool\n"
+            f"@tool(ToolManifest(name={manifest_name!r}, description='reload probe'))\n"
+            "async def _reload_probe(params, ctx):\n"
+            "    return ToolResult(summary=resolve_read_path())\n",
+            encoding="utf-8",
+        )
+
+        registry = ToolRegistry()
+        registry.discover(root)
+        baseline = sys.modules[module_name]
+        assert getattr(baseline, "resolve_read_path")() == "ok"
+
+        (root / f"{stem}.py").write_text(
+            "PARTIAL = True\n"
+            "raise RuntimeError('boom during reload')\n"
+            "def resolve_read_path():\n"
+            "    return 'broken'\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="boom during reload"):
+            registry.reload_tool(stem, root)
+
+        restored = sys.modules[module_name]
+        assert restored is baseline
+        assert getattr(restored, "resolve_read_path")() == "ok"
+        sys.modules.pop(module_name, None)
+
+
 def test_subagent_runner_restores_parent_registry_after_child_exception():
     asyncio.run(_subagent_runner_restores_parent_registry_after_child_exception())
 

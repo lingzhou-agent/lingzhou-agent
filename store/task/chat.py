@@ -5,6 +5,8 @@ from typing import Any, Callable, Optional
 
 import aiosqlite
 
+from ._base import BaseAsyncStore
+
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CHAT_ZERO_WIDTH_CHARS = {"\ufeff", "\u200b", "\u200c", "\u200d", "\u2060"}
 _CJK_NEIGHBOR_RE = re.compile(
@@ -42,13 +44,7 @@ def build_chat_message_insert(
     return str(role), cleaned, resolved_chat_id, str(status or "pending")
 
 
-class ChatMessageStore:
-    def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
-        self._db_getter = db_getter
-
-    @property
-    def _db(self) -> aiosqlite.Connection:
-        return self._db_getter()
+class ChatMessageStore(BaseAsyncStore):
 
     async def add_message(
         self,

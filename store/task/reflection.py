@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 import aiosqlite
 
-if TYPE_CHECKING:
-    from store.task.models import MetaReflection
+from ._base import BaseAsyncStore
+from .models import MetaReflection
 
 
-class MetaReflectionStore:
-    def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
-        self._db_getter = db_getter
-
-    @property
-    def _db(self) -> aiosqlite.Connection:
-        return self._db_getter()
+class MetaReflectionStore(BaseAsyncStore):
 
     async def add_meta_reflection(
         self,
@@ -60,9 +54,7 @@ class MetaReflectionStore:
         self,
         limit: int = 20,
         loop_level: str | None = None,
-    ) -> list["MetaReflection"]:
-        from store.task.models import MetaReflection
-
+    ) -> list[MetaReflection]:
         if loop_level:
             async with self._db.execute(
                 "SELECT id, target_kind, trigger, loop_level, diagnosis, proposal, verification_plan, decision, created_at, data FROM meta_reflections WHERE loop_level=? ORDER BY created_at ASC, id ASC LIMIT ?",

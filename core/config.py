@@ -337,7 +337,13 @@ class MemoryConfig(BaseModel):
     )
     convergence_bonus: float = Field(default=0.15, ge=0.0, le=1.0, description="多锚点召回的收敛奖励系数：每增加一个独立线索命中，相关度提升此比例")
     max_events: int = Field(default=500, ge=10, description="events.jsonl 最大条目数，超出后裁剪最旧记录")
-    semantic_decay_lambda: float = Field(default=0.1, ge=0.0, le=10.0, description="语义记忆激活衰减率（Ebbinghaus，λ/天）；0 表示不衰减")
+    semantic_decay_lambda: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=10.0,
+        validation_alias=AliasChoices("semantic_decay_lambda", "decay_lambda"),
+        description="语义记忆激活衰减率（Ebbinghaus，λ/天）；0 表示不衰减",
+    )
     embedding_model: str | None = Field(
         default=None,
         description="DashScope embedding model ID（如 'text-embedding-v3'）；None=禁用向量混合检索",
@@ -358,6 +364,11 @@ class MemoryConfig(BaseModel):
         default=7.0, gt=0.0, le=90.0,
         description="语义检索时间权重的标准时间窗（天）",
     )
+
+    @property
+    def decay_lambda(self) -> float:
+        """兼容旧代码中的 memory.decay_lambda 访问。"""
+        return self.semantic_decay_lambda
     daily_recall_days: int = Field(
         default=2, ge=1, le=14,
         description="daily 补短检索的最近天数窗口；仅在长期记忆命中不足时使用",

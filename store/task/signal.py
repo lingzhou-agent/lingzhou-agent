@@ -5,14 +5,10 @@ from typing import Any, Callable
 
 import aiosqlite
 
+from ._base import BaseAsyncStore
 
-class SignalStore:
-    def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
-        self._db_getter = db_getter
 
-    @property
-    def _db(self) -> aiosqlite.Connection:
-        return self._db_getter()
+class SignalStore(BaseAsyncStore):
 
     async def add_signal(
         self,

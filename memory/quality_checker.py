@@ -1,4 +1,4 @@
-"""memory/quality_checker.py — 语义记忆检索质量评估。
+r"""memory/quality_checker.py — 语义记忆检索质量评估。
 
 三个核心指标：
 1. 相关度：字符级 Jaccard 相似度，支持中文（向量嵌入可用时可替换为 cosine 相似度）。

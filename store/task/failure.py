@@ -1,21 +1,15 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import aiosqlite
 
-if TYPE_CHECKING:
-    from store.task.models import Failure
+from ._base import BaseAsyncStore
+from .models import Failure
 
 
-class FailureStore:
-    def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
-        self._db_getter = db_getter
-
-    @property
-    def _db(self) -> aiosqlite.Connection:
-        return self._db_getter()
+class FailureStore(BaseAsyncStore):
 
     async def record_failure(
         self,
@@ -33,9 +27,7 @@ class FailureStore:
         )
         await self._db.commit()
 
-    async def list_failures(self, limit: int = 20) -> list["Failure"]:
-        from store.task.models import Failure
-
+    async def list_failures(self, limit: int = 20) -> list[Failure]:
         async with self._db.execute(
             "SELECT id, kind, dismissed, created_at, data FROM failures "
             "WHERE dismissed=0 ORDER BY id DESC LIMIT ?",
@@ -44,9 +36,7 @@ class FailureStore:
             rows = await cur.fetchall()
         return [Failure.from_row(row) for row in rows]
 
-    async def list_failures_for_task(self, task_id: str, limit: int = 20) -> list["Failure"]:
-        from store.task.models import Failure
-
+    async def list_failures_for_task(self, task_id: str, limit: int = 20) -> list[Failure]:
         async with self._db.execute(
             "SELECT id, kind, dismissed, created_at, data FROM failures "
             "WHERE (json_extract(data,'$.task_id')=? OR json_extract(data,'$.task_id')='') AND dismissed=0 "

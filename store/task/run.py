@@ -2,21 +2,15 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import Any, Callable, Optional
 
 import aiosqlite
 
-if TYPE_CHECKING:
-    from store.task.models import Run
+from ._base import BaseAsyncStore
+from .models import Run
 
 
-class RunStore:
-    def __init__(self, db_getter: Callable[[], aiosqlite.Connection]) -> None:
-        self._db_getter = db_getter
-
-    @property
-    def _db(self) -> aiosqlite.Connection:
-        return self._db_getter()
+class RunStore(BaseAsyncStore):
 
     async def add_run(
         self,
@@ -56,9 +50,7 @@ class RunStore:
         await self._db.commit()
         return run_id
 
-    async def get_run_by_id(self, run_id: int) -> Optional["Run"]:
-        from store.task.models import Run
-
+    async def get_run_by_id(self, run_id: int) -> Optional[Run]:
         async with self._db.execute(
             "SELECT id, task_id, run_type, worker_type, status, created_at, started_at, completed_at, data FROM runs WHERE id=?",
             (run_id,),
@@ -72,9 +64,7 @@ class RunStore:
         task_id: int | None = None,
         status: str | None = None,
         limit: int = 50,
-    ) -> list["Run"]:
-        from store.task.models import Run
-
+    ) -> list[Run]:
         clauses: list[str] = []
         args: list[Any] = []
         if task_id is not None:
